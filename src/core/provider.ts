@@ -1,6 +1,7 @@
 import type { DiscoveredModel, ProviderId, RouterRequest } from "./model.js";
 import type { RouterEvent } from "./events.js";
 
+export type { DiscoveredModel, ProviderId };
 export interface ProviderHealth {
   status: "ready" | "degraded" | "unavailable" | "auth_required";
   detail?: string;
