@@ -279,12 +279,122 @@ export interface InferenceRunner {
     args: string[],
     options: { cwd: string; timeoutMs: number; signal: AbortSignal },
   ): Promise<AgyRunResult>;
+  streamInference(
+    args: string[],
+    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    onEvent: (event: ParsedStreamEvent) => void,
+  ): Promise<AgyRunResult>;
+}
+
+export interface ParsedStreamEvent {
+  kind: "text" | "usage" | "completed" | "protocolError";
+  texts?: string[];
+  terminalResponse?: boolean;
+  usage?: NonNullable<StreamParseResult["usage"]>;
+  finishReason?: StreamParseResult["finishReason"];
+  error?: RouterError;
+}
+
+/**
+ * Feed one NDJSON line through the stream parser and emit incremental
+ * ParsedStreamEvents. Shared by the live runner and unit-test doubles so
+ * partial lines, multi-line chunks, and malformed JSON behave identically.
+ */
+export function feedStreamLine(
+  line: string,
+  emit: (event: ParsedStreamEvent) => void,
+): { terminal: boolean } {
+  const trimmed = line.trim();
+  if (!trimmed) return { terminal: false };
+  let envelope: Record<string, unknown>;
+  try {
+    envelope = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    emit({
+      kind: "protocolError",
+      error: new RouterError(
+        "provider_protocol_error",
+        `Malformed Antigravity stream-json line: ${trimmed.slice(0, 200)}`,
+      ),
+    });
+    return { terminal: true };
+  }
+  const type = typeof envelope.event === "string" ? envelope.event : envelope.type;
+  const event =
+    type !== undefined && typeof envelope[type as string] === "object" && envelope[type as string] !== null
+      ? (envelope[type as string] as Record<string, unknown>)
+      : envelope;
+  if (type === "step_update") {
+    const texts = extractTextFromStepUpdate(event);
+    if (texts.length > 0) emit({ kind: "text", texts });
+    const usageField = (event.usage ?? envelope.usage) as unknown;
+    if (usageField && typeof usageField === "object") {
+      const u = usageField as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      emit({
+        kind: "usage",
+        usage: {
+          inputTokens: num(u.input_tokens),
+          outputTokens: num(u.output_tokens),
+          reasoningTokens: num(u.reasoning_tokens ?? u.thinking_tokens),
+          cacheReadTokens: num(u.cache_read_tokens),
+        },
+      });
+    }
+    return { terminal: false };
+  }
+  if (type === "result") {
+    const statusRaw = event.status ?? envelope.status;
+    const status = typeof statusRaw === "string" ? statusRaw.toLowerCase() : "";
+    let finishReason: StreamParseResult["finishReason"] = "stop";
+    if (
+      (typeof event.terminationReason === "string" &&
+        /max_steps|max_tokens|length/i.test(event.terminationReason)) ||
+      (typeof envelope.terminationReason === "string" &&
+        /max_steps|max_tokens|length/i.test(envelope.terminationReason))
+    ) {
+      finishReason = "length";
+    }
+    void status;
+    const usageField = event.usage ?? envelope.usage;
+    if (usageField && typeof usageField === "object") {
+      const u = usageField as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      emit({
+        kind: "usage",
+        usage: {
+          inputTokens: num(u.input_tokens),
+          outputTokens: num(u.output_tokens),
+          reasoningTokens: num(u.reasoning_tokens ?? u.thinking_tokens),
+          cacheReadTokens: num(u.cache_read_tokens),
+        },
+      });
+    }
+    const response = event.response ?? envelope.response;
+    // A terminal text-bearing result with no prior deltas still surfaces.
+    if (typeof response === "string" && response.length > 0) {
+      emit({ kind: "text", texts: [response], terminalResponse: true });
+    }
+    emit({ kind: "completed", finishReason });
+    return { terminal: true };
+  }
+  return { terminal: false };
 }
 
 export class SpawnInferenceRunner implements InferenceRunner {
   async runInference(
     args: string[],
     options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+  ): Promise<AgyRunResult> {
+    return await this.streamInference(args, options, () => undefined);
+  }
+
+  async streamInference(
+    args: string[],
+    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    onEvent: (event: ParsedStreamEvent) => void,
   ): Promise<AgyRunResult> {
     return await new Promise<AgyRunResult>((resolve) => {
       const child = spawn(AGY_PATH, args, {
@@ -294,6 +404,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       });
       let stdout = "";
       let stderr = "";
+      let lineBuffer = "";
       let settled = false;
       const finish = (partial: Partial<AgyRunResult>) => {
         if (settled) return;
@@ -315,29 +426,40 @@ export class SpawnInferenceRunner implements InferenceRunner {
         }, 2000);
         finish({ error: new Error(`agy print timed out after ${options.timeoutMs}ms`) });
       }, options.timeoutMs);
-      options.signal.addEventListener(
-        "abort",
-        () => {
-          try {
-            child.kill("SIGINT");
-          } catch {
-            // ignore
-          }
-        },
-        { once: true },
-      );
+      const onAbort = () => {
+        try {
+          child.kill("SIGINT");
+        } catch {
+          // ignore
+        }
+      };
+      options.signal.addEventListener("abort", onAbort, { once: true });
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf-8");
+        const text = chunk.toString("utf-8");
+        stdout += text;
+        lineBuffer += text;
+        const parts = lineBuffer.split("\n");
+        lineBuffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (options.signal.aborted) return;
+          feedStreamLine(part, onEvent);
+        }
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf-8");
       });
       child.on("error", (error: Error) => {
         clearTimeout(timer);
+        options.signal.removeEventListener("abort", onAbort);
         finish({ error });
       });
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         clearTimeout(timer);
+        options.signal.removeEventListener("abort", onAbort);
+        if (lineBuffer.trim()) {
+          feedStreamLine(lineBuffer, onEvent);
+          lineBuffer = "";
+        }
         finish({ status: code, signal });
       });
     });
@@ -498,13 +620,97 @@ export class AntigravityAdapter implements ProviderAdapter {
     });
 
     try {
-      const result = await this.runner.runInference(args, {
-        cwd,
-        timeoutMs: PRINT_TIMEOUT_MS,
-        signal: abortController.signal,
-      });
+      // Incremental streaming: deltas yield as NDJSON lines arrive, before
+      // the child exits. Completion is only emitted for an observed terminal
+      // result event — never synthesized from process close.
+      const pendingTexts: string[] = [];
+      let terminalSeen = false;
+      let terminalFinish: StreamParseResult["finishReason"] = "stop";
+      let protocolError: RouterError | undefined;
+      let usageYielded = false;
+
+      const yieldUsage = function* (
+        usage: NonNullable<StreamParseResult["usage"]>,
+      ): Generator<RouterEvent> {
+        if (usageYielded) return;
+        usageYielded = true;
+        yield {
+          type: "usage",
+          ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
+          ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
+          ...(usage.reasoningTokens !== undefined
+            ? { reasoningTokens: usage.reasoningTokens }
+            : {}),
+          ...(usage.cacheReadTokens !== undefined
+            ? { cacheReadTokens: usage.cacheReadTokens }
+            : {}),
+        } as RouterEvent;
+      };
+
+      const onEvent = (event: ParsedStreamEvent): void => {
+        if (event.kind === "text" && event.texts) {
+          for (const text of event.texts) {
+            pendingTexts.push(text);
+          }
+        } else if (event.kind === "usage" && event.usage) {
+          for (const yielded of yieldUsage(event.usage)) {
+            pendingTexts.push(`\0usage:${JSON.stringify(yielded)}`);
+          }
+        } else if (event.kind === "completed") {
+          terminalSeen = true;
+          terminalFinish = event.finishReason ?? "stop";
+        } else if (event.kind === "protocolError" && event.error && !protocolError) {
+          protocolError = event.error;
+        }
+      };
+
+      const flushTexts = function* (): Generator<RouterEvent> {
+        while (pendingTexts.length > 0) {
+          const next = pendingTexts.shift()!;
+          if (next.startsWith("\0usage:")) {
+            yield JSON.parse(next.slice("\0usage:".length)) as RouterEvent;
+          } else {
+            yield { type: "text_delta", text: next };
+          }
+        }
+      };
+
+      let result: AgyRunResult;
+      try {
+        result = await this.runner.streamInference(
+          args,
+          {
+            cwd,
+            timeoutMs: PRINT_TIMEOUT_MS,
+            signal: abortController.signal,
+          },
+          onEvent,
+        );
+      } catch (error) {
+        if (signal.aborted || abortController.signal.aborted) return;
+        if (error instanceof RouterError) {
+          yield { type: "error", error };
+        } else {
+          yield {
+            type: "error",
+            error: new RouterError(
+              "provider_unavailable",
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+        }
+        return;
+      }
+
+      // Drain anything that arrived before close/error resolution.
+      yield* flushTexts();
 
       if (signal.aborted || abortController.signal.aborted) {
+        return;
+      }
+
+      if (protocolError) {
+        yield { type: "error", error: protocolError };
         return;
       }
 
@@ -527,21 +733,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         return;
       }
 
-      let parsed: StreamParseResult;
-      try {
-        parsed = parseAgyStreamJson(result.stdout);
-      } catch (error) {
-        yield {
-          type: "error",
-          error:
-            error instanceof RouterError
-              ? error
-              : new RouterError("provider_protocol_error", String(error)),
-        };
-        return;
-      }
-
-      if (!parsed.completed) {
+      if (!terminalSeen) {
         yield {
           type: "error",
           error: new RouterError(
@@ -552,28 +744,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         return;
       }
 
-      for (const delta of parsed.textDeltas) {
-        yield { type: "text_delta", text: delta };
-      }
-      if (parsed.usage) {
-        const usageEvent: RouterEvent = {
-          type: "usage",
-          ...(parsed.usage.inputTokens !== undefined
-            ? { inputTokens: parsed.usage.inputTokens }
-            : {}),
-          ...(parsed.usage.outputTokens !== undefined
-            ? { outputTokens: parsed.usage.outputTokens }
-            : {}),
-          ...(parsed.usage.reasoningTokens !== undefined
-            ? { reasoningTokens: parsed.usage.reasoningTokens }
-            : {}),
-          ...(parsed.usage.cacheReadTokens !== undefined
-            ? { cacheReadTokens: parsed.usage.cacheReadTokens }
-            : {}),
-        };
-        yield usageEvent;
-      }
-      yield { type: "completed", finishReason: parsed.finishReason };
+      yield { type: "completed", finishReason: terminalFinish };
     } finally {
       signal.removeEventListener("abort", onAbort);
       this.activeRequests.delete(request.requestId);

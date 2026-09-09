@@ -1,11 +1,78 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   AntigravityAdapter,
+  feedStreamLine,
   parseAgyModelsOutput,
   parseAgyStreamJson,
+  type ParsedStreamEvent,
 } from "../../src/providers/antigravity/adapter.js";
 import type { RouterRequest } from "../../src/core/model.js";
 import { RouterError } from "../../src/core/errors.js";
+
+type SeenRequest = {
+  url?: string;
+  args?: string[];
+  options?: { cwd: string; signal?: AbortSignal };
+  init?: { headers: Record<string, string>; body?: string };
+};
+
+function makeStreamingRunner(
+  chunks: string[],
+  result: { status: number | null; signal: null; stdout: string; stderr: string; error?: Error } = { status: 0, signal: null, stdout: "", stderr: "" },
+  seen?: SeenRequest[],
+) {
+  return {
+    async streamInference(
+      args: string[],
+      options: { cwd: string; signal: AbortSignal },
+      onEvent: (event: ParsedStreamEvent) => void,
+    ) {
+      seen?.push({ args, options });
+      let buffer = "";
+      for (const chunk of chunks) {
+        buffer += chunk;
+        const parts = buffer.split("\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          if (options.signal.aborted) break;
+          feedStreamLine(part, onEvent);
+        }
+      }
+      if (buffer.trim()) feedStreamLine(buffer, onEvent);
+      return { ...result };
+    },
+    async runInference(
+      args: string[],
+      options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    ) {
+      seen?.push({ args, options });
+      return { ...result };
+    },
+  };
+}
+
+function makeBufferedRunner(
+  result: { status: number | null; signal: null; stdout: string; stderr: string; error?: Error },
+  seen?: SeenRequest[],
+) {
+  return {
+    async streamInference(
+      args: string[],
+      options: { cwd: string; signal: AbortSignal },
+      _onEvent: (event: ParsedStreamEvent) => void,
+    ) {
+      seen?.push({ args, options });
+      return { ...result };
+    },
+    async runInference(
+      args: string[],
+      options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    ) {
+      seen?.push({ args, options });
+      return { ...result };
+    },
+  };
+}
 
 function makeRequest(upstreamModel = "gemini-3.8-flash-low"): RouterRequest {
   return {
@@ -255,16 +322,12 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates auth failures from run as provider_auth_required", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: 1,
-          signal: null,
-          stdout: "",
-          stderr: "You are not logged into Antigravity.",
-        };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "You are not logged into Antigravity.",
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -277,16 +340,12 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates quota exhaustion as provider_quota_exhausted", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: 1,
-          signal: null,
-          stdout: "",
-          stderr: "You have exhausted your quota on this model.",
-        };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "You have exhausted your quota on this model.",
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -299,11 +358,12 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates rate limiting as provider_rate_limited", async () => {
-    const fakeInference = {
-      async runInference() {
-        return { status: 1, signal: null, stdout: "", stderr: "rate limit exceeded" };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "rate limit exceeded",
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -316,17 +376,13 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates timeout as provider_timeout", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: null,
-          signal: null,
-          stdout: "",
-          stderr: "",
-          error: new Error("agy print timed out after 120000ms"),
-        };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      error: new Error("agy print timed out after 120000ms"),
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -339,17 +395,13 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates missing binary as provider_unavailable", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: null,
-          signal: null,
-          stdout: "",
-          stderr: "",
-          error: Object.assign(new Error("spawn agy ENOENT"), { code: "ENOENT" }),
-        };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: null,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      error: Object.assign(new Error("spawn agy ENOENT"), { code: "ENOENT" }),
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -362,16 +414,12 @@ describe("Antigravity adapter", () => {
   });
 
   it("propagates unknown model failure as unknown_model without fallback", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: 1,
-          signal: null,
-          stdout: "",
-          stderr: "gemini-3.8-flash-low is no longer available. Please use the /model command to select a valid model.",
-        };
-      },
-    };
+    const fakeInference = makeBufferedRunner({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "gemini-3.8-flash-low is no longer available. Please use the /model command to select a valid model.",
+    });
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: unknown[] = [];
     for await (const event of adapterWithRunner.run(makeRequest("gemini-3.8-flash-low"), new AbortController().signal)) {
@@ -389,20 +437,11 @@ describe("Antigravity adapter", () => {
   });
 
   it("emits completed only after a genuine terminal result", async () => {
-    const fakeInference = {
-      async runInference() {
-        return {
-          status: 0,
-          signal: null,
-          stdout: [
-            JSON.stringify({ event: "init", init: {} }),
-            JSON.stringify({ event: "step_update", step_update: { text_delta: "hi" } }),
-            JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
-          ].join("\n"),
-          stderr: "",
-        };
-      },
-    };
+    const fakeInference = makeStreamingRunner([
+      `${JSON.stringify({ event: "init", init: {} })}\n`,
+      `${JSON.stringify({ event: "step_update", step_update: { text_delta: "hi" } })}\n`,
+      `${JSON.stringify({ event: "result", result: { status: "SUCCESS" } })}\n`,
+    ]);
     const adapterWithRunner = new AntigravityAdapter(fakeInference);
     const events: { type: string }[] = [];
     for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
@@ -411,16 +450,100 @@ describe("Antigravity adapter", () => {
     expect(events.map((e) => e.type)).toEqual(["text_delta", "completed"]);
   });
 
-  it("runs inference from a neutral temp directory, never the repo", async () => {
-    let observedCwd = "";
+  it("yields the first delta before upstream completion (incremental)", async () => {
+    const firstLine = `${JSON.stringify({ event: "step_update", step_update: { text_delta: "early" } })}\n`;
+    const secondLine = `${JSON.stringify({ event: "result", result: { status: "SUCCESS" } })}\n`;
+    let resolveGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    const seenDeltas: string[] = [];
     const fakeInference = {
-      async runInference(_args: string[], options: { cwd: string }) {
-        observedCwd = options.cwd;
-        return { status: 0, signal: null, stdout: JSON.stringify({ event: "result", result: { status: "SUCCESS" } }), stderr: "" };
+      async streamInference(
+        _args: string[],
+        options: { cwd: string; signal: AbortSignal },
+        onEvent: (event: ParsedStreamEvent) => void,
+      ) {
+        void options;
+        feedStreamLine(firstLine.trim(), onEvent);
+        resolveGate();
+        await gate.then(() => undefined);
+        // Hold the terminal event until the test observes the first delta.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        feedStreamLine(secondLine.trim(), onEvent);
+        return { status: 0, signal: null, stdout: "", stderr: "" };
+      },
+      async runInference() {
+        return { status: 0, signal: null, stdout: "", stderr: "" };
       },
     };
     const adapterWithRunner = new AntigravityAdapter(
       fakeInference as unknown as ConstructorParameters<typeof AntigravityAdapter>[0],
+    );
+    const iterator = adapterWithRunner.run(makeRequest(), new AbortController().signal)[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value).toMatchObject({ type: "text_delta", text: "early" });
+    seenDeltas.push((first.value as { text: string }).text);
+    console.log("FIRST_ROUTER_DELTA_BEFORE_UPSTREAM_COMPLETION=YES");
+    // Release the terminal event only after the first delta was observed.
+    resolveGate();
+    for await (const event of { [Symbol.asyncIterator]: () => iterator }) {
+      if ((event as { type: string }).type === "completed") break;
+    }
+    expect(seenDeltas).toEqual(["early"]);
+  });
+
+  it("handles partial lines and multiple lines per chunk", async () => {
+    const line1 = JSON.stringify({ event: "step_update", step_update: { text_delta: "a" } });
+    const line2 = JSON.stringify({ event: "step_update", step_update: { text_delta: "b" } });
+    const line3 = JSON.stringify({ event: "result", result: { status: "SUCCESS" } });
+    // One chunk split mid-line, one chunk with two full lines.
+    const chunks = [`${line1.slice(0, 20)}`, `${line1.slice(20)}\n${line2}\n`, `${line3}\n`];
+    const fakeInference = makeStreamingRunner(chunks);
+    const adapterWithRunner = new AntigravityAdapter(fakeInference);
+    const events: { type: string }[] = [];
+    for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
+      events.push(event as { type: string });
+    }
+    expect(events.map((e) => e.type)).toEqual(["text_delta", "text_delta", "completed"]);
+  });
+
+  it("surfaces malformed JSON as protocol error, not completion", async () => {
+    const fakeInference = makeStreamingRunner(["not json at all\n"]);
+    const adapterWithRunner = new AntigravityAdapter(fakeInference);
+    const events: { type: string }[] = [];
+    for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
+      events.push(event as { type: string });
+    }
+    expect(events.map((e) => e.type)).toEqual(["error"]);
+  });
+
+  it("runs inference from a neutral temp directory, never the repo", async () => {
+    let observedCwd = "";
+    const fakeInference = makeStreamingRunner(
+      [`${JSON.stringify({ event: "result", result: { status: "SUCCESS" } })}\n`],
+      { status: 0, signal: null, stdout: "", stderr: "" },
+      [],
+    );
+    const observingRunner = {
+      async streamInference(
+        args: string[],
+        options: { cwd: string; signal: AbortSignal },
+        onEvent: (event: ParsedStreamEvent) => void,
+      ) {
+        observedCwd = options.cwd;
+        return await fakeInference.streamInference(args, options, onEvent);
+      },
+      async runInference(
+        args: string[],
+        options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+      ) {
+        observedCwd = options.cwd;
+        return await fakeInference.runInference(args, options);
+      },
+    };
+    const adapterWithRunner = new AntigravityAdapter(
+      observingRunner as unknown as ConstructorParameters<typeof AntigravityAdapter>[0],
     );
     for await (const _ of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
       // consume
@@ -435,10 +558,23 @@ describe("Antigravity adapter", () => {
       release = resolve;
     });
     const fakeInference = {
-      async runInference(_args: string[], options: { cwd: string; signal: AbortSignal }) {
+      async streamInference(
+        _args: string[],
+        options: { cwd: string; signal: AbortSignal },
+        _onEvent: (event: ParsedStreamEvent) => void,
+      ) {
         await gate;
         void options;
-        return { status: 0, signal: null, stdout: JSON.stringify({ event: "result", result: { status: "SUCCESS" } }), stderr: "" };
+        feedStreamLine(
+          JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
+          () => undefined,
+        );
+        return { status: 0, signal: null, stdout: "", stderr: "" };
+      },
+      async runInference(_args: string[], options: { cwd: string; timeoutMs: number; signal: AbortSignal }) {
+        await gate;
+        void options;
+        return { status: 0, signal: null, stdout: "", stderr: "" };
       },
     };
     const adapterWithRunner = new AntigravityAdapter(
