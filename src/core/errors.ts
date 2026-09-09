@@ -2,6 +2,7 @@ export type RouterErrorCode =
   | "invalid_request"
   | "unknown_provider"
   | "unknown_model"
+  | "unsupported_capability"
   | "provider_unavailable"
   | "provider_auth_required"
   | "provider_quota_exhausted"

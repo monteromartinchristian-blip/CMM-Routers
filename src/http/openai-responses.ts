@@ -3,7 +3,7 @@ import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
-import { mapRouterErrorToHttp } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools } from "./openai-chat.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
 
@@ -153,6 +153,12 @@ export function registerResponsesApi(
     const adapter = registry.getAdapter(model.provider);
     if (!adapter) {
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
+    }
+
+    const capabilityError = rejectChatOnlyTools(model.capability, body, messages);
+    if (capabilityError) {
+      const mapped = mapRouterErrorToHttp(capabilityError);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
     const requestId = newId("req");

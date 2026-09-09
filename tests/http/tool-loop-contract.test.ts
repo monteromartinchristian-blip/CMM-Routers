@@ -28,7 +28,7 @@ class ToolLoopScriptedProvider implements ProviderAdapter {
         provider: "chatgpt",
         upstreamModel: "tool-loop-model",
         displayName: "Tool Loop Model",
-        capability: "CHAT_ONLY",
+        capability: "CHAT_AND_TOOLS",
       },
     ];
   }

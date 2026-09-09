@@ -92,6 +92,42 @@ function parseTools(input: unknown): RouterTool[] | null {
   return tools;
 }
 
+/**
+ * Fail closed when a CHAT_ONLY model receives tool semantics. Runs BEFORE
+ * provider resolution execution: tools definitions, tool_choice /
+ * parallel_tool_calls provider equivalents, or tool-role continuation
+ * messages are all rejected deterministically with unsupported_capability.
+ * Never strips, never forwards, never falls back.
+ */
+export function rejectChatOnlyTools(
+  capability: string | undefined,
+  body: Record<string, unknown>,
+  messages: Array<{ role: string }>,
+): RouterError | null {
+  if (capability === "CHAT_AND_TOOLS") return null;
+  if (capability !== undefined && capability !== "CHAT_ONLY") return null;
+  const tools = body.tools;
+  if (tools !== undefined && !(Array.isArray(tools) && tools.length === 0)) {
+    return new RouterError(
+      "unsupported_capability",
+      "Model supports chat only; tools are not supported on this route",
+    );
+  }
+  if (body.tool_choice !== undefined || body.parallel_tool_calls !== undefined) {
+    return new RouterError(
+      "unsupported_capability",
+      "Model supports chat only; tool selection is not supported on this route",
+    );
+  }
+  if (messages.some((m) => m.role === "tool")) {
+    return new RouterError(
+      "unsupported_capability",
+      "Model supports chat only; tool-result continuation is not supported on this route",
+    );
+  }
+  return null;
+}
+
 export function mapRouterErrorToHttp(error: unknown): { status: number; type: string; message: string } {
   if (error instanceof RouterError) {
     switch (error.code) {
@@ -100,6 +136,8 @@ export function mapRouterErrorToHttp(error: unknown): { status: number; type: st
       case "unknown_provider":
         return { status: 400, type: error.code, message: error.message };
       case "unknown_model":
+        return { status: 400, type: error.code, message: error.message };
+      case "unsupported_capability":
         return { status: 400, type: error.code, message: error.message };
       case "provider_auth_required":
         return { status: 401, type: error.code, message: "Provider authentication required" };
@@ -223,6 +261,12 @@ export function registerChatCompletions(
     const adapter = registry.getAdapter(model.provider);
     if (!adapter) {
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
+    }
+
+    const capabilityError = rejectChatOnlyTools(model.capability, body, messages);
+    if (capabilityError) {
+      const mapped = mapRouterErrorToHttp(capabilityError);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
     const requestId = newRequestId();

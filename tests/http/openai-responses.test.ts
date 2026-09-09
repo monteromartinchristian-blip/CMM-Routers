@@ -25,6 +25,7 @@ class ScriptedProvider implements ProviderAdapter {
         provider: "chatgpt",
         upstreamModel: "test-model",
         displayName: "Test Model",
+        capability: "CHAT_AND_TOOLS",
       },
     ];
   }
