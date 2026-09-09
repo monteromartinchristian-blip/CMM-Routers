@@ -93,6 +93,8 @@ describe("production composition root", () => {
       headers: { authorization: "Bearer composition-test-secret" },
     });
     expect(response.statusCode).toBe(200);
+    const body = response.json() as { data: unknown[] };
+    expect(body.data.length).toBeGreaterThan(0);
   });
 
   it("/ready reflects provider health", { timeout: 60000 }, async () => {

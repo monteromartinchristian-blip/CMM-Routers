@@ -37,18 +37,40 @@ export function resolveGoogleAgyPath(config: RouterConfig): string | undefined {
   return config.providers.google.agyPath;
 }
 
+/**
+ * Narrowly scoped test-provider injection for the compiled-process E2E.
+ * Active ONLY when CMM_TEST_PROVIDER=scripted is set explicitly; normal
+ * production never sets it and always uses real subscription adapters.
+ * The scripted double serves one canned model with no network, no quota,
+ * and no secrets.
+ */
+export function isTestProviderEnabled(): boolean {
+  return process.env.CMM_TEST_PROVIDER === "scripted";
+}
+
 export async function createProductionRegistry(
   config?: RouterConfig,
 ): Promise<ProductionComposition> {
   // Fresh-clone bootstrap: a clean checkout ships only
   // config/shared.example.json. Install it as shared.json (never
-  // overwriting, never secrets) before parsing.
-  if (!config) ensureSharedConfigFromExample();
-  const resolved = config ?? loadConfig();
+  // overwriting, never secrets) before parsing. CMM_CONFIG_DIR isolates
+  // the compiled-process E2E onto a temp config dir.
+  const configDir = process.env.CMM_CONFIG_DIR;
+  if (!config) ensureSharedConfigFromExample(configDir);
+  const resolved = config ?? loadConfig(configDir);
   const registry = new ProviderRegistry();
   const usageStore = new UsageStore();
   const registeredProviders: string[] = [];
   const skippedProviders: Array<{ id: string; reason: string }> = [];
+
+  if (isTestProviderEnabled()) {
+    const { ScriptedTestAdapter } = await import("./testing/scripted-adapter.js");
+    const adapter = new ScriptedTestAdapter();
+    await registry.register(adapter);
+    registeredProviders.push(adapter.id);
+    await registry.refresh();
+    return { config: resolved, registry, usageStore, registeredProviders, skippedProviders };
+  }
 
   if (resolved.providers.chatgpt.enabled) {
     const codexHome = resolveChatgptCodexHome(resolved);
