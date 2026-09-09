@@ -274,6 +274,38 @@ export function parseAgyStreamJson(stdout: string): StreamParseResult {
   return { textDeltas, usage, completed, finishReason };
 }
 
+/**
+ * Serialize full Router conversation semantics into the single headless
+ * prompt. agy exposes only a textual prompt interface, so role boundaries
+ * use deterministic delimiters in original order: system instructions,
+ * every user turn, every assistant turn, tool results as labelled user
+ * text. No repository context is injected; no credentials; the serialized
+ * prompt is never logged (only its length is observable in argv).
+ */
+export function serializeConversationForHeadlessPrompt(
+  messages: Array<{ role: string; content: string | null; toolCallId?: string }>,
+): string {
+  const sections: string[] = [];
+  for (const message of messages) {
+    const text = message.content ?? "";
+    if (!text) continue;
+    if (message.role === "system") {
+      sections.push(`[SYSTEM]\n${text}`);
+    } else if (message.role === "assistant") {
+      sections.push(`[ASSISTANT]\n${text}`);
+    } else if (message.role === "tool") {
+      const label =
+        typeof message.toolCallId === "string"
+          ? `[USER: tool_result ${message.toolCallId}]\n${text}`
+          : `[USER: tool_result]\n${text}`;
+      sections.push(label);
+    } else {
+      sections.push(`[USER]\n${text}`);
+    }
+  }
+  return sections.join("\n\n");
+}
+
 export interface InferenceRunner {
   runInference(
     args: string[],
@@ -636,10 +668,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       return;
     }
 
-    const prompt = request.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content ?? "")
-      .join("\n");
+    const prompt = serializeConversationForHeadlessPrompt(request.messages);
     if (!prompt.trim()) {
       yield {
         type: "error",

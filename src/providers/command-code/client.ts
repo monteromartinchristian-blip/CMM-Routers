@@ -809,7 +809,16 @@ export function buildAnthropicRequestBody(
   maxOutputTokens?: number,
 ): Record<string, unknown> {
   const converted: CommandCodeAnthropicMessage[] = [];
+  const systemParts: string[] = [];
   for (const message of messages) {
+    if (message.role === "system") {
+      const text =
+        typeof message.content === "string" && message.content
+          ? message.content
+          : "";
+      if (text) systemParts.push(text);
+      continue;
+    }
     if (message.role !== "user" && message.role !== "assistant") continue;
     const content =
       typeof message.content === "string"
@@ -838,6 +847,7 @@ export function buildAnthropicRequestBody(
   return {
     model,
     max_tokens: bounded,
+    ...(systemParts.length > 0 ? { system: systemParts.join("\n") } : {}),
     messages: converted,
     stream: true,
   };
