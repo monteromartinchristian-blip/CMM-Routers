@@ -93,6 +93,51 @@ function parseTools(input: unknown): RouterTool[] | null {
 }
 
 /**
+ * Detect assistant tool-call history in the RAW request body, before
+ * parseMessages discards the tool_calls member. Covers OpenAI chat
+ * (message.tool_calls, message.function_call) and Responses-style content
+ * parts (function_call / function_call_output items).
+ */
+export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): boolean {
+  const containers: unknown[] = [];
+  if (Array.isArray(body.messages)) containers.push(...body.messages);
+  if (Array.isArray(body.input)) containers.push(...body.input);
+  for (const entry of containers) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (Array.isArray(record.tool_calls) && record.tool_calls.length > 0) return true;
+    if (record.function_call !== undefined && record.function_call !== null) return true;
+    if (typeof record.type === "string") {
+      const type = record.type;
+      if (
+        type === "function_call" ||
+        type === "function_call_output" ||
+        type === "tool_call" ||
+        type === "tool_result"
+      ) {
+        return true;
+      }
+    }
+    const content = record.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part !== "object" || part === null) continue;
+        const partType = (part as Record<string, unknown>).type;
+        if (
+          partType === "function_call" ||
+          partType === "function_call_output" ||
+          partType === "tool_call" ||
+          partType === "tool_result"
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Fail closed when a CHAT_ONLY model receives tool semantics. Runs BEFORE
  * provider resolution execution: tools definitions, tool_choice /
  * parallel_tool_calls provider equivalents, or tool-role continuation
@@ -123,6 +168,12 @@ export function rejectChatOnlyTools(
     return new RouterError(
       "unsupported_capability",
       "Model supports chat only; tool-result continuation is not supported on this route",
+    );
+  }
+  if (rawBodyHasAssistantToolHistory(body)) {
+    return new RouterError(
+      "unsupported_capability",
+      "Model supports chat only; assistant tool-call history is not supported on this route",
     );
   }
   return null;

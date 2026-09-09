@@ -125,12 +125,6 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "model must be a non-empty string" } });
     }
-    const messages = inputToMessages(body.input);
-    if (!messages) {
-      return reply
-        .code(400)
-        .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
-    }
     const tools = parseResponseTools(body.tools);
     if (tools === null) {
       return reply
@@ -153,6 +147,21 @@ export function registerResponsesApi(
     const adapter = registry.getAdapter(model.provider);
     if (!adapter) {
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
+    }
+
+    // Capability guard runs on the RAW body: assistant function_call history
+    // is rejected before inputToMessages would discard its shape.
+    const earlyCapabilityError = rejectChatOnlyTools(model.capability, body, []);
+    if (earlyCapabilityError) {
+      const mapped = mapRouterErrorToHttp(earlyCapabilityError);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    const messages = inputToMessages(body.input);
+    if (!messages) {
+      return reply
+        .code(400)
+        .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
     }
 
     const capabilityError = rejectChatOnlyTools(model.capability, body, messages);

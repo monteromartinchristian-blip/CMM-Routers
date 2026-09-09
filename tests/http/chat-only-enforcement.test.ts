@@ -203,4 +203,53 @@ describe("CHAT_ONLY capability enforcement at the HTTP boundary", () => {
     expect(chatOnly.invocations).toBe(1);
     console.log("CHAT_ONLY_TOOL_ENFORCEMENT=PASS");
   });
+
+  it("rejects assistant tool_calls history on chat completions", async () => {
+    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret: BEARER, registry });
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: authHeader(BEARER),
+      payload: {
+        model: "chatgpt/chat-only-model",
+        messages: [
+          { role: "user", content: "hi" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call-1",
+                type: "function",
+                function: { name: "cmm_echo", arguments: "{}" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.type).toBe("unsupported_capability");
+    expect(chatOnly.invocations).toBe(0);
+    console.log("CHAT_ONLY_ASSISTANT_TOOL_HISTORY_REJECTED=PASS");
+  });
+
+  it("rejects function_call history on responses", async () => {
+    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret: BEARER, registry });
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: authHeader(BEARER),
+      payload: {
+        model: "chatgpt/chat-only-model",
+        input: [
+          { role: "user", content: "hi" },
+          { type: "function_call", call_id: "call-1", name: "cmm_echo", arguments: "{}" },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.type).toBe("unsupported_capability");
+    expect(chatOnly.invocations).toBe(0);
+  });
 });
