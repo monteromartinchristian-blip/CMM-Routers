@@ -331,6 +331,32 @@ export interface CommandCodeClientOptions {
   secret?: string | undefined;
 }
 
+/**
+ * Compose the caller signal with the client timeout. Either side aborts the
+ * effective signal; the timeout always fires so a stalled upstream can never
+ * outlive timeoutMs. Callers must invoke cleanup() once the request settles.
+ */
+function composeTimeoutSignal(
+  caller: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal | undefined; cleanup: () => void } {
+  if (caller?.aborted) return { signal: caller, cleanup: () => undefined };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onCallerAbort = (): void => {
+    clearTimeout(timer);
+    controller.abort();
+  };
+  caller?.addEventListener("abort", onCallerAbort, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      caller?.removeEventListener("abort", onCallerAbort);
+    },
+  };
+}
+
 export class CommandCodeClient {
   readonly baseUrl: string;
   readonly secretEnv: string;
@@ -345,13 +371,14 @@ export class CommandCodeClient {
     this.fetchFn =
       options.fetchFn ??
       (async (url, init) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        // Compose: the internal timeout must survive even when the caller
+        // passes its own signal (previously init.signal replaced it).
+        const composed = composeTimeoutSignal(init.signal, this.timeoutMs);
         try {
           const requestInit: RequestInit = {
             method: init.method,
             headers: init.headers,
-            signal: init.signal ?? controller.signal,
+            ...(composed.signal ? { signal: composed.signal } : {}),
           };
           if (init.body !== undefined) requestInit.body = init.body;
           const response = await fetch(url, requestInit);
@@ -379,7 +406,7 @@ export class CommandCodeClient {
               : {}),
           };
         } finally {
-          clearTimeout(timer);
+          composed.cleanup();
         }
       });
     this.secretOverride = options.secret;
@@ -497,23 +524,27 @@ export class CommandCodeClient {
     assertNoSpendPath(model);
     const url = this.buildUrl(ANTHROPIC_MESSAGES_PATH);
     const body = buildAnthropicRequestBody(model, messages, maxOutputTokens);
+    const composed = composeTimeoutSignal(signal, this.timeoutMs);
     let response: CommandCodeHttpResponse;
     try {
       response = await this.fetchFn(url, {
         method: "POST",
         headers: buildAuthHeaders(secret),
         body: JSON.stringify(body),
-        signal,
+        signal: composed.signal,
       });
     } catch (error) {
-      if ((error as Error).name === "AbortError" || signal.aborted) {
-        return;
+      composed.cleanup();
+      if (signal.aborted) return;
+      if ((error as Error).name === "AbortError") {
+        throw new RouterError("provider_timeout", "Command Code request timed out");
       }
       throw new RouterError(
         "provider_unavailable",
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
+    composed.cleanup();
     // Status must be known BEFORE consuming the stream: buffer only the
     // status line decision, then yield frames incrementally as they arrive.
     const { status, chunks } = await openStreamOrError(response, signal, "POST /messages");
@@ -542,23 +573,27 @@ export class CommandCodeClient {
       stream: true,
       ...(extraBody ?? {}),
     };
+    const composed = composeTimeoutSignal(signal, this.timeoutMs);
     let response: CommandCodeHttpResponse;
     try {
       response = await this.fetchFn(url, {
         method: "POST",
         headers: buildAuthHeaders(secret),
         body: JSON.stringify(body),
-        signal,
+        signal: composed.signal,
       });
     } catch (error) {
-      if ((error as Error).name === "AbortError" || signal.aborted) {
-        return;
+      composed.cleanup();
+      if (signal.aborted) return;
+      if ((error as Error).name === "AbortError") {
+        throw new RouterError("provider_timeout", "Command Code request timed out");
       }
       throw new RouterError(
         "provider_unavailable",
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
+    composed.cleanup();
     const { status, chunks } = await openStreamOrError(response, signal, context);
     if (status !== 200) {
       const bodyText = await readBodyText(response);
