@@ -82,6 +82,36 @@ else
   echo "LOG_HYGIENE=PASS"
 fi
 
+echo "== tool content logging ban =="
+if grep -rn "console\.\(log\|error\|warn\)" src/providers/ src/http/ --include="*.ts" | grep -iE "argumentsDelta|toolCall|tool_call|tool_result|contentItems|JSON.stringify\(.*args" | grep -qv "test\|expect\|not.toContain"; then
+  echo "FAIL: tool argument/result content logging present"
+  fail=1
+else
+  echo "TOOL_ARGUMENT_LOGGING=NONE"
+  echo "TOOL_RESULT_LOGGING=NONE"
+fi
+
+echo "== provider-native tool execution ban =="
+# The Router may REQUEST a tool from the provider (item/tool/call, tool_calls)
+# but must never EXECUTE a provider-native tool itself. Codex approvals are
+# declined; the dynamic tool response is success:false (consumer-owned).
+if grep -rn "result: { decision: \"accept\"\|decision: \"acceptForSession\"\|success: true" src/providers/codex/app-server-client.ts src/providers/codex/adapter.ts | grep -q .; then
+  echo "FAIL: provider-native tool approval path present"
+  fail=1
+else
+  echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
+fi
+
+echo "== consumer capability policy present =="
+if ! grep -q "effectiveToolCapability" src/http/openai-chat.ts; then
+  echo "FAIL: consumer capability gate missing from chat handler"
+  fail=1
+else
+  echo "CONSUMER_CAPABILITY_POLICY=PASS"
+  echo "CMMCHAT_TOOL_ESCALATION=NONE"
+  echo "UNAUTHENTICATED_TOOL_ESCALATION=NONE"
+fi
+
 echo "== production composition: providers registered from config =="
 if ! grep -q "createProductionRegistry" src/index.ts; then
   echo "FAIL: production composition root missing"
