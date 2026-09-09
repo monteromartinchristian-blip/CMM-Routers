@@ -1,22 +1,109 @@
-import { loadConfig } from "./config/load-config.js";
+import { loadConfig, type RouterConfig } from "./config/load-config.js";
 import { ProviderRegistry } from "./registry/provider-registry.js";
 import { buildServer } from "./http/server.js";
+import { UsageStore } from "./observability/usage-store.js";
+import { CodexAdapter } from "./providers/codex/adapter.js";
+import { ClaudeAdapter } from "./providers/claude/adapter.js";
+import { AntigravityAdapter } from "./providers/antigravity/adapter.js";
+import { CommandCodeAdapter } from "./providers/command-code/adapter.js";
+
+export interface ProductionComposition {
+  config: RouterConfig;
+  registry: ProviderRegistry;
+  usageStore: UsageStore;
+  registeredProviders: string[];
+  skippedProviders: Array<{ id: string; reason: string }>;
+}
+
+function isCommandCodeAckValid(): boolean {
+  try {
+    const { requireSpendAcknowledgement } = require("./providers/command-code/spend-guard.js") as typeof import("./providers/command-code/spend-guard.js");
+    requireSpendAcknowledgement();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function createProductionRegistry(
+  config?: RouterConfig,
+): Promise<ProductionComposition> {
+  const resolved = config ?? loadConfig();
+  const registry = new ProviderRegistry();
+  const usageStore = new UsageStore();
+  const registeredProviders: string[] = [];
+  const skippedProviders: Array<{ id: string; reason: string }> = [];
+
+  if (resolved.providers.chatgpt.enabled) {
+    const adapter = new CodexAdapter();
+    await registry.register(adapter);
+    registeredProviders.push(adapter.id);
+  } else {
+    skippedProviders.push({ id: "chatgpt", reason: "disabled in config" });
+  }
+
+  if (resolved.providers.claude.enabled) {
+    const adapter = new ClaudeAdapter();
+    await registry.register(adapter);
+    registeredProviders.push(adapter.id);
+  } else {
+    skippedProviders.push({ id: "claude", reason: "disabled in config" });
+  }
+
+  if (resolved.providers.google.enabled) {
+    const adapter = new AntigravityAdapter();
+    await registry.register(adapter);
+    registeredProviders.push(adapter.id);
+  } else {
+    skippedProviders.push({ id: "google", reason: "disabled in config" });
+  }
+
+  if (resolved.providers["command-code"].enabled) {
+    // Never instantiate the spend-guarded provider without its ack.
+    if (!isCommandCodeAckValid()) {
+      skippedProviders.push({ id: "command-code", reason: "spend acknowledgement missing or invalid" });
+    } else if (!process.env[resolved.providers["command-code"].secretEnv]) {
+      skippedProviders.push({
+        id: "command-code",
+        reason: `secret env ${resolved.providers["command-code"].secretEnv} absent`,
+      });
+    } else {
+      const adapter = new CommandCodeAdapter({
+        baseUrl: resolved.providers["command-code"].baseUrl,
+        secretEnv: resolved.providers["command-code"].secretEnv,
+      });
+      await registry.register(adapter);
+      registeredProviders.push(adapter.id);
+    }
+  } else {
+    skippedProviders.push({ id: "command-code", reason: "disabled in config" });
+  }
+
+  await registry.refresh();
+
+  return { config: resolved, registry, usageStore, registeredProviders, skippedProviders };
+}
+
+export function createProductionServer(composition: ProductionComposition, bearerSecret: string) {
+  return buildServer({
+    host: composition.config.host,
+    port: composition.config.port,
+    bearerSecret,
+    registry: composition.registry,
+    usageStore: composition.usageStore,
+  });
+}
 
 async function main() {
-  const config = loadConfig();
+  const composition = await createProductionRegistry();
+  const { config, registry, usageStore, registeredProviders, skippedProviders } = composition;
 
   console.log(`Starting CMM Subscription Router on ${config.host}:${config.port}`);
   console.log(`Machine ID: ${config.machineId}`);
-
-  const registry = new ProviderRegistry();
-
-  // TODO: Register provider adapters here in future tasks
-  // await registry.register(codexAdapter);
-  // await registry.register(claudeAdapter);
-  // await registry.register(antigravityAdapter);
-  // await registry.register(commandCodeAdapter);
-
-  await registry.refresh();
+  console.log(`Registered providers: ${registeredProviders.join(", ") || "(none)"}`);
+  for (const skipped of skippedProviders) {
+    console.log(`Skipped provider ${skipped.id}: ${skipped.reason}`);
+  }
 
   const bearerSecret = process.env[config.bearerSecretEnv];
   if (!bearerSecret) {
@@ -26,12 +113,17 @@ async function main() {
     process.exit(1);
   }
 
-  const server = buildServer({
-    host: config.host,
-    port: config.port,
-    bearerSecret,
-    registry,
-  });
+  const server = createProductionServer(composition, bearerSecret);
+
+  const shutdown = async () => {
+    try {
+      await server.close();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 
   try {
     await server.listen({ host: config.host, port: config.port });
@@ -42,7 +134,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}
