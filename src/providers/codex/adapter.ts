@@ -36,7 +36,7 @@ export function normalizeCodexFinishReason(
  * Split Router messages into developer instructions, injectable history,
  * and the current user turn input. System content becomes Codex
  * developerInstructions; prior user/assistant turns become Responses-API
- * history items via thread/injectItems; only the newest user text starts
+ * history items via thread/inject_items; only the newest user text starts
  * the turn. Tool-role messages become labelled user text (external loop
  * owns execution). Returns the pieces without any repository mutation.
  */
@@ -191,7 +191,7 @@ export class CodexAdapter implements ProviderAdapter {
       const threadId = threadResponse.thread.id;
 
       // Prior conversation history becomes model-visible thread history via
-      // the schema-backed thread/injectItems mechanism (roles preserved).
+      // the schema-backed thread/inject_items mechanism (roles preserved).
       if (seeds.historyItems.length > 0) {
         await this.client.injectItems({ threadId, items: seeds.historyItems });
       }
@@ -275,8 +275,10 @@ export class CodexAdapter implements ProviderAdapter {
           }
         }
       } finally {
-        // Clean up active turn tracking
+        // Clean up active turn tracking and release this run's buffered
+        // notification state so no content survives into later requests.
         this.activeTurns.delete(request.requestId);
+        this.client.discardScope(scope);
       }
     } catch (error) {
       // Timeout or other errors are caught here and yielded as error events
@@ -314,6 +316,14 @@ export class CodexAdapter implements ProviderAdapter {
       // Interrupt failures still release tracking below.
     } finally {
       this.activeTurns.delete(requestId);
+      if (activeTurn.threadId || activeTurn.turnId) {
+        this.client.discardScope({
+          ...(activeTurn.threadId ? { threadId: activeTurn.threadId } : {}),
+          ...(typeof activeTurn.turnId === "string" && activeTurn.turnId.length > 0
+            ? { turnId: activeTurn.turnId }
+            : {}),
+        });
+      }
     }
   }
 

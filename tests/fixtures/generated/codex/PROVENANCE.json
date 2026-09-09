@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex generated-schema provenance (Targeted Remediation 6)",
+  "generatedFrom": "codex app-server generate-json-schema --out <dir>",
+  "installedCodexVersion": "codex-cli 0.153.4",
+  "installedCodexBinary": "/opt/homebrew/bin/codex",
+  "trackedSchemaVersion": "current with installed binary (byte-identical refresh on 2026-09-09)",
+  "refreshCommand": "codex app-server generate-json-schema --out /tmp/codex-schema-fresh && diff -rq /tmp/codex-schema-fresh tests/fixtures/generated/codex",
+  "refreshResult": "RC=0, no tracked artifact changes required",
+  "canonicalMethods": [
+    "initialize",
+    "thread/start",
+    "thread/inject_items",
+    "turn/start",
+    "turn/interrupt",
+    "model/list",
+    "item/agentMessage/delta",
+    "thread/tokenUsage/updated",
+    "turn/completed"
+  ],
+  "notes": [
+    "Tracked fixtures were previously generated from an older app-server version; the installed 0.153.4 output is byte-identical to the tracked tree, so no fixture rewrite was needed for this pass.",
+    "The canonical history method is thread/inject_items per the tracked ClientRequest oneOf discriminator (title Thread/injectItemsRequest)."
+  ]
+}

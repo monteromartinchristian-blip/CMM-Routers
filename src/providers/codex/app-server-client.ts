@@ -69,15 +69,88 @@ export interface NotificationScope {
   turnId?: string;
 }
 
+/**
+ * Supported notification methods the Router actively awaits. Buffered only
+ * when a scoped waiter may arrive shortly after; everything else follows
+ * the discard path below so unrelated protocol traffic never accumulates.
+ */
+const SUPPORTED_NOTIFICATION_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "thread/tokenUsage/updated",
+  "turn/completed",
+]);
+
+/**
+ * Benign protocol events the Router never consumes. Discarded immediately
+ * without buffering or content logging.
+ */
+const IGNORABLE_NOTIFICATION_METHODS: ReadonlySet<string> = new Set([
+  "item/started",
+  "item/completed",
+  "turn/started",
+  "thread/started",
+]);
+
+/** Bound for the scoped pre-arrival buffer: enough for races, never unbounded. */
+const SCOPED_BUFFER_LIMIT = 64;
+
+interface BufferedNotification {
+  notification: JSONRPCNotification;
+  threadId?: string;
+  turnId?: string;
+  turnIdNested?: string;
+}
+
+function notificationScopeIds(notification: JSONRPCNotification): {
+  threadId?: string;
+  turnId?: string;
+  turnIdNested?: string;
+} {
+  const params = notificationParams(notification);
+  const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+  const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
+  const turn = params.turn;
+  const turnIdNested =
+    typeof turn === "object" && turn !== null
+      ? (() => {
+          const id = (turn as Record<string, unknown>).id;
+          return typeof id === "string" ? id : undefined;
+        })()
+      : undefined;
+  return {
+    ...(threadId !== undefined ? { threadId } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
+    ...(turnIdNested !== undefined ? { turnIdNested } : {}),
+  };
+}
+
+function bufferedMatchesScope(
+  buffered: BufferedNotification,
+  scope: { threadId?: string; turnId?: string },
+): boolean {
+  if (scope.threadId !== undefined && buffered.threadId !== scope.threadId) return false;
+  if (scope.turnId !== undefined) {
+    if (buffered.turnId !== scope.turnId && buffered.turnIdNested !== scope.turnId) return false;
+  }
+  return true;
+}
+
 export class CodexAppServerClient {
   private stream: Duplex;
   private nextId = 0;
   private waiterSeq = 0;
   private pendingRequests = new Map<number | string, PendingRequest>();
-  private notificationQueue: JSONRPCNotification[] = [];
+  /**
+   * Bounded scoped pre-arrival buffer. Holds ONLY supported methods with
+   * extractable correlation ids so a notification racing waiter registration
+   * is not lost; drained on match, evicted FIFO at the bound, and purged on
+   * run completion/cancel/error/stop. Never a global content history.
+   */
+  private notificationQueue: BufferedNotification[] = [];
   private notificationWaiters: NotificationWaiter[] = [];
   private buffer = "";
   private stopped = false;
+  private protocolError: RouterError | null = null;
 
   constructor(stream: Duplex) {
     this.stream = stream;
@@ -109,12 +182,29 @@ export class CodexAppServerClient {
     });
   }
 
+  private failProtocol(reason: string): RouterError {
+    const error = new RouterError("provider_protocol_error", reason);
+    if (this.protocolError === null) this.protocolError = error;
+    for (const [, pending] of this.pendingRequests) {
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+    const waiters = this.notificationWaiters.splice(0, this.notificationWaiters.length);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+    this.notificationQueue.length = 0;
+    return error;
+  }
+
   private handleMessage(raw: string): void {
     let message: unknown;
     try {
       message = JSON.parse(raw);
     } catch {
-      // Malformed JSON - drop the frame without logging content.
+      // A non-empty stdout line that is not JSON-RPC is a protocol failure,
+      // not a skippable frame. Fail the affected run without logging content.
+      this.failProtocol("invalid JSON-RPC frame from codex app-server");
       return;
     }
 
@@ -157,8 +247,92 @@ export class CodexAppServerClient {
         const waiter = this.notificationWaiters[waiterIndex]!;
         this.notificationWaiters.splice(waiterIndex, 1);
         waiter.resolve(notification);
+        if (notification.method === "turn/completed") {
+          this.purgeScope(notification);
+        }
+      } else if (SUPPORTED_NOTIFICATION_METHODS.has(notification.method)) {
+        this.bufferSupported(notification);
+      } else if (IGNORABLE_NOTIFICATION_METHODS.has(notification.method)) {
+        // Known benign protocol traffic: discard immediately, no retention.
       } else {
-        this.notificationQueue.push(notification);
+        // Unknown/unawaited server event: metadata-only drop. The method
+        // name alone is untrusted input, so keep no payload and no content.
+        void notification.method;
+      }
+    }
+  }
+
+  private bufferSupported(notification: JSONRPCNotification): void {
+    const ids = notificationScopeIds(notification);
+    if (ids.threadId === undefined && ids.turnId === undefined && ids.turnIdNested === undefined) {
+      return;
+    }
+    this.notificationQueue.push({ notification, ...ids });
+    while (this.notificationQueue.length > SCOPED_BUFFER_LIMIT) {
+      this.notificationQueue.shift();
+    }
+  }
+
+  private purgeScope(notification: JSONRPCNotification): void {
+    const ids = notificationScopeIds(notification);
+    if (ids.threadId === undefined && ids.turnId === undefined && ids.turnIdNested === undefined) {
+      return;
+    }
+    const scope: NotificationScope = {
+      ...(ids.threadId !== undefined ? { threadId: ids.threadId } : {}),
+      ...(() => {
+        const turnId = ids.turnId ?? ids.turnIdNested;
+        return turnId !== undefined ? { turnId } : {};
+      })(),
+    };
+    this.notificationQueue = this.notificationQueue.filter(
+      (buffered) => !bufferedMatchesScope(buffered, scope),
+    );
+    this.notificationWaiters = this.notificationWaiters.filter((waiter) => {
+      if (waiter.threadId === undefined && waiter.turnId === undefined) return true;
+      if (scope.threadId !== undefined && waiter.threadId !== undefined && waiter.threadId !== scope.threadId) {
+        return true;
+      }
+      if (scope.turnId !== undefined && waiter.turnId !== undefined && waiter.turnId !== scope.turnId) {
+        return true;
+      }
+      if (
+        (scope.threadId === undefined || waiter.threadId === scope.threadId) &&
+        (scope.turnId === undefined || waiter.turnId === scope.turnId)
+      ) {
+        waiter.reject(
+          new RouterError("provider_protocol_error", "Codex run completed; waiter released"),
+        );
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /** Release buffered state for one finished/cancelled run scope. */
+  discardScope(scope: NotificationScope): void {
+    if (scope.threadId === undefined && scope.turnId === undefined) return;
+    this.notificationQueue = this.notificationQueue.filter(
+      (buffered) => !bufferedMatchesScope(buffered, scope),
+    );
+    const waiters = this.notificationWaiters.filter((waiter) => {
+      if (waiter.threadId === undefined && waiter.turnId === undefined) return false;
+      if (scope.threadId !== undefined && waiter.threadId !== undefined && waiter.threadId !== scope.threadId) {
+        return false;
+      }
+      if (scope.turnId !== undefined && waiter.turnId !== undefined && waiter.turnId !== scope.turnId) {
+        return false;
+      }
+      return (
+        (scope.threadId === undefined || waiter.threadId === scope.threadId) &&
+        (scope.turnId === undefined || waiter.turnId === scope.turnId)
+      );
+    });
+    if (waiters.length > 0) {
+      const stale = new Set(waiters);
+      this.notificationWaiters = this.notificationWaiters.filter((w) => !stale.has(w));
+      for (const waiter of waiters) {
+        waiter.reject(new RouterError("provider_protocol_error", "Codex run released; waiter cancelled"));
       }
     }
   }
@@ -214,16 +388,19 @@ export class CodexAppServerClient {
     timeoutMs = 5000,
     scope?: NotificationScope,
   ): Promise<JSONRPCNotification> {
-    // Check queue first (scoped: only a correlation-matching entry)
+    if (this.protocolError !== null) {
+      throw this.protocolError;
+    }
+    // Check scoped buffer first (only a correlation-matching entry)
     const probe: Pick<NotificationWaiter, "method" | "threadId" | "turnId"> = {
       method,
       ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
       ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
     };
-    const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n));
+    const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n.notification));
     if (queued !== -1) {
-      const notification = this.notificationQueue.splice(queued, 1)[0];
-      return notification!;
+      const notification = this.notificationQueue.splice(queued, 1)[0]!.notification;
+      return notification;
     }
 
     // Wait for new notification; the timeout removes ONLY this waiter by id.
@@ -261,17 +438,20 @@ export class CodexAppServerClient {
     timeoutMs = 5000,
     scope?: NotificationScope,
   ): Promise<JSONRPCNotification> {
-    // Check queue first for any of the requested methods (scoped match)
+    if (this.protocolError !== null) {
+      throw this.protocolError;
+    }
+    // Check scoped buffer first for any of the requested methods.
     for (const method of methods) {
       const probe: Pick<NotificationWaiter, "method" | "threadId" | "turnId"> = {
         method,
         ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
         ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
       };
-      const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n));
+      const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n.notification));
       if (queued !== -1) {
-        const notification = this.notificationQueue.splice(queued, 1)[0];
-        return notification!;
+        const notification = this.notificationQueue.splice(queued, 1)[0]!.notification;
+        return notification;
       }
     }
 
@@ -326,8 +506,11 @@ export class CodexAppServerClient {
     return result as ThreadStartResponse;
   }
 
+  /** Canonical method per generated ClientRequest discriminator: thread/inject_items. */
+  static readonly INJECT_ITEMS_METHOD = "thread/inject_items";
+
   async injectItems(params: { threadId: string; items: unknown[] }): Promise<unknown> {
-    return await this.sendRequest("thread/injectItems", params as unknown as Record<string, unknown>);
+    return await this.sendRequest(CodexAppServerClient.INJECT_ITEMS_METHOD, params as unknown as Record<string, unknown>);
   }
 
   async startTurn(params: TurnStartParams): Promise<TurnStartResponse> {
@@ -348,6 +531,7 @@ export class CodexAppServerClient {
     this.stopped = true;
     this.pendingRequests.clear();
     this.notificationWaiters = [];
+    this.notificationQueue.length = 0;
 
     // Destroy the stream
     if ("destroy" in this.stream && typeof this.stream.destroy === "function") {
