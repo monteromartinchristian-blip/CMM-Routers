@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 function hashToken(token: string): Buffer {
   return createHash("sha256").update(token).digest();
@@ -23,6 +23,6 @@ export function verifyBearer(
 
   return (
     expectedHash.length === providedHash.length &&
-    require("node:crypto").timingSafeEqual(expectedHash, providedHash)
+    timingSafeEqual(expectedHash, providedHash)
   );
 }
