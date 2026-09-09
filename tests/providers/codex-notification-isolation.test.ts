@@ -120,4 +120,101 @@ describe("Codex concurrent notification isolation (production dispatcher)", () =
     expect((n.params as Record<string, unknown>).threadId).toBe("thread-B");
     console.log("CODEX_CONCURRENT_NOTIFICATION_ISOLATION=PASS");
   });
+
+  it("bounds unmatched notifications and never retains ignorable traffic", () => {
+    const transport = new FakeCodexTransport();
+    const client = new CodexAppServerClient(transport);
+    for (let i = 0; i < 5000; i++) {
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: DELTA,
+        params: {
+          delta: `UNMATCHED_A_${i}`,
+          itemId: `i-a-${i}`,
+          threadId: "thread-A",
+          turnId: "turn-A",
+        },
+      });
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: { threadId: "thread-A", item: { id: `item-${i}`, content: `SECRET_A_${i}` } },
+      });
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: { threadId: "thread-A", item: { id: `item-${i}`, content: `SECRET_A_${i}` } },
+      });
+    }
+    const queued = (client as unknown as { notificationQueue: unknown[] }).notificationQueue;
+    expect(queued.length).toBeLessThanOrEqual(64);
+    expect(queued.length).toBeGreaterThan(0);
+    const wire = JSON.stringify(queued.map((b) => (b as { notification: unknown }).notification));
+    expect(wire).not.toContain("SECRET_A_");
+    expect(wire).not.toContain("item/started");
+    expect(wire).not.toContain("item/completed");
+    console.log("CODEX_UNMATCHED_NOTIFICATION_RETENTION=BOUNDED_OR_NONE");
+    console.log("CODEX_NOTIFICATION_QUEUE_UNBOUNDED=NO");
+    console.log("CODEX_UNBOUNDED_CONTENT_RETENTION=NONE");
+  });
+
+  it("clears request scope after completion and never redelivers stale content", async () => {
+    const transport = new FakeCodexTransport();
+    const client = new CodexAppServerClient(transport);
+    const methods = [DELTA, USAGE, DONE];
+    // Pre-arrival frames for A (delta + terminal) buffer under A's scope.
+    transport.receiveMessage({
+      jsonrpc: "2.0",
+      method: DELTA,
+      params: { delta: "STALE_A_SECRET", itemId: "i-a", threadId: "thread-A", turnId: "turn-A" },
+    });
+    transport.receiveMessage({
+      jsonrpc: "2.0",
+      method: DONE,
+      params: { threadId: "thread-A", turn: { id: "turn-A", status: "completed", items: [] } },
+    });
+    const buffered = (client as unknown as { notificationQueue: unknown[] }).notificationQueue;
+    expect(buffered.length).toBeGreaterThan(0);
+    expect(buffered.length).toBeLessThanOrEqual(64);
+
+    // B's waiter must never observe A's buffered content.
+    const waiterB = client.waitForAnyNotification(methods, 1000, {
+      threadId: "thread-B",
+      turnId: "turn-B",
+    });
+    transport.receiveMessage({
+      jsonrpc: "2.0",
+      method: DELTA,
+      params: { delta: "B1", itemId: "i-b", threadId: "thread-B", turnId: "turn-B" },
+    });
+    const n = await waiterB;
+    expect(String((n.params as Record<string, unknown>).delta)).toBe("B1");
+    expect(JSON.stringify(n)).not.toContain("STALE_A_SECRET");
+    console.log("CODEX_STALE_NOTIFICATION_REDELIVERY=NONE");
+    console.log("CODEX_CROSS_REQUEST_CONTENT_LEAK=NONE");
+
+    // Production run teardown (adapter finally / cancel) releases the scope.
+    client.discardScope({ threadId: "thread-A", turnId: "turn-A" });
+    const afterDiscard = (client as unknown as { notificationQueue: unknown[] }).notificationQueue;
+    expect(afterDiscard.length).toBe(0);
+    console.log("CODEX_REQUEST_SCOPED_NOTIFICATION_STATE=0");
+  });
+
+  it("clears cancelled-run scope to zero", () => {
+    const transport = new FakeCodexTransport();
+    const client = new CodexAppServerClient(transport);
+    transport.receiveMessage({
+      jsonrpc: "2.0",
+      method: DELTA,
+      params: { delta: "CANCEL_A_SECRET", itemId: "i-a", threadId: "thread-A", turnId: "turn-A" },
+    });
+    expect(
+      (client as unknown as { notificationQueue: unknown[] }).notificationQueue.length,
+    ).toBeGreaterThan(0);
+    client.discardScope({ threadId: "thread-A", turnId: "turn-A" });
+    expect(
+      (client as unknown as { notificationQueue: unknown[] }).notificationQueue.length,
+    ).toBe(0);
+    console.log("CODEX_CANCELLED_RUN_NOTIFICATION_STATE=0");
+  });
 });

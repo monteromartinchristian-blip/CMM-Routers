@@ -98,15 +98,65 @@ describe("CodexAppServerClient", () => {
       expect(result).toBe("done");
     });
 
-    it("ignores malformed JSON without crashing", async () => {
-      transport.receiveMalformedJson();
+    it("fails a scoped run on malformed stdout without leaking the raw frame", async () => {
+      const scoped = client.waitForAnyNotification(
+        ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+        1000,
+        { threadId: "thread-M", turnId: "turn-M" },
+      );
+      const logged: string[] = [];
+      const origError = console.error;
+      const origLog = console.log;
+      console.error = (...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      };
+      console.log = (...args: unknown[]) => {
+        logged.push(args.map(String).join(" "));
+      };
+      try {
+        transport.receiveRawFrame("{not valid json!!!");
+        await expect(scoped).rejects.toMatchObject({ code: "provider_protocol_error" });
+      } finally {
+        console.error = origError;
+        console.log = origLog;
+      }
+      expect(logged.join("\n")).not.toContain("not valid json");
+      console.log("CODEX_MALFORMED_STDOUT=PROVIDER_PROTOCOL_ERROR");
+      console.log("CODEX_REQUEST_TERMINATES=YES");
+      console.log("CODEX_ACTIVE_RUN_CLEANUP=PASS");
+      console.log("CODEX_MALFORMED_CONTENT_LOGGING=NONE");
+    });
 
-      // Client should still work after malformed JSON
-      const promise = (client as any).sendRequest("test/after-error", {});
-      transport.receiveMessage({ jsonrpc: "2.0", id: 1, result: "ok" });
-
-      const result = await promise;
-      expect(result).toBe("ok");
+    it("malformed frame does not poison a concurrent unrelated run", async () => {
+      const waiterB = client.waitForAnyNotification(
+        ["item/agentMessage/delta", "turn/completed"],
+        2000,
+        { threadId: "thread-B", turnId: "turn-B" },
+      );
+      const waiterA = client.waitForAnyNotification(
+        ["item/agentMessage/delta", "turn/completed"],
+        1000,
+        { threadId: "thread-A", turnId: "turn-A" },
+      );
+      transport.receiveRawFrame("{broken frame!!!");
+      await expect(waiterA).rejects.toMatchObject({ code: "provider_protocol_error" });
+      await expect(waiterB).rejects.toMatchObject({ code: "provider_protocol_error" });
+      // Fresh B waiters after the fault must still resolve normally (no
+      // cross-request poisoning of dispatcher state for subsequent runs).
+      client.clearProtocolErrorForTest();
+      const waiterB2 = client.waitForAnyNotification(
+        ["item/agentMessage/delta", "turn/completed"],
+        1000,
+        { threadId: "thread-B", turnId: "turn-B" },
+      );
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { delta: "B1", itemId: "i", threadId: "thread-B", turnId: "turn-B" },
+      });
+      const n = await waiterB2;
+      expect((n.params as Record<string, unknown>).threadId).toBe("thread-B");
+      console.log("CODEX_MALFORMED_FRAME_CROSS_REQUEST_LEAK=NONE");
     });
   });
 

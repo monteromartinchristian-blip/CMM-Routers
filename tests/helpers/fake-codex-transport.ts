@@ -62,6 +62,16 @@ export class FakeCodexTransport extends Duplex {
   }
 
   /**
+   * Emit a raw stdout frame exactly as the app-server would write it.
+   * Used for malformed-frame tests: routes through the client's line
+   * parser rather than around it.
+   */
+  receiveRawFrame(frame: string): void {
+    if (this.errorMode) return;
+    this.emit("data", Buffer.from(frame.endsWith("\n") ? frame : `${frame}\n`));
+  }
+
+  /**
    * Simulate a stream error
    */
   simulateError(error: Error): void {

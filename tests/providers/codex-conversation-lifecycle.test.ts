@@ -213,4 +213,59 @@ describe("Codex conversation roles and thread lifecycle", () => {
     (adapter as unknown as { activeTurns: Map<string, unknown> }).activeTurns.clear();
     void runPromise;
   });
+
+  it("fails an active run on a malformed frame and cleans up its state", async () => {
+    const duplex = scriptedServer((msg: Record<string, unknown>) => {
+      if (msg.method === "initialize") {
+        send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
+      } else if (msg.method === "thread/start") {
+        send(duplex, { jsonrpc: "2.0", id: msg.id, result: { thread: { id: "thread-BAD" } } });
+      } else if (msg.method === "thread/inject_items") {
+        send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
+      } else if (msg.method === "turn/start") {
+        send(duplex, {
+          jsonrpc: "2.0",
+          id: msg.id,
+          result: { turn: { id: "turn-BAD", status: "inProgress", items: [] } },
+        });
+        // Corrupted app-server stdout while the turn is live.
+        duplex.push("CORRUPTED_FRAME_SECRET_MARKER not json\n");
+      }
+    });
+    const adapter = new CodexAdapter();
+    const { CodexAppServerClient } = await import(
+      "../../src/providers/codex/app-server-client.js"
+    );
+    const client = new CodexAppServerClient(duplex);
+    (adapter as unknown as { client: unknown }).client = client;
+    await client.initialize({ clientInfo: { name: "t", version: "0" } });
+    await client.sendInitializedNotification();
+
+    const logged: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    };
+    const events: Array<{ type: string; error?: { code?: string; message?: string } }> = [];
+    try {
+      for await (const event of adapter.run(
+        { ...conversationRequest(), requestId: "malformed-1" },
+        new AbortController().signal,
+      )) {
+        events.push(event as { type: string; error?: { code?: string; message?: string } });
+      }
+    } finally {
+      console.error = origError;
+    }
+    const errorEvent = events.find((e) => e.type === "error");
+    expect(errorEvent?.error?.code).toBe("provider_protocol_error");
+    expect(events.some((e) => e.type === "completed")).toBe(false);
+    const activeTurns = (adapter as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
+    expect(activeTurns.size).toBe(0);
+    expect(logged.join("\n")).not.toContain("CORRUPTED_FRAME_SECRET_MARKER");
+    console.log("CODEX_MALFORMED_STDOUT=PROVIDER_PROTOCOL_ERROR");
+    console.log("CODEX_REQUEST_TERMINATES=YES");
+    console.log("CODEX_ACTIVE_RUN_CLEANUP=PASS");
+    console.log("CODEX_MALFORMED_CONTENT_LOGGING=NONE");
+  });
 });

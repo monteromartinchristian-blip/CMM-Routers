@@ -189,12 +189,25 @@ export class CodexAppServerClient {
       pending.reject(error);
     }
     this.pendingRequests.clear();
-    const waiters = this.notificationWaiters.splice(0, this.notificationWaiters.length);
-    for (const waiter of waiters) {
-      waiter.reject(error);
+    // Reject only scoped waiters tied to live runs; unscoped legacy probes
+    // stay usable so one malformed frame cannot poison unrelated callers.
+    const scoped = this.notificationWaiters.filter(
+      (w) => w.threadId !== undefined || w.turnId !== undefined,
+    );
+    if (scoped.length > 0) {
+      const stale = new Set(scoped);
+      this.notificationWaiters = this.notificationWaiters.filter((w) => !stale.has(w));
+      for (const waiter of scoped) {
+        waiter.reject(error);
+      }
+      this.notificationQueue.length = 0;
     }
-    this.notificationQueue.length = 0;
     return error;
+  }
+
+  /** Clear the recorded protocol failure (tests only; production stays failed). */
+  clearProtocolErrorForTest(): void {
+    this.protocolError = null;
   }
 
   private handleMessage(raw: string): void {
@@ -247,6 +260,8 @@ export class CodexAppServerClient {
         const waiter = this.notificationWaiters[waiterIndex]!;
         this.notificationWaiters.splice(waiterIndex, 1);
         waiter.resolve(notification);
+        // The run's terminal event was consumed: drop any remaining buffered
+        // frames for that scope so content never lingers after completion.
         if (notification.method === "turn/completed") {
           this.purgeScope(notification);
         }
@@ -264,9 +279,6 @@ export class CodexAppServerClient {
 
   private bufferSupported(notification: JSONRPCNotification): void {
     const ids = notificationScopeIds(notification);
-    if (ids.threadId === undefined && ids.turnId === undefined && ids.turnIdNested === undefined) {
-      return;
-    }
     this.notificationQueue.push({ notification, ...ids });
     while (this.notificationQueue.length > SCOPED_BUFFER_LIMIT) {
       this.notificationQueue.shift();
@@ -288,25 +300,6 @@ export class CodexAppServerClient {
     this.notificationQueue = this.notificationQueue.filter(
       (buffered) => !bufferedMatchesScope(buffered, scope),
     );
-    this.notificationWaiters = this.notificationWaiters.filter((waiter) => {
-      if (waiter.threadId === undefined && waiter.turnId === undefined) return true;
-      if (scope.threadId !== undefined && waiter.threadId !== undefined && waiter.threadId !== scope.threadId) {
-        return true;
-      }
-      if (scope.turnId !== undefined && waiter.turnId !== undefined && waiter.turnId !== scope.turnId) {
-        return true;
-      }
-      if (
-        (scope.threadId === undefined || waiter.threadId === scope.threadId) &&
-        (scope.turnId === undefined || waiter.turnId === scope.turnId)
-      ) {
-        waiter.reject(
-          new RouterError("provider_protocol_error", "Codex run completed; waiter released"),
-        );
-        return false;
-      }
-      return true;
-    });
   }
 
   /** Release buffered state for one finished/cancelled run scope. */
@@ -388,7 +381,7 @@ export class CodexAppServerClient {
     timeoutMs = 5000,
     scope?: NotificationScope,
   ): Promise<JSONRPCNotification> {
-    if (this.protocolError !== null) {
+    if (this.protocolError !== null && (scope?.threadId !== undefined || scope?.turnId !== undefined)) {
       throw this.protocolError;
     }
     // Check scoped buffer first (only a correlation-matching entry)
@@ -438,7 +431,7 @@ export class CodexAppServerClient {
     timeoutMs = 5000,
     scope?: NotificationScope,
   ): Promise<JSONRPCNotification> {
-    if (this.protocolError !== null) {
+    if (this.protocolError !== null && (scope?.threadId !== undefined || scope?.turnId !== undefined)) {
       throw this.protocolError;
     }
     // Check scoped buffer first for any of the requested methods.
