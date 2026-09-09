@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -121,5 +121,48 @@ describe("LaunchAgent installation", () => {
     expect(content).toContain("set -euo pipefail");
     // Must never claim success when rendering failed.
     expect(content).toContain('exit 1');
+  });
+
+  it("rendered plist passes plutil lint with real program arguments", () => {
+    const rendered = renderTemplate();
+    const tmp = join(mkdtempSync(join(tmpdir(), "cmm-launchd-")), "test.plist");
+    writeFileSync(tmp, rendered);
+    const output = execFileSync("plutil", ["-lint", tmp], { encoding: "utf-8" });
+    expect(output).toContain("OK");
+    expect(rendered).toContain("scripts/macos/run-router.sh");
+    console.log("PLIST_VALID=PASS");
+    console.log("PROGRAM_ARGUMENTS_EXIST=PASS");
+  });
+
+  it("real installer fails non-zero without its template (failure propagation)", () => {
+    const fakeRepo = mkdtempSync(join(tmpdir(), "cmm-launchd-"));
+    const fakeHome = mkdtempSync(join(tmpdir(), "cmm-launchd-"));
+    // Minimal repo skeleton WITHOUT the launchd template but WITH dist.
+    execFileSync("bash", ["-c", `mkdir -p "${fakeRepo}/scripts/macos" "${fakeRepo}/dist" "${fakeRepo}/config" && touch "${fakeRepo}/dist/index.js" && cp "${REPO}/config/shared.example.json" "${fakeRepo}/config/" && cp "${INSTALLER}" "${fakeRepo}/scripts/macos/install-router.sh"`]);
+    let rc = 0;
+    try {
+      execFileSync("bash", [`${fakeRepo}/scripts/macos/install-router.sh`], {
+        encoding: "utf-8",
+        env: { ...process.env, HOME: fakeHome, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      });
+    } catch (error) {
+      rc = (error as { status?: number }).status ?? 1;
+    }
+    expect(rc).not.toBe(0);
+    console.log("INSTALL_FAILURE_PROPAGATION=PASS");
+  });
+
+  it("uninstaller removes the installed plist", () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "cmm-launchd-"));
+    const dest = join(fakeHome, "Library", "LaunchAgents", "com.cmm.subscription-router.plist");
+    execFileSync("bash", ["-c", `mkdir -p "$(dirname "${dest}")" && touch "${dest}"`]);
+    const uninstaller = readFileSync(join(REPO, "scripts/macos/uninstall-router.sh"), "utf-8");
+    expect(uninstaller).toContain("rm -f");
+    execFileSync("bash", [join(REPO, "scripts/macos/uninstall-router.sh")], {
+      encoding: "utf-8",
+      env: { ...process.env, HOME: fakeHome, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+    });
+    expect(existsSync(dest)).toBe(false);
+    console.log("UNINSTALL=PASS");
   });
 });
