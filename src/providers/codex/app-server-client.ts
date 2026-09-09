@@ -19,6 +19,19 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+interface ServerRequestWaiter {
+  id: number;
+  method: string;
+  threadId?: string;
+  turnId?: string;
+  resolve: (request: {
+    id: number | string;
+    method: string;
+    params?: Record<string, unknown>;
+  }) => void;
+  reject: (error: Error) => void;
+}
+
 interface NotificationWaiter {
   id: number;
   method: string;
@@ -148,6 +161,7 @@ export class CodexAppServerClient {
    */
   private notificationQueue: BufferedNotification[] = [];
   private notificationWaiters: NotificationWaiter[] = [];
+  private serverRequestWaiters: ServerRequestWaiter[] = [];
   private buffer = "";
   private stopped = false;
   private protocolError: RouterError | null = null;
@@ -328,6 +342,27 @@ export class CodexAppServerClient {
         waiter.reject(new RouterError("provider_protocol_error", "Codex run released; waiter cancelled"));
       }
     }
+    // Release any outstanding tool-call waiter for this scope (cancel path).
+    const requestWaiters = this.serverRequestWaiters.filter((w) => {
+      if (scope.threadId === undefined && scope.turnId === undefined) return false;
+      if (scope.threadId !== undefined && w.threadId !== undefined && w.threadId !== scope.threadId) {
+        return false;
+      }
+      if (scope.turnId !== undefined && w.turnId !== undefined && w.turnId !== scope.turnId) {
+        return false;
+      }
+      return (
+        (scope.threadId === undefined || w.threadId === scope.threadId) &&
+        (scope.turnId === undefined || w.turnId === scope.turnId)
+      );
+    });
+    if (requestWaiters.length > 0) {
+      const stale = new Set(requestWaiters);
+      this.serverRequestWaiters = this.serverRequestWaiters.filter((w) => !stale.has(w));
+      for (const waiter of requestWaiters) {
+        waiter.reject(new RouterError("provider_protocol_error", "Codex run released; tool-call waiter cancelled"));
+      }
+    }
   }
 
   private handleServerRequest(request: {
@@ -335,7 +370,7 @@ export class CodexAppServerClient {
     method: string;
     params?: Record<string, unknown>;
   }): void {
-    // Auto-decline approval requests for security
+    // Auto-decline approval requests for security (native execution blockade).
     const approvalMethods = [
       "item/commandExecution/requestApproval",
       "item/fileChange/requestApproval",
@@ -352,7 +387,50 @@ export class CodexAppServerClient {
         result: { decision: "decline" },
       };
       this.sendRaw(JSON.stringify(declineResponse));
+      return;
     }
+
+    // Externally-owned dynamic tool request: the model wants the HOST (Qoder,
+    // through the Router) to execute a tool. Never execute it here. Route it
+    // to the scoped waiter of the active run so the adapter can surface it as
+    // a tool call to the consumer; the consumer's result is answered later
+    // via respondToServerRequest. Unmatched tool calls (no active waiter) are
+    // declined so the turn can fail closed rather than hang.
+    if (request.method === "item/tool/call") {
+      const params = request.params ?? {};
+      const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+      const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
+      const waiterIndex = this.serverRequestWaiters.findIndex((w) => {
+        if (w.method !== "item/tool/call") return false;
+        if (w.threadId !== undefined && w.threadId !== threadId) return false;
+        if (w.turnId !== undefined && w.turnId !== turnId) return false;
+        return true;
+      });
+      if (waiterIndex !== -1) {
+        const waiter = this.serverRequestWaiters[waiterIndex]!;
+        this.serverRequestWaiters.splice(waiterIndex, 1);
+        waiter.resolve(request);
+      } else {
+        this.sendRaw(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: { success: false, contentItems: [] },
+          } satisfies JSONRPCResponse),
+        );
+      }
+      return;
+    }
+
+    // item/tool/requestUserInput and other server requests are not part of the
+    // supported external-tool loop: decline deterministically, never grant.
+    this.sendRaw(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: { decision: "decline" },
+      } satisfies JSONRPCResponse),
+    );
   }
 
   private sendRaw(data: string): void {
@@ -481,6 +559,58 @@ export class CodexAppServerClient {
     });
   }
 
+  /**
+   * Wait for an externally-owned dynamic tool request (server request
+   * `item/tool/call`) correlated to this run's thread/turn. The Router NEVER
+   * executes the tool: it surfaces the call to the consumer (Qoder), which
+   * executes, then calls respondToServerRequest with the result. Scoped so
+   * concurrent runs never consume each other's tool calls.
+   */
+  async waitForToolCall(
+    timeoutMs: number,
+    scope: NotificationScope,
+  ): Promise<{ id: number | string; params: Record<string, unknown> }> {
+    const waiterId = ++this.waiterSeq;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.serverRequestWaiters = this.serverRequestWaiters.filter((w) => w.id !== waiterId);
+        reject(
+          new RouterError(
+            "provider_timeout",
+            "Timeout waiting for external tool call from codex app-server",
+          ),
+        );
+      }, timeoutMs);
+      this.serverRequestWaiters.push({
+        id: waiterId,
+        method: "item/tool/call",
+        ...(scope.threadId !== undefined ? { threadId: scope.threadId } : {}),
+        ...(scope.turnId !== undefined ? { turnId: scope.turnId } : {}),
+        resolve: (request) => {
+          clearTimeout(timeout);
+          resolve({ id: request.id, params: request.params ?? {} });
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      });
+    });
+  }
+
+  /** Answer a dynamic tool call with the host-executed result. */
+  respondToServerRequest(
+    requestId: number | string,
+    result: Record<string, unknown>,
+  ): void {
+    const response: JSONRPCResponse = {
+      jsonrpc: "2.0",
+      id: requestId,
+      result,
+    };
+    this.sendRaw(JSON.stringify(response));
+  }
+
   async initialize(params: InitializeParams): Promise<InitializeResponse> {
     const result = await this.sendRequest("initialize", params as any);
     return result as InitializeResponse;
@@ -525,6 +655,7 @@ export class CodexAppServerClient {
     this.pendingRequests.clear();
     this.notificationWaiters = [];
     this.notificationQueue.length = 0;
+    this.serverRequestWaiters = [];
 
     // Destroy the stream
     if ("destroy" in this.stream && typeof this.stream.destroy === "function") {

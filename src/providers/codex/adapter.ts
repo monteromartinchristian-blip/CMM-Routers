@@ -6,6 +6,7 @@ import { CodexAppServerClient } from "./app-server-client.js";
 import {
   buildThreadStartParams,
   buildTurnInterruptParams,
+  buildTurnStartParams,
   parseAgentDeltaParams,
   parseTokenUsageParams,
   parseTurnCompletedParams,
@@ -217,60 +218,150 @@ export class CodexAdapter implements ProviderAdapter {
       // This ensures we never wait indefinitely and always produce provider_timeout on deadline expiry
       const NOTIFICATION_TIMEOUT_MS = 60000;
 
+      // Externally-owned tools: Codex requests dynamic tool calls as a server
+      // request `item/tool/call` (params {arguments, callId, namespace, tool,
+      // threadId, turnId}). The Router NEVER executes the tool. When Qoder
+      // supplied tool definitions we surface the call to Qoder
+      // (tool_call_delta + completed:tool_calls) and end this HTTP request;
+      // Qoder executes and returns the result as a role:"tool" message on a
+      // follow-up request, which the router injects back into Codex as thread
+      // history via thread/inject_items (see buildCodexThreadSeeds). A tool
+      // call that arrives without tool definitions is declined so the turn
+      // fails closed instead of hanging.
+      const toolDefinitionsRequested = request.tools.length > 0;
+      // Single tool-call waiter for the whole run, created once and raced
+      // against notifications each iteration so a late-arriving call is never
+      // lost to a stale per-iteration waiter. The waiter is released by
+      // discardScope in finally (turn completed/cancelled) or expires on its
+      // own timeout; both produce undefined ("no tool call"), never an
+      // unhandled rejection and never a spurious failure of a healthy text
+      // turn that simply ran past the waiter deadline.
+      const toolCallFuture = toolDefinitionsRequested
+        ? this.client
+            .waitForToolCall(NOTIFICATION_TIMEOUT_MS, scope)
+            .then(
+              (toolCall) => ({ kind: "toolCall" as const, toolCall }),
+              () => undefined,
+            )
+        : undefined;
+
       try {
         while (!completed && !signal.aborted) {
-          const notification = await this.client.waitForAnyNotification(
-            ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
-            NOTIFICATION_TIMEOUT_MS,
-            scope,
-          );
+          const notificationPromise = this.client
+            .waitForAnyNotification(
+              ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+              NOTIFICATION_TIMEOUT_MS,
+              scope,
+            )
+            .then(
+              (notification) => ({ kind: "notification" as const, notification }),
+              (error: unknown) => ({ kind: "error" as const, error }),
+            );
+          const raced = toolCallFuture
+            ? Promise.race([notificationPromise, toolCallFuture])
+            : notificationPromise;
+          const outcome = await raced;
+          if (outcome === undefined) continue; // tool waiter released: no tool call
 
-          if (notification.method === "item/agentMessage/delta") {
-            const params = parseAgentDeltaParams(
-              (notification as { params?: unknown }).params,
-            );
-            if (params.delta.length > 0) {
-              yield { type: "text_delta", text: params.delta };
-            }
-          } else if (notification.method === "thread/tokenUsage/updated") {
-            const parsed = parseTokenUsageParams(
-              (notification as { params?: unknown }).params,
-            );
-            const usageEvent: RouterEvent = { type: "usage" };
-            if (parsed.inputTokens !== undefined) {
-              (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
-            }
-            if (parsed.outputTokens !== undefined) {
-              (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
-            }
-            if (parsed.reasoningTokens !== undefined) {
-              (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
-            }
-            if (parsed.cacheReadTokens !== undefined) {
-              (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
-            }
-            yield usageEvent;
-          } else if (notification.method === "turn/completed") {
-            const parsed = parseTurnCompletedParams(
-              (notification as { params?: unknown }).params,
-            );
-            // Ignore completions for other turns (defensive; scope already
-            // filters, but a stale queued frame must never terminate us).
-            if (parsed.turnId !== turnId) continue;
-            completed = true;
-            if (parsed.status === "failed") {
-              yield {
-                type: "error",
-                error: new RouterError(
-                  "provider_protocol_error",
-                  `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
-                ),
-              };
-            } else {
-              yield {
-                type: "completed",
-                finishReason: normalizeCodexFinishReason(parsed.status),
-              };
+          if (outcome.kind === "error") {
+            const error = outcome.error;
+            // A cancelled/disconnected run terminates silently: the caller
+            // aborted and cancel() released our waiter.
+            if (signal.aborted) break;
+            yield {
+              type: "error",
+              error:
+                error instanceof RouterError
+                  ? error
+                  : new RouterError(
+                      "provider_protocol_error",
+                      error instanceof Error ? error.message : String(error),
+                    ),
+            };
+            break;
+          }
+
+          if (outcome.kind === "toolCall") {
+            const { id: wireRequestId, params } = outcome.toolCall;
+            const callId =
+              typeof params.callId === "string" && params.callId.length > 0
+                ? params.callId
+                : `call-${Date.now().toString(36)}`;
+            const toolName = typeof params.tool === "string" ? params.tool : "unknown";
+            const args =
+              typeof params.arguments === "string"
+                ? params.arguments
+                : JSON.stringify(params.arguments ?? {});
+            // Surface the structured tool call to Qoder (never execute it).
+            yield {
+              type: "tool_call_delta",
+              index: 0,
+              id: callId,
+              name: toolName,
+              argumentsDelta: args,
+            };
+            yield { type: "completed", finishReason: "tool_calls" };
+            // This HTTP request ends at the tool boundary. Qoder executes and
+            // submits the result on a follow-up request (injected as history
+            // on that turn). Close the app-server's open tool request so its
+            // turn does not hang: the router never executes, so the outcome is
+            // reported unsuccessful and the next turn carries the real result.
+            this.client.respondToServerRequest(wireRequestId, {
+              success: false,
+              contentItems: [{ type: "inputText", text: "Tool execution owned by the consumer (Qoder); result delivered on the follow-up turn." }],
+            });
+            break;
+          }
+
+          if (outcome.kind === "notification") {
+            const notification = outcome.notification;
+            if (notification.method === "item/agentMessage/delta") {
+              const params = parseAgentDeltaParams(
+                (notification as { params?: unknown }).params,
+              );
+              if (params.delta.length > 0) {
+                yield { type: "text_delta", text: params.delta };
+              }
+            } else if (notification.method === "thread/tokenUsage/updated") {
+              const parsed = parseTokenUsageParams(
+                (notification as { params?: unknown }).params,
+              );
+              const usageEvent: RouterEvent = { type: "usage" };
+              if (parsed.inputTokens !== undefined) {
+                (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
+              }
+              if (parsed.outputTokens !== undefined) {
+                (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
+              }
+              if (parsed.reasoningTokens !== undefined) {
+                (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
+              }
+              if (parsed.cacheReadTokens !== undefined) {
+                (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
+              }
+              yield usageEvent;
+            } else if (notification.method === "turn/completed") {
+              const parsed = parseTurnCompletedParams(
+                (notification as { params?: unknown }).params,
+              );
+              // Ignore completions for other turns (defensive; scope already
+              // filters, but a stale queued frame must never terminate us).
+              if (parsed.turnId !== turnId) continue;
+              completed = true;
+              if (parsed.status === "failed") {
+                yield {
+                  type: "error",
+                  error: new RouterError(
+                    "provider_protocol_error",
+                    `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
+                  ),
+                };
+              } else {
+                yield {
+                  type: "completed",
+                  finishReason: normalizeCodexFinishReason(parsed.status),
+                };
+              }
             }
           }
         }
