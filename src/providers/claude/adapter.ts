@@ -2,7 +2,7 @@ import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
-import { CLAUDE_CONFIG_DIR, NEUTRAL_CWD, buildIsolatedEnvironment } from "./sdk-client.js";
+import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
 
 /**
@@ -65,7 +65,7 @@ export function buildClaudeConversation(messages: RouterRequest["messages"]): {
  * through subscription authentication (not API key/PAYG).
  *
  * IMPORTANT: This adapter requires the isolated Claude profile to be authenticated
- * via `claude login --config-dir <CLAUDE_CONFIG_DIR>` before use.
+ * via `claude login` against the adapter's effective profile directory.
  */
 export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
@@ -75,6 +75,10 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   constructor(options: { profileDir?: string | undefined } = {}) {
     this.profileDir = options.profileDir;
+  }
+
+  private effectiveProfileDir(): string {
+    return this.profileDir ?? defaultClaudeConfigDir();
   }
 
   private sdkEnv(): Record<string, string> {
@@ -177,7 +181,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (err.message.includes("auth") || err.message.includes("login")) {
         throw new RouterError(
           "provider_auth_required",
-          `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+          `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
         );
       }
 
@@ -227,7 +231,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         if (error.message.includes("auth") || error.message.includes("login")) {
           return {
             status: "auth_required",
-            detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+            detail: `Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
           };
         }
 
@@ -241,7 +245,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (err.message.includes("auth") || err.message.includes("login")) {
         return {
           status: "auth_required",
-          detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+          detail: `Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
         };
       }
 
@@ -459,7 +463,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
         if (err.message.includes("auth") || err.message.includes("login")) {
           errorCode = "provider_auth_required";
-          errorMessage = `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`;
+          errorMessage = `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`;
         } else if (err.message.includes("quota") || err.message.includes("usage limit")) {
           errorCode = "provider_quota_exhausted";
         } else if (err.message.includes("rate limit")) {
@@ -508,7 +512,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (errorText.includes("auth") || errorText.includes("login")) {
       return new RouterError(
         "provider_auth_required",
-        `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+        `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
       );
     }
 
