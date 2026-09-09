@@ -113,7 +113,10 @@ export class CodexAdapter implements ProviderAdapter {
 
   constructor(options: { codexHome?: string | undefined; codexBinary?: string | undefined } = {}) {
     this.codexHome = options.codexHome;
-    this.codexBinary = options.codexBinary ?? "codex";
+    // LaunchAgent-safe resolution: installer bakes CMM_ROUTER_CODEX_BIN;
+    // explicit constructor option wins, then env, then PATH lookup.
+    this.codexBinary =
+      options.codexBinary ?? process.env.CMM_ROUTER_CODEX_BIN ?? "codex";
   }
 
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {

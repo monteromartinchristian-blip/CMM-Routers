@@ -27,6 +27,15 @@
   <string>__HOME__/Library/Logs/CMM-Subscription-Router/router.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <!-- Absolute executable + effective provider paths baked by install-router.sh -->
+    <key>CMM_ROUTER_NODE_BIN</key>
+    <string>__NODE_BIN__</string>
+    <key>CMM_ROUTER_CODEX_BIN</key>
+    <string>__CODEX_BIN__</string>
+    <key>CMM_ROUTER_AGY_BIN</key>
+    <string>__AGY_BIN__</string>
+    <key>PATH</key>
+    <string>__SAFE_PATH__</string>
     <key>CMM_ROUTER_KEYCHAIN_SERVICE</key>
     <string>cmm-subscription-router</string>
     <key>CMM_ROUTER_KEYCHAIN_ACCOUNT</key>
