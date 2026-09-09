@@ -18,6 +18,7 @@ export interface CommandCodeModel {
   displayName?: string | undefined;
   wire: CommandCodeWire;
   family?: string | undefined;
+  goatIncluded: boolean | null;
 }
 
 export interface CommandCodeChatMessage {
@@ -94,6 +95,27 @@ export function mapStatusToRouterError(
   ) {
     return new RouterError("provider_quota_exhausted", `Command Code plan quota exhausted: ${context}`);
   }
+  if (
+    lowered.includes("model_not_in_plan") ||
+    lowered.includes("model not in plan") ||
+    lowered.includes("not in your plan") ||
+    lowered.includes("not included in") && lowered.includes("plan") ||
+    lowered.includes("available in pro and above") ||
+    lowered.includes("extra on demand") ||
+    lowered.includes("extra on-demand") ||
+    lowered.includes("on-demand usage")
+  ) {
+    // Plan-entitlement exclusion. The agreed stable contract has no dedicated
+    // model-entitlement category; provider_quota_exhausted is the closest
+    // fail-closed fit (like a zero-balance plan window): it never retries,
+    // never falls back, and never spends. The full upstream message is kept
+    // in meta for safe diagnostics.
+    return new RouterError(
+      "provider_quota_exhausted",
+      `Command Code model excluded from GOAT plan (no on-demand fallback): ${context}`,
+      { upstream: bodyText.slice(0, 300) },
+    );
+  }
   if (status === 429 || lowered.includes("rate limit") || lowered.includes("rolling-window")) {
     return new RouterError("provider_rate_limited", `Command Code rate limited: ${context}`);
   }
@@ -165,6 +187,69 @@ function readFamily(record: Record<string, unknown>): string | undefined {
     if (typeof value === "string" && value.length > 0) return value;
   }
   return undefined;
+}
+
+// GET /provider/v1/models is a GLOBAL Provider API catalog: it lists every
+// model the API can serve, NOT the subset included in the user's GOAT plan.
+// These fields would be authoritative plan-entitlement metadata if present.
+const ENTITLEMENT_FIELDS = [
+  "goat_included",
+  "goatIncluded",
+  "included_in_goat",
+  "includedInGoat",
+  "in_goat_plan",
+  "inGoatPlan",
+  "plan_access",
+  "planAccess",
+  "included_plans",
+  "includedPlans",
+  "plans",
+  "tiers",
+  "tier",
+  "availability",
+  "requires_extra_credits",
+  "requiresExtraCredits",
+  "extra_credits_required",
+  "on_demand_only",
+  "onDemandOnly",
+] as const;
+
+/**
+ * Read authoritative GOAT plan-entitlement metadata from a live models-payload
+ * entry. Returns true (GOAT-included), false (explicitly excluded), or null
+ * when the payload carries no entitlement signal at all.
+ *
+ * Observed live evidence (2026-09-09): the endpoint returns bare catalog
+ * entries with no entitlement fields, so every entry yields null.
+ */
+export function readGoatEntitlement(
+  record: Record<string, unknown>,
+): boolean | null {
+  for (const field of ENTITLEMENT_FIELDS) {
+    const value = record[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "boolean") {
+      if (/requires_extra|on_demand_only|extra_credits/i.test(field)) {
+        return !value;
+      }
+      return value;
+    }
+    if (typeof value === "string") {
+      const lowered = value.toLowerCase();
+      if (lowered === "goat" || lowered.includes("goat")) return true;
+      if (lowered.includes("pro") && !lowered.includes("goat")) return false;
+      if (lowered.includes("extra") || lowered.includes("on-demand") || lowered.includes("on_demand")) {
+        return false;
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const lowered = value.map((v) => String(v).toLowerCase());
+      if (lowered.some((v) => v === "goat" || v.includes("goat"))) return true;
+      return false;
+    }
+  }
+  return null;
 }
 
 /**
@@ -310,6 +395,7 @@ export class CommandCodeClient {
           displayName: typeof record.display_name === "string" ? record.display_name : undefined,
           wire,
           ...(family !== undefined ? { family } : {}),
+          goatIncluded: readGoatEntitlement(record),
         });
       }
     }

@@ -87,6 +87,77 @@ describe("Command Code adapter", () => {
     expect(seen[0]!.init.headers.Authorization).toBe("Bearer test-secret");
   });
 
+  it("documents the global-catalog limitation: bare entries carry no entitlement", async () => {
+    const { readGoatEntitlement } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    // Observed live shape: bare catalog entries, no entitlement fields.
+    expect(readGoatEntitlement({ id: "claude-haiku-4-5-20251001" })).toBeNull();
+    expect(readGoatEntitlement({ id: "deepseek/deepseek-v4-flash" })).toBeNull();
+    // Authoritative metadata, when present, decides inclusion.
+    expect(readGoatEntitlement({ id: "m", goat_included: true })).toBe(true);
+    expect(readGoatEntitlement({ id: "m", included_plans: ["GOAT"] })).toBe(true);
+    expect(readGoatEntitlement({ id: "m", included_plans: ["Pro"] })).toBe(false);
+    expect(readGoatEntitlement({ id: "m", requires_extra_credits: true })).toBe(false);
+  });
+
+  it("maps MODEL_NOT_IN_PLAN to provider_quota_exhausted without retry or spend", async () => {
+    const seen: { url: string; init: { headers: Record<string, string>; body?: string } }[] = [];
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "POST https://api.commandcode.ai/provider/v1/messages": {
+            status: 403,
+            body: 'MODEL_NOT_IN_PLAN: Claude Haiku 4.5 available in Pro and above plans or extra on demand usage',
+          },
+        },
+        seen,
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const events: unknown[] = [];
+    for await (const event of adapter.run(makeRequest("claude-haiku-4-5-20251001"), new AbortController().signal)) {
+      events.push(event);
+    }
+    // Exactly one request: no endpoint retry, no model fallback, no spend.
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.url).toBe("https://api.commandcode.ai/provider/v1/messages");
+    const errorEvent = events.find((e) => (e as { type: string }).type === "error") as
+      | { error: RouterError }
+      | undefined;
+    expect(errorEvent?.error.code).toBe("provider_quota_exhausted");
+    expect(events.filter((e) => (e as { type: string }).type === "text_delta")).toEqual([]);
+    expect(JSON.stringify(events)).not.toContain("chat/completions");
+  });
+
+  it("exposes only metadata-proven GOAT models via goatUsableModels", async () => {
+    const seen: { url: string; init: { headers: Record<string, string>; body?: string } }[] = [];
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "GET https://api.commandcode.ai/provider/v1/models": {
+            status: 200,
+            body: JSON.stringify({
+              data: [
+                { id: "deepseek/deepseek-v4-flash", included_plans: ["GOAT"] },
+                { id: "claude-haiku-4-5", included_plans: ["Pro"] },
+                { id: "mystery-model" },
+              ],
+            }),
+          },
+        },
+        seen,
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const models = await adapter.discoverModels();
+    expect(models.length).toBe(3);
+    const usable = adapter.goatUsableModels(models);
+    expect(usable.map((m) => m.upstreamModel)).toEqual(["deepseek/deepseek-v4-flash"]);
+  });
+
   it("classifies wires without a static model catalog", async () => {
     const { classifyCommandCodeWire } = await import(
       "../../src/providers/command-code/client.js"

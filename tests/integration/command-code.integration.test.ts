@@ -11,15 +11,14 @@ function pickAnthropicModel(
   return claude ?? null;
 }
 
-function pickOpenModel(models: { id: string; upstreamModel: string; displayName: string }[]) {
-  const nonAnthropic = models.filter(
-    (m) => !/claude|anthropic|sonnet|opus|haiku/i.test(m.upstreamModel),
-  );
-  const cheap =
-    nonAnthropic.find((m) => /mini|flash|low|haiku|small|tiny|nano|lite/i.test(m.upstreamModel)) ??
-    nonAnthropic.find((m) => /gpt|deepseek|kimi|qwen|llama|mistral|oss/i.test(m.upstreamModel)) ??
-    nonAnthropic[0];
-  return cheap ?? null;
+function pickGoatModel(
+  models: { id: string; upstreamModel: string; displayName: string }[],
+) {
+  // Prefer the explicitly GOAT-included plumbing model when present.
+  // Never select by catalog existence alone: entitlement is proven only by
+  // authoritative metadata or a prior successful GOAT-backed call.
+  const proven = models.find((m) => /deepseek\/deepseek-v4-flash/i.test(m.upstreamModel));
+  return proven ?? null;
 }
 
 async function runPrompt(
@@ -98,7 +97,10 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
         expect(model.id).not.toContain("[1m");
       }
 
-      // Wire A: Anthropic Claude model → /provider/v1/messages.
+      // Probe A (read-only routing proof): catalog Claude model routes to
+      // /provider/v1/messages. Under GOAT-only policy this is expected to
+      // fail closed with plan exclusion — routing CORRECT, entitlement NO.
+      // Never retry another endpoint, never spend on-demand.
       const anthropicModel = pickAnthropicModel(models);
       if (!anthropicModel) {
         console.log("COMMAND_CODE_ANTHROPIC_WIRE=BLOCKED_EXTERNAL_PRECONDITION reason=no-claude-model");
@@ -110,45 +112,49 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
           anthropicModel,
           "Reply exactly: CMM_COMMAND_CODE_ANTHROPIC_OK",
         );
-        if (result.error) {
+        if (result.error?.code === "provider_quota_exhausted") {
+          console.log("ANTHROPIC_ENDPOINT_ROUTING=CORRECT");
+          console.log("ANTHROPIC_GOAT_ENTITLEMENT=NO");
+          console.log("ANTHROPIC_WIRE_LIVE_GOAT=NOT_APPLICABLE_PLAN_GOAT");
+        } else if (result.error) {
           console.log(`ANTHROPIC_LIVE_INFERENCE=FAIL ERROR_CODE=${result.error.code ?? "unknown"}`);
-          throw new Error(`Anthropic wire failed: ${result.error.message ?? "unknown"}`);
+          throw new Error(`Anthropic wire failed unexpectedly: ${result.error.message ?? "unknown"}`);
+        } else {
+          const text = result.texts.join("").trim();
+          console.log("COMMAND_CODE_ANTHROPIC_WIRE=PASS");
+          console.log("ANTHROPIC_ENDPOINT=/provider/v1/messages");
+          console.log(`ANTHROPIC_ACTUAL_TEXT=${text}`);
+          expect(text).toBe("CMM_COMMAND_CODE_ANTHROPIC_OK");
+          expect(result.types).toContain("completed");
         }
-        const text = result.texts.join("").trim();
-        console.log("COMMAND_CODE_ANTHROPIC_WIRE=PASS");
-        console.log("ANTHROPIC_ENDPOINT=/provider/v1/messages");
-        console.log(`ANTHROPIC_LIVE_INFERENCE=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
-        console.log(`ANTHROPIC_STREAMING=${result.texts.length > 0 ? "PASS" : "FAIL"}`);
-        console.log(`ANTHROPIC_REAL_COMPLETION=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
-        console.log(`ANTHROPIC_ACTUAL_TEXT=${text}`);
-        expect(text).toBe("CMM_COMMAND_CODE_ANTHROPIC_OK");
-        expect(result.types).toContain("completed");
       }
 
-      // Wire B: OpenAI/open-source model → /provider/v1/chat/completions.
-      const openModel = pickOpenModel(models);
+      // Wire B (GOAT acceptance): explicitly GOAT-included model →
+      // /provider/v1/chat/completions. Catalog existence alone is NOT
+      // entitlement evidence; only the proven GOAT model qualifies.
+      const openModel = pickGoatModel(models);
       if (!openModel) {
-        console.log("COMMAND_CODE_OPENAI_WIRE=BLOCKED_EXTERNAL_PRECONDITION reason=no-open-model");
+        console.log("COMMAND_CODE_OPENAI_WIRE=BLOCKED_EXTERNAL_PRECONDITION reason=no-goat-model");
       } else {
-        console.log("OPENAI_MODEL_SELECTED_FROM_DISCOVERY=YES");
-        console.log(`OPENAI_LIVE_MODEL=${openModel.id}`);
+        console.log("GOAT_MODEL_SELECTED_FROM_DISCOVERY=YES");
+        console.log(`GOAT_LIVE_MODEL=${openModel.id}`);
         const result = await runPrompt(
           adapter,
           openModel,
-          "Reply exactly: CMM_COMMAND_CODE_OPENAI_OK",
+          "Reply exactly: CMM_COMMAND_CODE_GOAT_OK",
         );
         if (result.error) {
-          console.log(`OPENAI_LIVE_INFERENCE=FAIL ERROR_CODE=${result.error.code ?? "unknown"}`);
-          throw new Error(`OpenAI wire failed: ${result.error.message ?? "unknown"}`);
+          console.log(`GOAT_LIVE_INFERENCE=FAIL ERROR_CODE=${result.error.code ?? "unknown"}`);
+          throw new Error(`GOAT wire failed: ${result.error.message ?? "unknown"}`);
         }
         const text = result.texts.join("").trim();
-        console.log("COMMAND_CODE_OPENAI_WIRE=PASS");
-        console.log("OPENAI_ENDPOINT=/provider/v1/chat/completions");
-        console.log(`OPENAI_LIVE_INFERENCE=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
-        console.log(`OPENAI_STREAMING=${result.texts.length > 0 ? "PASS" : "FAIL"}`);
-        console.log(`OPENAI_REAL_COMPLETION=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
-        console.log(`OPENAI_ACTUAL_TEXT=${text}`);
-        expect(text).toBe("CMM_COMMAND_CODE_OPENAI_OK");
+        console.log("GOAT_ENDPOINT=/provider/v1/chat/completions");
+        console.log(`COMMAND_CODE_GOAT_INFERENCE=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
+        console.log(`COMMAND_CODE_GOAT_STREAMING=${result.texts.length > 0 ? "PASS" : "FAIL"}`);
+        console.log(`COMMAND_CODE_GOAT_REAL_COMPLETION=${result.types.includes("completed") ? "PASS" : "FAIL"}`);
+        console.log("EXPECTED_TEXT=CMM_COMMAND_CODE_GOAT_OK");
+        console.log(`ACTUAL_TEXT=${text}`);
+        expect(text).toBe("CMM_COMMAND_CODE_GOAT_OK");
         expect(result.types).toContain("completed");
       }
 

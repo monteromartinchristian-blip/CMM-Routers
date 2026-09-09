@@ -114,9 +114,23 @@ export class CommandCodeAdapter implements ProviderAdapter {
         capability: "CHAT_ONLY",
         wire: model.wire,
         ...(model.family !== undefined ? { family: model.family } : {}),
+        goatIncluded: model.goatIncluded,
       } as DiscoveredModel);
     }
     return discovered;
+  }
+
+  /**
+   * GOAT-usable subset of discovery. GET /models is a GLOBAL catalog, not a
+   * plan entitlement list: only entries with authoritative GOAT-inclusion
+   * metadata (goatIncluded === true) qualify. Entries with null metadata
+   * are catalog-only until proven otherwise — never assumed plan-usable.
+   */
+  goatUsableModels(models: DiscoveredModel[]): DiscoveredModel[] {
+    return models.filter(
+      (model) =>
+        (model as DiscoveredModel & { goatIncluded?: unknown }).goatIncluded === true,
+    );
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
