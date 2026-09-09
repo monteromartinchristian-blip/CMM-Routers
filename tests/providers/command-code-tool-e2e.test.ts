@@ -31,7 +31,7 @@ function sse(frames: string[]): string {
 interface SeenRequest {
   url: string;
   method: string;
-  body?: string;
+  body: string | undefined;
 }
 
 describe("Command Code Qoder-owned tool E2E (mocked OpenAI wire, no live quota)", () => {

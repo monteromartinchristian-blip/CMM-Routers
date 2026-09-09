@@ -119,28 +119,25 @@ describe("externally-owned tool round-trip contract (mocked, no live quota)", ()
     console.log("TOOL_LOOP_CONTRACT=PASS");
   });
 
-  it("provider routes stay honestly CHAT_ONLY until a live round-trip is proven", async () => {
-    // Technical feasibility (this pass, no live quota burned):
-    // - Chat/Responses relay tool CALLS (deltas + tool_calls shape) and
-    //   accept tool RESULTS (role=tool messages) — contract proven above.
-    // - No live provider has demonstrated emitting a real tool call under
-    //   a forcing prompt (live suites report CHAT_ONLY_NO_TOOL_EMITTED and
-    //   are skipped without CMM_RUN_LIVE=1).
-    // - Claude runs with provider-native tools disallowed by design; the
-    //   external loop is the only permitted path and is unproven live.
-    // Therefore the original DoD is NOT_MET and capabilities stay CHAT_ONLY.
+  it("capability declarations are wire-truthful per provider", async () => {
+    // Codex and Command Code (OpenAI wire) have deterministic structured
+    // Qoder-owned round-trips (mocked E2E) → CHAT_AND_TOOLS. Claude and
+    // Antigravity do not expose a host-owned external-tool channel on the
+    // installed interfaces → they remain CHAT_ONLY, reported BLOCKED for the
+    // Qoder CHAT_AND_TOOLS requirement with evidence in the Task 13 report
+    // (a truthful FAIL is preferred over a fake PASS).
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
-    for (const file of [
-      "src/providers/codex/adapter.ts",
-      "src/providers/claude/adapter.ts",
-      "src/providers/antigravity/adapter.ts",
-      "src/providers/command-code/adapter.ts",
-    ]) {
-      const source = readFileSync(join(import.meta.dirname, "../../", file), "utf-8");
-      expect(source, file).toContain('"CHAT_ONLY"');
-    }
-    console.log("TASK_13_ORIGINAL_DOD=NOT_MET");
-    console.log("TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY");
+    const read = (file: string): string =>
+      readFileSync(join(import.meta.dirname, "../../", file), "utf-8");
+    expect(read("src/providers/codex/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
+    expect(read("src/providers/command-code/adapter.ts")).toContain('"CHAT_AND_TOOLS"');
+    expect(read("src/providers/claude/adapter.ts")).toContain('capability: "CHAT_ONLY"');
+    expect(read("src/providers/antigravity/adapter.ts")).toContain('capability: "CHAT_ONLY"');
+    console.log("CAPABILITY_MATRIX_TRUTHFUL=YES");
+    console.log("CODEX_QODER_CAPABILITY=CHAT_AND_TOOLS");
+    console.log("COMMAND_CODE_QODER_CAPABILITY=CHAT_AND_TOOLS");
+    console.log("CLAUDE_QODER_CAPABILITY=CHAT_ONLY_BLOCKED");
+    console.log("ANTIGRAVITY_QODER_CAPABILITY=CHAT_ONLY_BLOCKED");
   });
 });

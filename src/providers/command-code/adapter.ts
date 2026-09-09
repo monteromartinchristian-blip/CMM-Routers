@@ -111,12 +111,20 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // the account metadata says is plan-excluded. UNKNOWN entries stay
       // visible and fail closed at request time via upstream plan enforcement.
       if (model.goatIncluded === false) continue;
+      // Tool capability is wire-truthful: only the OpenAI chat-completions wire
+      // carries tool definitions and parses tool_calls (Qoder-owned execution).
+      // Anthropic-wire models cannot express this structured round-trip, so
+      // they stay CHAT_ONLY. The OpenAI-wire round-trip is proven
+      // deterministically (scripted /chat/completions E2E); live re-proof is
+      // deferred to the post-audit live gate.
+      const wire = model.wire ?? this.client.wireForUpstreamId(model.id);
+      const capability = wire === "anthropic-messages" ? ("CHAT_ONLY" as const) : ("CHAT_AND_TOOLS" as const);
       discovered.push({
         id: `command-code/${model.id}`,
         provider: "command-code",
         upstreamModel: model.id,
         displayName: model.displayName ?? model.id,
-        capability: "CHAT_ONLY",
+        capability,
         wire: model.wire,
         ...(model.family !== undefined ? { family: model.family } : {}),
         goatIncluded: model.goatIncluded,

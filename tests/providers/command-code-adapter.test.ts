@@ -83,7 +83,9 @@ describe("Command Code adapter", () => {
     const adapter = new CommandCodeAdapter({ ackPath, client });
     const models = await adapter.discoverModels();
     expect(models.map((m) => m.id)).toEqual(["command-code/goat-model-a", "command-code/goat-model-b"]);
-    expect(models[0]!.capability).toBe("CHAT_ONLY");
+    // "goat-model-*" is not a Claude/Anthropic family id → OpenAI wire, which
+    // carries the structured tool round-trip → CHAT_AND_TOOLS.
+    expect(models[0]!.capability).toBe("CHAT_AND_TOOLS");
     expect(seen[0]!.init.headers.Authorization).toBe("Bearer test-secret");
   });
 

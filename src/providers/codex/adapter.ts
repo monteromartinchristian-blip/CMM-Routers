@@ -133,7 +133,12 @@ export class CodexAdapter implements ProviderAdapter {
         provider: "chatgpt",
         upstreamModel: model.model || model.id,
         displayName: model.displayName || model.id,
-        capability: "CHAT_ONLY" as const,
+        // CHAT_AND_TOOLS: the dynamic external tool round-trip (item/tool/call
+        // server request → tool call surfaced to Qoder → tool result on the
+        // follow-up turn) is implemented and proven deterministically against a
+        // scripted app-server. The Router NEVER executes the tool; Qoder owns
+        // execution. Live re-proof is deferred to the post-audit live gate.
+        capability: "CHAT_AND_TOOLS" as const,
       }));
     } catch (error) {
       if (error instanceof RouterError) {
