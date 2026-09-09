@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { verifyBearer } from "../security/bearer-auth.js";
 import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
+import { registerChatCompletions } from "./openai-chat.js";
 import { redactObject } from "../security/secret-redaction.js";
 
 export interface ServerOptions {
@@ -76,6 +77,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // Diagnostic endpoints
   registerDiagnostics(fastify, options.registry);
+
+  // OpenAI-compatible chat completions
+  registerChatCompletions(fastify, options.registry);
 
   return fastify;
 }

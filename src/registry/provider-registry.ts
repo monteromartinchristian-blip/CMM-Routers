@@ -13,6 +13,10 @@ export class ProviderRegistry {
   private providers = new Map<string, ProviderAdapter>();
   private discoveryCache = new Map<string, CachedDiscovery>();
 
+  getAdapter(providerId: string): ProviderAdapter | undefined {
+    return this.providers.get(providerId);
+  }
+
   async register(adapter: ProviderAdapter): Promise<void> {
     this.providers.set(adapter.id, adapter);
   }
