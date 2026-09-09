@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
+import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 
 export function registerDiagnostics(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
+  usageStore?: UsageStore,
 ): void {
   fastify.get("/v1/cmm/providers", async () => {
     const models = registry.listModels();
@@ -34,6 +36,31 @@ export function registerDiagnostics(
       status: "ok",
       timestamp: new Date().toISOString(),
       providers,
+    });
+  });
+
+  fastify.get("/v1/cmm/usage", async () => {
+    if (!usageStore) {
+      return redactObject({
+        status: "disabled",
+        totalRequests: 0,
+        recent: [],
+      });
+    }
+    const aggregates = usageStore.aggregates();
+    return redactObject({
+      status: "ok",
+      totalRequests: aggregates.totalRequests,
+      successCount: aggregates.successCount,
+      failureCount: aggregates.failureCount,
+      activeRequests: aggregates.activeRequests,
+      activeModel: aggregates.activeModel,
+      averageLatencyMs: aggregates.averageLatencyMs,
+      lastSuccessAt: aggregates.lastSuccessAt,
+      quotaEvents: aggregates.quotaEvents,
+      rateLimitEvents: aggregates.rateLimitEvents,
+      timeoutEvents: aggregates.timeoutEvents,
+      recent: usageStore.listRecent(20),
     });
   });
 }

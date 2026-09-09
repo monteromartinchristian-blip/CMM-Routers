@@ -4,6 +4,7 @@ import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerChatCompletions } from "./openai-chat.js";
 import { registerResponsesApi } from "./openai-responses.js";
+import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 
 export interface ServerOptions {
@@ -11,6 +12,7 @@ export interface ServerOptions {
   port: number;
   bearerSecret: string;
   registry: ProviderRegistry;
+  usageStore?: UsageStore;
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
@@ -77,7 +79,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   // Diagnostic endpoints
-  registerDiagnostics(fastify, options.registry);
+  registerDiagnostics(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible chat completions
   registerChatCompletions(fastify, options.registry);
