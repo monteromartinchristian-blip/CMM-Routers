@@ -20,15 +20,59 @@ interface PendingRequest {
 }
 
 interface NotificationWaiter {
+  id: number;
   method: string;
   methods?: string[]; // For waitForAnyNotification - list of acceptable methods
+  // Correlation scope: when set, only notifications whose params carry the
+  // same threadId (and turnId, when known) may resolve this waiter.
+  threadId?: string;
+  turnId?: string;
   resolve: (notification: JSONRPCNotification) => void;
   reject: (error: Error) => void;
+}
+
+function notificationParams(notification: JSONRPCNotification): Record<string, unknown> {
+  const params = (notification as { params?: unknown }).params;
+  return typeof params === "object" && params !== null
+    ? (params as Record<string, unknown>)
+    : {};
+}
+
+function waiterMatches(
+  waiter: Pick<NotificationWaiter, "method" | "methods" | "threadId" | "turnId">,
+  notification: JSONRPCNotification,
+): boolean {
+  if (waiter.method !== notification.method) {
+    if (!(waiter.methods && waiter.methods.includes(notification.method))) return false;
+  }
+  // Unscoped waiters keep legacy method-only behavior (used by tests and
+  // non-concurrent paths). Scoped waiters additionally require identifier
+  // correlation so concurrent runs never consume each other's events.
+  if (waiter.threadId !== undefined || waiter.turnId !== undefined) {
+    const params = notificationParams(notification);
+    if (waiter.threadId !== undefined && params.threadId !== waiter.threadId) return false;
+    if (waiter.turnId !== undefined) {
+      const turnId = params.turnId;
+      const turn = params.turn;
+      const nestedTurnId =
+        typeof turn === "object" && turn !== null
+          ? (turn as Record<string, unknown>).id
+          : undefined;
+      if (turnId !== waiter.turnId && nestedTurnId !== waiter.turnId) return false;
+    }
+  }
+  return true;
+}
+
+export interface NotificationScope {
+  threadId?: string;
+  turnId?: string;
 }
 
 export class CodexAppServerClient {
   private stream: Duplex;
   private nextId = 0;
+  private waiterSeq = 0;
   private pendingRequests = new Map<number | string, PendingRequest>();
   private notificationQueue: JSONRPCNotification[] = [];
   private notificationWaiters: NotificationWaiter[] = [];
@@ -103,14 +147,11 @@ export class CodexAppServerClient {
     else if ("method" in msg) {
       const notification = msg as JSONRPCNotification;
 
-      // Find a waiter that matches this notification method
-      const waiterIndex = this.notificationWaiters.findIndex((w) => {
-        // Check exact match first
-        if (w.method === notification.method) return true;
-        // Check if waiter accepts multiple methods
-        if (w.methods && w.methods.includes(notification.method)) return true;
-        return false;
-      });
+      // Find the first waiter whose method AND correlation scope match.
+      // Scoped waiters never consume another thread/turn's events.
+      const waiterIndex = this.notificationWaiters.findIndex((w) =>
+        waiterMatches(w, notification),
+      );
 
       if (waiterIndex !== -1) {
         const waiter = this.notificationWaiters[waiterIndex]!;
@@ -168,20 +209,28 @@ export class CodexAppServerClient {
     });
   }
 
-  async waitForNotification(method: string, timeoutMs = 5000): Promise<JSONRPCNotification> {
-    // Check queue first
-    const queued = this.notificationQueue.findIndex((n) => n.method === method);
+  async waitForNotification(
+    method: string,
+    timeoutMs = 5000,
+    scope?: NotificationScope,
+  ): Promise<JSONRPCNotification> {
+    // Check queue first (scoped: only a correlation-matching entry)
+    const probe: Pick<NotificationWaiter, "method" | "threadId" | "turnId"> = {
+      method,
+      ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
+      ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
+    };
+    const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n));
     if (queued !== -1) {
       const notification = this.notificationQueue.splice(queued, 1)[0];
       return notification!;
     }
 
-    // Wait for new notification
+    // Wait for new notification; the timeout removes ONLY this waiter by id.
+    const waiterId = ++this.waiterSeq;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.notificationWaiters = this.notificationWaiters.filter(
-          (w) => w.method !== method,
-        );
+        this.notificationWaiters = this.notificationWaiters.filter((w) => w.id !== waiterId);
         reject(
           new RouterError(
             "provider_timeout",
@@ -191,7 +240,10 @@ export class CodexAppServerClient {
       }, timeoutMs);
 
       this.notificationWaiters.push({
+        id: waiterId,
         method,
+        ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
+        ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
         resolve: (notification) => {
           clearTimeout(timeout);
           resolve(notification);
@@ -207,26 +259,27 @@ export class CodexAppServerClient {
   async waitForAnyNotification(
     methods: string[],
     timeoutMs = 5000,
+    scope?: NotificationScope,
   ): Promise<JSONRPCNotification> {
-    // Check queue first for any of the requested methods
+    // Check queue first for any of the requested methods (scoped match)
     for (const method of methods) {
-      const queued = this.notificationQueue.findIndex((n) => n.method === method);
+      const probe: Pick<NotificationWaiter, "method" | "threadId" | "turnId"> = {
+        method,
+        ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
+        ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
+      };
+      const queued = this.notificationQueue.findIndex((n) => waiterMatches(probe, n));
       if (queued !== -1) {
         const notification = this.notificationQueue.splice(queued, 1)[0];
         return notification!;
       }
     }
 
-    // Wait for any of the specified notifications
+    // Wait for any of the specified notifications; timeout removes only self.
+    const waiterId = ++this.waiterSeq;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.notificationWaiters = this.notificationWaiters.filter((w) => {
-          // Remove exact match waiters for these methods
-          if (methods.includes(w.method)) return false;
-          // Remove __any__ waiters that include these methods
-          if (w.methods && methods.some(m => w.methods!.includes(m))) return false;
-          return true;
-        });
+        this.notificationWaiters = this.notificationWaiters.filter((w) => w.id !== waiterId);
         reject(
           new RouterError(
             "provider_timeout",
@@ -236,8 +289,11 @@ export class CodexAppServerClient {
       }, timeoutMs);
 
       const waiter: NotificationWaiter = {
+        id: waiterId,
         method: "__any__",
         methods, // Store the list of acceptable methods
+        ...(scope?.threadId !== undefined ? { threadId: scope.threadId } : {}),
+        ...(scope?.turnId !== undefined ? { turnId: scope.turnId } : {}),
         resolve: (notification) => {
           clearTimeout(timeout);
           resolve(notification);
