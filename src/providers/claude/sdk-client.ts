@@ -6,15 +6,19 @@ import { mkdirSync } from "node:fs";
  * Absolute path to isolated Claude configuration directory.
  * This ensures the router's Claude profile is completely separate from
  * the user's normal ~/.claude and any OmniRoute configuration.
+ * An explicit CMM_CLAUDE_PROFILE_DIR override (set only from the router's
+ * own config profileDir) may relocate it; the default never moves.
  */
-export const CLAUDE_CONFIG_DIR = join(
-  process.env.HOME || "~",
-  "Library",
-  "Application Support",
-  "CMM",
-  "SubscriptionRouter",
-  "Claude",
-);
+export const CLAUDE_CONFIG_DIR =
+  process.env.CMM_CLAUDE_PROFILE_DIR ??
+  join(
+    process.env.HOME || "~",
+    "Library",
+    "Application Support",
+    "CMM",
+    "SubscriptionRouter",
+    "Claude",
+  );
 
 /**
  * Neutral working directory for Claude operations.

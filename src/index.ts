@@ -25,6 +25,18 @@ function isCommandCodeAckValid(): boolean {
   }
 }
 
+export function resolveChatgptCodexHome(config: RouterConfig): string | undefined {
+  return config.providers.chatgpt.codexHome;
+}
+
+export function resolveClaudeProfileDir(config: RouterConfig): string | undefined {
+  return config.providers.claude.profileDir;
+}
+
+export function resolveGoogleAgyPath(config: RouterConfig): string | undefined {
+  return config.providers.google.agyPath;
+}
+
 export async function createProductionRegistry(
   config?: RouterConfig,
 ): Promise<ProductionComposition> {
@@ -35,7 +47,8 @@ export async function createProductionRegistry(
   const skippedProviders: Array<{ id: string; reason: string }> = [];
 
   if (resolved.providers.chatgpt.enabled) {
-    const adapter = new CodexAdapter();
+    const codexHome = resolveChatgptCodexHome(resolved);
+    const adapter = new CodexAdapter(codexHome ? { codexHome } : {});
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -43,6 +56,11 @@ export async function createProductionRegistry(
   }
 
   if (resolved.providers.claude.enabled) {
+    // The Claude SDK reads its isolated profile from CLAUDE_CONFIG_DIR.
+    // A configured profileDir scopes this process without touching the
+    // user's normal profile; it must be an explicit opt-in.
+    const profileDir = resolveClaudeProfileDir(resolved);
+    if (profileDir) process.env.CMM_CLAUDE_PROFILE_DIR = profileDir;
     const adapter = new ClaudeAdapter();
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
@@ -51,7 +69,12 @@ export async function createProductionRegistry(
   }
 
   if (resolved.providers.google.enabled) {
-    const adapter = new AntigravityAdapter();
+    const agyPath = resolveGoogleAgyPath(resolved);
+    const adapter = new AntigravityAdapter(
+      undefined,
+      undefined,
+      agyPath ? { agyPath } : {},
+    );
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {

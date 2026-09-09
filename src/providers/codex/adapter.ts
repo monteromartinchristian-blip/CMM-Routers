@@ -29,6 +29,13 @@ export class CodexAdapter implements ProviderAdapter {
   private client: CodexAppServerClient | null = null;
   private process: ReturnType<typeof spawn> | null = null;
   private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
+  private readonly codexHome: string | undefined;
+  private readonly codexBinary: string;
+
+  constructor(options: { codexHome?: string | undefined; codexBinary?: string | undefined } = {}) {
+    this.codexHome = options.codexHome;
+    this.codexBinary = options.codexBinary ?? "codex";
+  }
 
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
     await this.ensureStarted();
@@ -220,9 +227,11 @@ export class CodexAdapter implements ProviderAdapter {
   private async ensureStarted(): Promise<void> {
     if (this.client) return;
 
-    // Spawn codex app-server
-    this.process = spawn("codex", ["app-server", "--stdio"], {
+    // Spawn codex app-server (configurable binary; CODEX_HOME scopes the
+    // subscription profile without touching the user's default checkout).
+    this.process = spawn(this.codexBinary, ["app-server", "--stdio"], {
       stdio: ["pipe", "pipe", "inherit"],
+      ...(this.codexHome ? { env: { ...process.env, CODEX_HOME: this.codexHome } } : {}),
     });
 
     if (!this.process.stdin || !this.process.stdout) {

@@ -384,6 +384,8 @@ export function feedStreamLine(
 }
 
 export class SpawnInferenceRunner implements InferenceRunner {
+  constructor(private readonly agyPath: string = AGY_PATH) {}
+
   async runInference(
     args: string[],
     options: { cwd: string; timeoutMs: number; signal: AbortSignal },
@@ -397,7 +399,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
     onEvent: (event: ParsedStreamEvent) => void,
   ): Promise<AgyRunResult> {
     return await new Promise<AgyRunResult>((resolve) => {
-      const child = spawn(AGY_PATH, args, {
+      const child = spawn(this.agyPath, args, {
         cwd: options.cwd,
         env: buildAgyChildEnv(),
         stdio: ["ignore", "pipe", "pipe"],
@@ -471,10 +473,16 @@ export class AntigravityAdapter implements ProviderAdapter {
   private activeRequests = new Map<string, { abort: () => void; cwd: string }>();
   private runner: InferenceRunner;
   private modelsRunner: AgyRunner;
+  private readonly agyPath: string;
 
-  constructor(runner?: InferenceRunner, modelsRunner?: AgyRunner) {
-    this.runner = runner ?? new SpawnInferenceRunner();
-    this.modelsRunner = modelsRunner ?? new RealAgyRunner();
+  constructor(
+    runner?: InferenceRunner,
+    modelsRunner?: AgyRunner,
+    options: { agyPath?: string | undefined } = {},
+  ) {
+    this.agyPath = options.agyPath ?? AGY_PATH;
+    this.runner = runner ?? new SpawnInferenceRunner(this.agyPath);
+    this.modelsRunner = modelsRunner ?? new RealAgyRunner(this.agyPath);
   }
 
   buildInferenceArgs(upstreamSlug: string, prompt: string): string[] {
