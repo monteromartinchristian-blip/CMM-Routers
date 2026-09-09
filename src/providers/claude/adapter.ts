@@ -22,6 +22,43 @@ export function extractStreamEventText(event: unknown): string | null {
 }
 
 /**
+ * Split Router messages into a system prompt plus the ordered conversation.
+ * System-role content maps to the SDK's dedicated systemPrompt option;
+ * every non-system message (user, assistant history, tool results as text)
+ * is preserved in order as an SDK user-stream frame. Nothing is dropped
+ * except empty non-system turns; provider-native tools stay disabled.
+ */
+export function buildClaudeConversation(messages: RouterRequest["messages"]): {
+  systemPrompt: string | undefined;
+  frames: Array<{ role: "user" | "assistant"; text: string }>;
+} {
+  const systemParts: string[] = [];
+  const frames: Array<{ role: "user" | "assistant"; text: string }> = [];
+  for (const message of messages) {
+    const text = message.content ?? "";
+    if (message.role === "system") {
+      if (text) systemParts.push(text);
+      continue;
+    }
+    if (message.role === "assistant") {
+      if (text) frames.push({ role: "assistant", text });
+      continue;
+    }
+    // user + tool roles: tool results arrive as text attributed to the user
+    // turn (the external tool loop owns execution; the SDK only sees words).
+    const label =
+      message.role === "tool" && typeof message.toolCallId === "string"
+        ? `[tool_result ${message.toolCallId}] ${text}`
+        : text;
+    if (label) frames.push({ role: "user", text: label });
+  }
+  return {
+    systemPrompt: systemParts.length > 0 ? systemParts.join("\n") : undefined,
+    frames,
+  };
+}
+
+/**
  * Claude subscription provider adapter.
  *
  * Uses the official @anthropic-ai/claude-agent-sdk to interact with Claude
@@ -239,11 +276,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     const env = this.sdkEnv();
 
     try {
-      // Prepare prompt from messages
-      const prompt = request.messages
-        .filter((m) => m.role === "user")
-        .map((m) => m.content)
-        .join("\n");
+      // Full conversation semantics: system messages map to the SDK's
+      // dedicated systemPrompt option; user + assistant history + tool
+      // results stream in order as SDK user messages. Nothing
+      // semantically relevant is dropped; native tools stay disabled.
+      const conversation = buildClaudeConversation(request.messages);
+      const prompt = (async function* () {
+        for (const frame of conversation.frames) {
+          yield {
+            type: "user" as const,
+            message: { role: frame.role, content: frame.text },
+            parent_tool_use_id: null,
+          };
+        }
+      })();
 
       // Configure SDK options with tool restrictions
       const sdkOptions: Options = {
@@ -258,6 +304,15 @@ export class ClaudeAdapter implements ProviderAdapter {
         // Isolation mode: never read user/project/local settings files, so
         // the normal Claude/OmniRoute profile cannot influence the Router.
         settingSources: [],
+        ...(conversation.systemPrompt !== undefined
+          ? {
+              systemPrompt: {
+                type: "custom" as const,
+                prompt: conversation.systemPrompt,
+                snapshot: false,
+              },
+            }
+          : {}),
         // Disable all native tools - Qoder remains the tool owner
         disallowedTools: [
           "Bash",
