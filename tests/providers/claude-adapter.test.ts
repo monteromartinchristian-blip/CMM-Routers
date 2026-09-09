@@ -45,10 +45,10 @@ describe("ClaudeAdapter", () => {
       const request: RouterRequest = {
         requestId: "test-001",
         model: {
-          id: "claude/claude-sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "claude-sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
         },
         messages: [
           { role: "user", content: "Hello" },
@@ -72,10 +72,10 @@ describe("ClaudeAdapter", () => {
       const request: RouterRequest = {
         requestId: "test-002",
         model: {
-          id: "claude/claude-sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "claude-sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
         },
         messages: [
           { role: "user", content: "Hi" },
@@ -103,10 +103,10 @@ describe("ClaudeAdapter", () => {
       const request: RouterRequest = {
         requestId: "test-003",
         model: {
-          id: "claude/claude-sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "claude-sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
         },
         messages: [
           { role: "user", content: "Test" },
@@ -135,10 +135,10 @@ describe("ClaudeAdapter", () => {
       const request: RouterRequest = {
         requestId: "test-cancel-001",
         model: {
-          id: "claude/claude-sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "claude-sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
         },
         messages: [
           { role: "user", content: "Long running task" },
@@ -182,10 +182,10 @@ describe("ClaudeAdapter", () => {
       const request: RouterRequest = {
         requestId: "test-cleanup-001",
         model: {
-          id: "claude/claude-sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "claude-sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
         },
         messages: [
           { role: "user", content: "Test" },

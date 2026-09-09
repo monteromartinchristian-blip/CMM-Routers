@@ -82,10 +82,10 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       const request: RouterRequest = {
         requestId: "live-sub-test-001",
         model: {
-          id: "claude/sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
           capability: "CHAT_ONLY_PENDING_TASK_13" as any,
         },
         messages: [
@@ -144,10 +144,10 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
         const request: RouterRequest = {
           requestId: "canary-test-001",
           model: {
-            id: "claude/sonnet-4",
+            id: "claude/sonnet",
             provider: "claude",
-            upstreamModel: "sonnet-4",
-            displayName: "Claude Sonnet 4",
+            upstreamModel: "sonnet",
+            displayName: "Sonnet",
             capability: "CHAT_ONLY_PENDING_TASK_13" as any,
           },
           messages: [
@@ -211,10 +211,10 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       const request: RouterRequest = {
         requestId: "cancel-test-001",
         model: {
-          id: "claude/sonnet-4",
+          id: "claude/sonnet",
           provider: "claude",
-          upstreamModel: "sonnet-4",
-          displayName: "Claude Sonnet 4",
+          upstreamModel: "sonnet",
+          displayName: "Sonnet",
           capability: "CHAT_ONLY_PENDING_TASK_13" as any,
         },
         messages: [
@@ -254,6 +254,81 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       console.log(`ACTIVE_REQUEST_CLEANUP=PASS`);
 
       expect(events).toBeDefined();
+    });
+
+    it("discovers models dynamically from authenticated subscription", { timeout: 30000 }, async () => {
+      const health = await adapter.health();
+      if (health.status === "auth_required") {
+        console.log("Skipping model discovery test - profile not authenticated");
+        return;
+      }
+
+      const models = await adapter.discoverModels();
+
+      console.log("\nCLAUDE_DISCOVERED_MODELS:");
+      for (const model of models) {
+        console.log(`- ${model.id}`);
+      }
+      console.log("");
+
+      expect(models.length).toBeGreaterThan(0);
+      console.log(`MODEL_DISCOVERY_LIVE=PASS`);
+
+      // Verify all models are namespaced
+      for (const model of models) {
+        expect(model.id).toMatch(/^claude\//);
+        expect(model.provider).toBe("claude");
+      }
+
+      // Select first conversational model for inference test
+      const conversationalModel = models.find(m =>
+        m.id.includes("sonnet") || m.id.includes("opus") || m.id.includes("haiku")
+      ) || models[0];
+      expect(conversationalModel).toBeDefined();
+      if (!conversationalModel) return;
+
+      console.log(`MODEL_SELECTED_FROM_DISCOVERY=YES`);
+      console.log(`LIVE_DISCOVERY_MODEL=${conversationalModel.id}`);
+
+      // Run inference with discovered model
+      const request: RouterRequest = {
+        requestId: "discovery-inference-test",
+        model: {
+          id: conversationalModel.id,
+          provider: "claude",
+          upstreamModel: conversationalModel.upstreamModel,
+          displayName: conversationalModel.displayName,
+          capability: "CHAT_ONLY_PENDING_TASK_13" as any,
+        },
+        messages: [
+          { role: "user", content: "Reply exactly: CMM_CLAUDE_DISCOVERY_OK" },
+        ],
+        tools: [],
+        stream: true,
+      };
+
+      const events = [];
+      for await (const event of adapter.run(request, new AbortController().signal)) {
+        events.push(event);
+      }
+
+      const textEvents = events.filter((e) => e.type === "text_delta");
+      const completedEvent = events.find((e) => e.type === "completed");
+      const errorEvent = events.find((e) => e.type === "error");
+
+      console.log(`LIVE_SUBSCRIPTION_INFERENCE=${errorEvent ? "FAIL" : "PASS"}`);
+
+      if (textEvents.length > 0) {
+        const fullText = textEvents.map((e) => e.text).join("").trim();
+        console.log(`ACTUAL_TEXT=${fullText}`);
+        expect(fullText).toBe("CMM_CLAUDE_DISCOVERY_OK");
+      } else if (errorEvent) {
+        const error = errorEvent.error as any;
+        throw new Error(`Discovery inference failed: ${error?.message || String(error)}`);
+      }
+
+      expect(textEvents.length).toBeGreaterThan(0);
+      expect(completedEvent || errorEvent).toBeDefined();
     });
   },
 );

@@ -61,39 +61,102 @@ export class ClaudeAdapter implements ProviderAdapter {
   private activeRequests = new Map<string, { abortController?: AbortController }>();
 
   /**
-   * Discover available Claude models through the installed runtime.
+   * Discover available Claude models through the SDK's supportedModels() API.
    *
-   * Currently uses a static list of known subscription models since the
-   * Agent SDK does not expose a dynamic model discovery API. Models are
-   * only exposed after confirming they are usable through the installed
-   * Claude Code runtime configuration.
+   * Performs a minimal isolated SDK query/session to obtain account/runtime-backed
+   * model list from the authenticated Claude Pro subscription.
+   *
+   * Models are namespaced as claude/<actual-model-value> to prevent collisions.
    */
   async discoverModels(): Promise<DiscoveredModel[]> {
-    // TODO: Probe installed Claude runtime for available models once auth is confirmed
-    // For now, return statically known Claude subscription models
-    return [
-      {
-        id: "claude/sonnet-4",
-        provider: "claude",
-        upstreamModel: "claude-sonnet-4",
-        displayName: "Claude Sonnet 4",
-        capability: "CHAT_ONLY_PENDING_TASK_13",
-      },
-      {
-        id: "claude/opus-4",
-        provider: "claude",
-        upstreamModel: "claude-opus-4",
-        displayName: "Claude Opus 4",
-        capability: "CHAT_ONLY_PENDING_TASK_13",
-      },
-      {
-        id: "claude/haiku-4",
-        provider: "claude",
-        upstreamModel: "claude-haiku-4",
-        displayName: "Claude Haiku 4",
-        capability: "CHAT_ONLY_PENDING_TASK_13",
-      },
-    ];
+    return await withIsolatedClaudeEnv(async () => {
+      try {
+        // Create a minimal query to access supportedModels()
+        // This establishes a session with the isolated profile
+        const queryResult: Query = query({
+          prompt: "",  // Minimal prompt for model discovery
+          options: {
+            cwd: NEUTRAL_CWD,
+            disallowedTools: [
+              "Bash",
+              "Read",
+              "Write",
+              "Edit",
+              "WebFetch",
+              "WebSearch",
+              "Glob",
+              "Grep",
+              "NotebookEdit",
+              "ImageGen",
+            ],
+            permissionMode: "auto",
+          },
+        });
+
+        // Get supported models from the SDK
+        const modelInfos = await queryResult.supportedModels();
+
+        // Interrupt the query immediately after getting models
+        try {
+          await queryResult.interrupt();
+        } catch {
+          // Ignore interrupt errors
+        }
+
+        if (!modelInfos || modelInfos.length === 0) {
+          throw new RouterError(
+            "provider_protocol_error",
+            "SDK returned no supported models",
+          );
+        }
+
+        // Map SDK ModelInfo to DiscoveredModel with proper namespacing
+        const discoveredModels: DiscoveredModel[] = [];
+        const seenValues = new Set<string>();
+
+        for (const modelInfo of modelInfos) {
+          const modelValue = modelInfo.value;
+
+          // Deduplicate by model value
+          if (seenValues.has(modelValue)) {
+            continue;
+          }
+          seenValues.add(modelValue);
+
+          // Namespace as claude/<model-value>
+          const namespacedId = `claude/${modelValue}`;
+
+          discoveredModels.push({
+            id: namespacedId,
+            provider: "claude",
+            upstreamModel: modelValue,
+            displayName: modelInfo.displayName || modelValue,
+            capability: "CHAT_ONLY_PENDING_TASK_13",
+          });
+        }
+
+        return discoveredModels;
+      } catch (error) {
+        if (error instanceof RouterError) {
+          throw error;
+        }
+
+        const err = error as Error;
+
+        // Map authentication errors
+        if (err.message.includes("auth") || err.message.includes("login")) {
+          throw new RouterError(
+            "provider_auth_required",
+            `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+          );
+        }
+
+        throw new RouterError(
+          "provider_unavailable",
+          `Failed to discover models: ${err.message}`,
+        );
+      }
+    });
   }
 
   /**
@@ -195,6 +258,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         const sdkOptions: Options = {
           abortController,
           cwd: NEUTRAL_CWD,
+          // Route the request to the model selected from discovery
+          model: request.model.upstreamModel,
           // Disable all native tools - Qoder remains the tool owner
           disallowedTools: [
             "Bash",
