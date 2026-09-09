@@ -322,12 +322,19 @@ export class CommandCodeAdapter implements ProviderAdapter {
         };
       }
     } catch (error) {
-      if (outerSignal.aborted || abortSignal.aborted) return;
       if (error instanceof RouterError) {
+        // Client-enforced deadline (provider_timeout) must surface: only
+        // genuine caller cancellation returns silently.
+        if (error.code === "provider_timeout" && !outerSignal.aborted && !abortSignal.aborted) {
+          yield { type: "error", error };
+          return;
+        }
+        if (outerSignal.aborted || abortSignal.aborted) return;
         yield { type: "error", error };
       } else if ((error as Error).name === "AbortError") {
         return;
       } else {
+        if (outerSignal.aborted || abortSignal.aborted) return;
         yield {
           type: "error",
           error: new RouterError(
@@ -474,12 +481,19 @@ export class CommandCodeAdapter implements ProviderAdapter {
         ),
       };
     } catch (error) {
-      if (outerSignal.aborted || abortSignal.aborted) return;
       if (error instanceof RouterError) {
+        // Client-enforced deadline (provider_timeout) must surface: only
+        // genuine caller cancellation returns silently.
+        if (error.code === "provider_timeout" && !outerSignal.aborted && !abortSignal.aborted) {
+          yield { type: "error", error };
+          return;
+        }
+        if (outerSignal.aborted || abortSignal.aborted) return;
         yield { type: "error", error };
       } else if ((error as Error).name === "AbortError") {
         return;
       } else {
+        if (outerSignal.aborted || abortSignal.aborted) return;
         yield {
           type: "error",
           error: new RouterError(
