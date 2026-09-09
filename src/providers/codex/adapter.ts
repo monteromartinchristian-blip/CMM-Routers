@@ -70,55 +70,69 @@ export class CodexAdapter implements ProviderAdapter {
       // Start a new thread for this request
       const threadResponse = await this.client.startThread({
         model: request.model.upstreamModel,
-        sandboxMode: "restricted",
-        permissions: [],
+        sandbox: "workspace-write",
       });
+      const threadId = threadResponse.thread.id;
 
-      // Prepare input messages
-      const input = request.messages.map((msg) => ({
-        role: msg.role as "system" | "user" | "assistant",
-        content: msg.content || "",
-      }));
+      // Prepare input messages as UserInput objects
+      const input = request.messages.map((msg) => {
+        if (msg.role === "user" || msg.role === "system") {
+          return {
+            type: "text" as const,
+            text: msg.content || "",
+          };
+        } else if (msg.role === "assistant") {
+          // Assistant messages are also text type
+          return {
+            type: "text" as const,
+            text: msg.content || "",
+          };
+        } else {
+          // Tool messages - treat as text for now
+          return {
+            type: "text" as const,
+            text: msg.content || "",
+          };
+        }
+      });
 
       // Start turn
       const turnResponse = await this.client.startTurn({
-        threadId: threadResponse.threadId,
+        threadId,
         input,
-        tools: request.tools.map((tool: any) => ({
-          type: tool.type,
-          function: {
-            name: tool.function.name,
-            description: tool.function.description,
-            parameters: tool.function.parameters,
-          },
-        })),
       });
 
-      // Listen for events
+      // Listen for events with a reasonable timeout
       let completed = false;
+      const maxWaitTime = 30000; // 30 seconds max
+      const startTime = Date.now();
+      
       while (!completed && !signal.aborted) {
+        // Check if we've exceeded max wait time
+        if (Date.now() - startTime > maxWaitTime) {
+          console.warn("[CodexAdapter] Max wait time exceeded, ending stream");
+          yield { type: "completed", finishReason: "length" };
+          break;
+        }
+        
         try {
-          // Wait for agent message delta
-          const deltaPromise = this.client.waitForNotification(
-            "item/agentMessage/delta",
-            1000,
-          );
-
-          const tokenUsagePromise = this.client.waitForNotification(
-            "thread/tokenUsage/updated",
-            1000,
-          );
-
-          const completedPromise = this.client.waitForNotification(
-            "turn/completed",
-            1000,
-          );
-
+          // Wait for any of the three notification types
           const result = await Promise.race([
-            deltaPromise.then((n) => ({ type: "delta" as const, notification: n })),
-            tokenUsagePromise.then((n) => ({ type: "usage" as const, notification: n })),
-            completedPromise.then((n) => ({ type: "completed" as const, notification: n })),
+            this.client.waitForNotification("item/agentMessage/delta", 2000)
+              .then((n) => ({ type: "delta" as const, notification: n }))
+              .catch(() => null),
+            this.client.waitForNotification("thread/tokenUsage/updated", 2000)
+              .then((n) => ({ type: "usage" as const, notification: n }))
+              .catch(() => null),
+            this.client.waitForNotification("turn/completed", 2000)
+              .then((n) => ({ type: "completed" as const, notification: n }))
+              .catch(() => null),
           ]);
+
+          if (!result) {
+            // All three timed out, continue waiting
+            continue;
+          }
 
           if (result.type === "delta") {
             const params = result.notification.params as any;
@@ -143,10 +157,8 @@ export class CodexAdapter implements ProviderAdapter {
             };
           }
         } catch (error) {
-          // Timeout or other error - continue listening
-          if (error instanceof RouterError && error.code === "provider_timeout") {
-            continue;
-          }
+          // Unexpected error - log and break
+          console.error("[CodexAdapter] Unexpected error in event loop:", error);
           throw error;
         }
       }

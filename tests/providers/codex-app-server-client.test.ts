@@ -154,8 +154,7 @@ describe("CodexAppServerClient", () => {
     it("startThread sends thread/start method", async () => {
       const promise = client.startThread({
         model: "gpt-4",
-        sandboxMode: "restricted",
-        permissions: [],
+        sandbox: "workspace-write",
       });
 
       const messages = transport.getOutgoingMessages();
@@ -166,19 +165,19 @@ describe("CodexAppServerClient", () => {
       transport.receiveMessage({
         jsonrpc: "2.0",
         id: 1,
-        result: { threadId: "thread-123" },
+        result: { thread: { id: "thread-123" } },
       });
 
       const result = await promise;
-      expect(result.threadId).toBe("thread-123");
+      expect(result.thread.id).toBe("thread-123");
     });
 
     it("startTurn sends turn/start method with input", async () => {
       const promise = client.startTurn({
         threadId: "thread-123",
         input: [
-          { role: "user", content: "Hello" },
-          { role: "assistant", content: "Hi there!" },
+          { type: "text", text: "Hello" },
+          { type: "text", text: "Hi there!" },
         ],
       });
 

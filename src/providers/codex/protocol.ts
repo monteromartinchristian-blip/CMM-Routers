@@ -44,30 +44,21 @@ export interface InitializeResponse {
 
 export interface ThreadStartParams {
   model?: string;
-  context?: Record<string, unknown>;
-  sandboxMode?: string;
-  permissions?: string[];
+  sandbox?: string;
 }
 
 export interface ThreadStartResponse {
-  threadId: string;
+  thread: {
+    id: string;
+  };
 }
 
 export interface TurnStartParams {
   threadId: string;
   input?: Array<{
-    role: "system" | "user" | "assistant";
-    content: string;
+    type: "text";
+    text: string;
   }>;
-  tools?: Array<{
-    type: string;
-    function: {
-      name: string;
-      description?: string;
-      parameters: Record<string, unknown>;
-    };
-  }>;
-  maxTurns?: number;
 }
 
 export interface TurnStartResponse {
