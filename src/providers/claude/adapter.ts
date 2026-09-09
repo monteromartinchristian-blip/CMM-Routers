@@ -2,8 +2,49 @@ import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
-import { buildIsolatedEnvironment, CLAUDE_CONFIG_DIR, NEUTRAL_CWD } from "./sdk-client.js";
-import { query, startup, resolveSettings, type Query, type SDKMessage, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { CLAUDE_CONFIG_DIR, NEUTRAL_CWD } from "./sdk-client.js";
+import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
+
+/**
+ * Execute a function with isolated Claude environment.
+ * Temporarily sets CLAUDE_CONFIG_DIR and ensures no Anthropic PAYG variables leak through.
+ */
+async function withIsolatedClaudeEnv<T>(fn: () => Promise<T>): Promise<T> {
+  // Save original environment
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+  const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+
+  try {
+    // Set isolated environment
+    process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
+    
+    // Explicitly remove any PAYG variables that might exist
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+
+    return await fn();
+  } finally {
+    // Restore original environment
+    if (originalConfigDir !== undefined) {
+      process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+    } else {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    }
+    
+    if (originalApiKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = originalApiKey;
+    }
+    if (originalBaseUrl !== undefined) {
+      process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    }
+    if (originalAuthToken !== undefined) {
+      process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken;
+    }
+  }
+}
 
 /**
  * Claude subscription provider adapter.
@@ -60,76 +101,66 @@ export class ClaudeAdapter implements ProviderAdapter {
    * Uses the SDK's resolveSettings to check if the isolated profile is authenticated.
    */
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
-    const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    
-    try {
-      // Set isolated config dir for SDK
-      process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
+    return await withIsolatedClaudeEnv(async () => {
+      try {
+        // Resolve settings with isolated config
+        const settings = await resolveSettings({
+          cwd: NEUTRAL_CWD,
+        });
 
-      // Resolve settings with isolated config
-      const settings = await resolveSettings({
-        cwd: NEUTRAL_CWD,
-      });
+        // Check if authenticated (apiProvider should be 'firstParty' for subscription)
+        const apiProvider = settings.effective.apiProvider;
 
-      // Check if authenticated (apiProvider should be 'firstParty' for subscription)
-      const apiProvider = settings.effective.apiProvider;
+        if (!apiProvider || apiProvider === 'firstParty') {
+          // Need to verify actual authentication status
+          // Try a minimal startup to see if we're authenticated
+          try {
+            await startup({
+              options: {
+                cwd: NEUTRAL_CWD,
+              },
+              initializeTimeoutMs: 5000,
+            });
 
-      if (!apiProvider || apiProvider === 'firstParty') {
-        // Need to verify actual authentication status
-        // Try a minimal startup to see if we're authenticated
-        try {
-          await startup({
-            options: {
-              cwd: NEUTRAL_CWD,
-            },
-            initializeTimeoutMs: 5000,
-          });
-
-          return {
-            status: "ready",
-            detail: "Authenticated via Claude subscription",
-          };
-        } catch (err) {
-          const error = err as Error;
-          if (error.message.includes("auth") || error.message.includes("login")) {
             return {
-              status: "auth_required",
-              detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+              status: "ready",
+              detail: "Authenticated via Claude subscription",
+            };
+          } catch (err) {
+            const error = err as Error;
+            if (error.message.includes("auth") || error.message.includes("login")) {
+              return {
+                status: "auth_required",
+                detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+              };
+            }
+
+            return {
+              status: "unavailable",
+              detail: error.message,
             };
           }
+        }
 
+        return {
+          status: "ready",
+          detail: `API provider: ${apiProvider}`,
+        };
+      } catch (error) {
+        const err = error as Error;
+        if (err.message.includes("auth") || err.message.includes("login")) {
           return {
-            status: "unavailable",
-            detail: error.message,
+            status: "auth_required",
+            detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
           };
         }
-      }
 
-      return {
-        status: "ready",
-        detail: `API provider: ${apiProvider}`,
-      };
-    } catch (error) {
-      const err = error as Error;
-      if (err.message.includes("auth") || err.message.includes("login")) {
         return {
-          status: "auth_required",
-          detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+          status: "unavailable",
+          detail: err.message,
         };
       }
-
-      return {
-        status: "unavailable",
-        detail: err.message,
-      };
-    } finally {
-      // Restore original env
-      if (originalConfigDir !== undefined) {
-        process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
-      } else {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      }
-    }
+    });
   }
 
   /**
@@ -149,113 +180,118 @@ export class ClaudeAdapter implements ProviderAdapter {
       abortController.abort();
     }, { once: true });
 
-    const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
-
     try {
-      // Set isolated config dir for SDK
-      process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
+      // Collect all events in isolated environment, then yield them
+      const events = await withIsolatedClaudeEnv(async (): Promise<RouterEvent[]> => {
+        const collectedEvents: RouterEvent[] = [];
+        
+        // Prepare prompt from messages
+        const prompt = request.messages
+          .filter((m) => m.role === "user")
+          .map((m) => m.content)
+          .join("\n");
 
-      // Prepare prompt from messages
-      const prompt = request.messages
-        .filter((m) => m.role === "user")
-        .map((m) => m.content)
-        .join("\n");
+        // Configure SDK options with tool restrictions
+        const sdkOptions: Options = {
+          abortController,
+          cwd: NEUTRAL_CWD,
+          // Disable all native tools - Qoder remains the tool owner
+          disallowedTools: [
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "WebFetch",
+            "WebSearch",
+            "Glob",
+            "Grep",
+            "NotebookEdit",
+            "ImageGen",
+          ],
+          // Set permission mode to auto (tools are disabled above so no risk)
+          permissionMode: "auto",
+        };
 
-      // Configure SDK options with tool restrictions
-      const sdkOptions: Options = {
-        abortController,
-        cwd: NEUTRAL_CWD,
-        // Disable all native tools - Qoder remains the tool owner
-        disallowedTools: [
-          "Bash",
-          "Read",
-          "Write",
-          "Edit",
-          "WebFetch",
-          "WebSearch",
-          "Glob",
-          "Grep",
-          "NotebookEdit",
-          "ImageGen",
-        ],
-        // Set permission mode to auto (tools are disabled above so no risk)
-        permissionMode: "auto",
-      };
+        // Execute query with SDK
+        const queryResult: Query = query({
+          prompt,
+          options: sdkOptions,
+        });
 
-      // Execute query with SDK
-      const queryResult: Query = query({
-        prompt,
-        options: sdkOptions,
-      });
+        let hasReceivedOutput = false;
+        let accumulatedText = "";
 
-      let hasReceivedOutput = false;
-      let accumulatedText = "";
-
-      // Stream SDK messages and map to RouterEvents
-      for await (const message of queryResult) {
-        if (message.type === "assistant") {
-          // Extract text content from assistant message
-          const contentBlocks = message.message?.content || [];
-          for (const block of contentBlocks) {
-            if (block.type === "text") {
-              const text = block.text;
-              if (text) {
-                hasReceivedOutput = true;
-                accumulatedText += text;
-                yield { type: "text_delta", text };
+        // Stream SDK messages and map to RouterEvents
+        for await (const message of queryResult) {
+          if (message.type === "assistant") {
+            // Extract text content from assistant message
+            const contentBlocks = message.message?.content || [];
+            for (const block of contentBlocks) {
+              if (block.type === "text") {
+                const text = block.text;
+                if (text) {
+                  hasReceivedOutput = true;
+                  accumulatedText += text;
+                  collectedEvents.push({ type: "text_delta", text });
+                }
               }
             }
-          }
 
-          // Check for completion
-          if (message.message?.stop_reason) {
-            // Yield usage info if available
-            const usage = message.message.usage;
-            if (usage) {
-              yield {
-                type: "usage",
-                inputTokens: usage.input_tokens,
-                outputTokens: usage.output_tokens,
-              };
+            // Check for completion
+            if (message.message?.stop_reason) {
+              // Yield usage info if available
+              const usage = message.message.usage;
+              if (usage) {
+                collectedEvents.push({
+                  type: "usage",
+                  inputTokens: usage.input_tokens,
+                  outputTokens: usage.output_tokens,
+                });
+              }
+
+              // Map stop reason to finish reason
+              let finishReason: "stop" | "tool_calls" | "length" = "stop";
+              if (message.message.stop_reason === "max_tokens") {
+                finishReason = "length";
+              } else if (message.message.stop_reason === "tool_use") {
+                finishReason = "tool_calls";
+              }
+
+              collectedEvents.push({
+                type: "completed",
+                finishReason,
+              });
+              return collectedEvents;
             }
-
-            // Map stop reason to finish reason
-            let finishReason: "stop" | "tool_calls" | "length" = "stop";
-            if (message.message.stop_reason === "max_tokens") {
-              finishReason = "length";
-            } else if (message.message.stop_reason === "tool_use") {
-              finishReason = "tool_calls";
-            }
-
-            yield {
-              type: "completed",
-              finishReason,
-            };
-            return;
+          } else if (message.type === "result" && message.subtype?.startsWith("error")) {
+            // Handle result error messages
+            const resultError = message as any;
+            const errorMessages = resultError.errors || [];
+            const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
+            
+            const error = this.mapSdkErrorMessage(errorMessage);
+            collectedEvents.push({ type: "error", error });
+            return collectedEvents;
           }
-        } else if (message.type === "result" && message.subtype?.startsWith("error")) {
-          // Handle result error messages
-          const resultError = message as any;
-          const errorMessages = resultError.errors || [];
-          const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
-          
-          const error = this.mapSdkErrorMessage(errorMessage);
-          yield { type: "error", error };
-          return;
         }
-      }
 
-      // If we get here without explicit completion, check if aborted
-      if (signal.aborted || abortController.signal.aborted) {
-        // Cancellation - don't treat as error
-        return;
-      }
+        // If we get here without explicit completion, check if aborted
+        if (signal.aborted || abortController.signal.aborted) {
+          // Cancellation - don't treat as error
+          return collectedEvents;
+        }
 
-      // No completion event received - this shouldn't happen
-      throw new RouterError(
-        "provider_protocol_error",
-        "SDK stream ended without completion event",
-      );
+        // No completion event received - this shouldn't happen
+        throw new RouterError(
+          "provider_protocol_error",
+          "SDK stream ended without completion event",
+        );
+      });
+
+      // Yield all collected events
+      for (const event of events) {
+        yield event;
+      }
     } catch (error) {
       if (signal.aborted || abortController.signal.aborted) {
         // Cancellation - don't treat as error
@@ -289,13 +325,6 @@ export class ClaudeAdapter implements ProviderAdapter {
       }
     } finally {
       this.activeRequests.delete(request.requestId);
-      
-      // Restore original env
-      if (originalConfigDir !== undefined) {
-        process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
-      } else {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      }
     }
   }
 
