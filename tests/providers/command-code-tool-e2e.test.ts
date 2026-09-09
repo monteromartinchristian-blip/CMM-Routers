@@ -74,7 +74,7 @@ describe("Command Code Qoder-owned tool E2E (mocked OpenAI wire, no live quota)"
             status: 200,
             text: async () =>
               sse([
-                'data: {"choices":[{"delta":{"tool_calls":[{"id":"cc_call_1","type":"function","function":{"name":"cmm_echo","arguments":"{\\"text\\":\\"canary\\"}"}}]}}]}',
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"cc_call_1","type":"function","function":{"name":"cmm_echo","arguments":"{\\"text\\":\\"canary\\"}"}}]}}]}',
                 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}',
                 "data: [DONE]",
               ]),

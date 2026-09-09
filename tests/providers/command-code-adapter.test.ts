@@ -482,7 +482,7 @@ describe("Command Code adapter", () => {
     const sse = [
       'data: {"choices":[{"delta":{"content":"hel"}}]}',
       "",
-      'data: {"choices":[{"delta":{"tool_calls":[{"id":"call-1","function":{"name":"cmm_echo","arguments":"{\\"text\\":\\"x\\"}"}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"cmm_echo","arguments":"{\\"text\\":\\"x\\"}"}}]}}]}',
       "",
       'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}',
       "",
