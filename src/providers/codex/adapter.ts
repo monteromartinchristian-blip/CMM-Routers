@@ -8,6 +8,7 @@ export class CodexAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
   private client: CodexAppServerClient | null = null;
   private process: ReturnType<typeof spawn> | null = null;
+  private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
 
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
     await this.ensureStarted();
@@ -67,10 +68,10 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     try {
-      // Start a new thread for this request
+      // Start a new thread for this request with restrictive sandbox
       const threadResponse = await this.client.startThread({
         model: request.model.upstreamModel,
-        sandbox: "workspace-write",
+        sandbox: "read-only",
       });
       const threadId = threadResponse.thread.id;
 
@@ -101,46 +102,36 @@ export class CodexAdapter implements ProviderAdapter {
         threadId,
         input,
       });
-
-      // Listen for events with a reasonable timeout
-      let completed = false;
-      const maxWaitTime = 30000; // 30 seconds max
-      const startTime = Date.now();
       
-      while (!completed && !signal.aborted) {
-        // Check if we've exceeded max wait time
-        if (Date.now() - startTime > maxWaitTime) {
-          console.warn("[CodexAdapter] Max wait time exceeded, ending stream");
-          yield { type: "completed", finishReason: "length" };
-          break;
-        }
-        
-        try {
-          // Wait for any of the three notification types
-          const result = await Promise.race([
-            this.client.waitForNotification("item/agentMessage/delta", 2000)
-              .then((n) => ({ type: "delta" as const, notification: n }))
-              .catch(() => null),
-            this.client.waitForNotification("thread/tokenUsage/updated", 2000)
-              .then((n) => ({ type: "usage" as const, notification: n }))
-              .catch(() => null),
-            this.client.waitForNotification("turn/completed", 2000)
-              .then((n) => ({ type: "completed" as const, notification: n }))
-              .catch(() => null),
-          ]);
+      // Track active turn for cancellation
+      this.activeTurns.set(request.requestId, { threadId, turnId: turnResponse.turnId });
 
-          if (!result) {
-            // All three timed out, continue waiting
-            continue;
-          }
-
-          if (result.type === "delta") {
-            const params = result.notification.params as any;
+      // Listen for events - wait for real turn/completed from upstream
+      let completed = false;
+      let loopCount = 0;
+      
+      try {
+        while (!completed && !signal.aborted) {
+          loopCount++;
+          
+          // Use a single waiter that catches any relevant notification
+          // This avoids the timeout issues with racing multiple waiters
+          const notification = await this.client.waitForAnyNotification(
+            ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+            30000, // 30 second timeout to allow for processing time
+          );
+          
+          console.log(`[CodexAdapter] Received notification: ${notification.method}`);
+          
+          if (notification.method === "item/agentMessage/delta") {
+            const params = notification.params as any;
             if (params?.delta) {
+              console.log(`[CodexAdapter] Yielding delta: "${params.delta.substring(0, 50)}..."`);
               yield { type: "text_delta", text: params.delta };
             }
-          } else if (result.type === "usage") {
-            const params = result.notification.params as any;
+          } else if (notification.method === "thread/tokenUsage/updated") {
+            const params = notification.params as any;
+            console.log(`[CodexAdapter] Yielding usage update`);
             yield {
               type: "usage",
               inputTokens: params?.inputTokens,
@@ -148,19 +139,20 @@ export class CodexAdapter implements ProviderAdapter {
               reasoningTokens: params?.reasoningTokens,
               cacheReadTokens: params?.cacheReadTokens,
             };
-          } else if (result.type === "completed") {
+          } else if (notification.method === "turn/completed") {
+            console.log(`[CodexAdapter] Turn completed!`);
             completed = true;
-            const params = result.notification.params as any;
+            const params = notification.params as any;
             yield {
               type: "completed",
-              finishReason: params?.finishReason || "stop",
+              finishReason: params?.turn?.status || "stop",
             };
           }
-        } catch (error) {
-          // Unexpected error - log and break
-          console.error("[CodexAdapter] Unexpected error in event loop:", error);
-          throw error;
         }
+      } finally {
+        console.log(`[CodexAdapter] Event loop ended after ${loopCount} iterations`);
+        // Clean up active turn tracking
+        this.activeTurns.delete(request.requestId);
       }
     } catch (error) {
       if (error instanceof RouterError) {
@@ -180,9 +172,23 @@ export class CodexAdapter implements ProviderAdapter {
   async cancel(requestId: string): Promise<void> {
     if (!this.client) return;
 
-    // We'd need to track active turns to interrupt them
-    // For now, this is a placeholder
-    console.log(`Cancel requested for ${requestId}`);
+    const activeTurn = this.activeTurns.get(requestId);
+    if (!activeTurn) {
+      console.log(`[CodexAdapter] No active turn found for request ${requestId}`);
+      return;
+    }
+
+    try {
+      await this.client.interruptTurn({
+        threadId: activeTurn.threadId,
+        turnId: activeTurn.turnId || "",
+      });
+      console.log(`[CodexAdapter] Turn interrupted for request ${requestId}`);
+    } catch (error) {
+      console.error(`[CodexAdapter] Failed to interrupt turn for ${requestId}:`, error);
+    } finally {
+      this.activeTurns.delete(requestId);
+    }
   }
 
   private async ensureStarted(): Promise<void> {

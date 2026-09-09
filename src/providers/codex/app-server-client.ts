@@ -21,6 +21,7 @@ interface PendingRequest {
 
 interface NotificationWaiter {
   method: string;
+  methods?: string[]; // For waitForAnyNotification - list of acceptable methods
   resolve: (notification: JSONRPCNotification) => void;
   reject: (error: Error) => void;
 }
@@ -102,15 +103,24 @@ export class CodexAppServerClient {
     // Otherwise it's a notification
     else if ("method" in msg) {
       const notification = msg as JSONRPCNotification;
-      const waiter = this.notificationWaiters.find(
-        (w) => w.method === notification.method,
-      );
-      if (waiter) {
-        this.notificationWaiters = this.notificationWaiters.filter(
-          (w) => w !== waiter,
-        );
+      console.log(`[CodexClient] Received notification: ${notification.method}`);
+      
+      // Find a waiter that matches this notification method
+      const waiterIndex = this.notificationWaiters.findIndex((w) => {
+        // Check exact match first
+        if (w.method === notification.method) return true;
+        // Check if waiter accepts multiple methods
+        if (w.methods && w.methods.includes(notification.method)) return true;
+        return false;
+      });
+      
+      if (waiterIndex !== -1) {
+        const waiter = this.notificationWaiters[waiterIndex]!;
+        console.log(`[CodexClient] Matched waiter for: ${notification.method}`);
+        this.notificationWaiters.splice(waiterIndex, 1);
         waiter.resolve(notification);
       } else {
+        console.log(`[CodexClient] Queuing notification: ${notification.method}`);
         this.notificationQueue.push(notification);
       }
     }
@@ -195,6 +205,50 @@ export class CodexAppServerClient {
           reject(error);
         },
       });
+    });
+  }
+
+  async waitForAnyNotification(
+    methods: string[],
+    timeoutMs = 5000,
+  ): Promise<JSONRPCNotification> {
+    // Check queue first for any of the requested methods
+    for (const method of methods) {
+      const queued = this.notificationQueue.findIndex((n) => n.method === method);
+      if (queued !== -1) {
+        const notification = this.notificationQueue.splice(queued, 1)[0];
+        return notification!;
+      }
+    }
+
+    // Wait for any of the specified notifications
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.notificationWaiters = this.notificationWaiters.filter(
+          (w) => !methods.includes(w.method),
+        );
+        reject(
+          new RouterError(
+            "provider_timeout",
+            `Timeout waiting for any of: ${methods.join(", ")}`,
+          ),
+        );
+      }, timeoutMs);
+
+      const waiter: NotificationWaiter = {
+        method: "__any__",
+        methods, // Store the list of acceptable methods
+        resolve: (notification) => {
+          clearTimeout(timeout);
+          resolve(notification);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      };
+
+      this.notificationWaiters.push(waiter);
     });
   }
 
