@@ -2,49 +2,8 @@ import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
-import { CLAUDE_CONFIG_DIR, NEUTRAL_CWD } from "./sdk-client.js";
+import { CLAUDE_CONFIG_DIR, NEUTRAL_CWD, buildIsolatedEnvironment } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
-
-/**
- * Execute a function with isolated Claude environment.
- * Temporarily sets CLAUDE_CONFIG_DIR and ensures no Anthropic PAYG variables leak through.
- */
-async function withIsolatedClaudeEnv<T>(fn: () => Promise<T>): Promise<T> {
-  // Save original environment
-  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  const originalApiKey = process.env.ANTHROPIC_API_KEY;
-  const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
-  const originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
-
-  try {
-    // Set isolated environment
-    process.env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
-    
-    // Explicitly remove any PAYG variables that might exist
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_BASE_URL;
-    delete process.env.ANTHROPIC_AUTH_TOKEN;
-
-    return await fn();
-  } finally {
-    // Restore original environment
-    if (originalConfigDir !== undefined) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
-    } else {
-      delete process.env.CLAUDE_CONFIG_DIR;
-    }
-    
-    if (originalApiKey !== undefined) {
-      process.env.ANTHROPIC_API_KEY = originalApiKey;
-    }
-    if (originalBaseUrl !== undefined) {
-      process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
-    }
-    if (originalAuthToken !== undefined) {
-      process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken;
-    }
-  }
-}
 
 /**
  * Claude subscription provider adapter.
@@ -69,198 +28,20 @@ export class ClaudeAdapter implements ProviderAdapter {
    * Models are namespaced as claude/<actual-model-value> to prevent collisions.
    */
   async discoverModels(): Promise<DiscoveredModel[]> {
-    return await withIsolatedClaudeEnv(async () => {
-      try {
-        // Create a minimal query to access supportedModels()
-        // This establishes a session with the isolated profile
-        const queryResult: Query = query({
-          prompt: "",  // Minimal prompt for model discovery
-          options: {
-            cwd: NEUTRAL_CWD,
-            disallowedTools: [
-              "Bash",
-              "Read",
-              "Write",
-              "Edit",
-              "WebFetch",
-              "WebSearch",
-              "Glob",
-              "Grep",
-              "NotebookEdit",
-              "ImageGen",
-            ],
-            permissionMode: "auto",
-          },
-        });
-
-        // Get supported models from the SDK
-        const modelInfos = await queryResult.supportedModels();
-
-        // Interrupt the query immediately after getting models
-        try {
-          await queryResult.interrupt();
-        } catch {
-          // Ignore interrupt errors
-        }
-
-        if (!modelInfos || modelInfos.length === 0) {
-          throw new RouterError(
-            "provider_protocol_error",
-            "SDK returned no supported models",
-          );
-        }
-
-        // Map SDK ModelInfo to DiscoveredModel with proper namespacing
-        const discoveredModels: DiscoveredModel[] = [];
-        const seenValues = new Set<string>();
-
-        for (const modelInfo of modelInfos) {
-          const modelValue = modelInfo.value;
-
-          // Deduplicate by model value
-          if (seenValues.has(modelValue)) {
-            continue;
-          }
-          seenValues.add(modelValue);
-
-          // Namespace as claude/<model-value>
-          const namespacedId = `claude/${modelValue}`;
-
-          discoveredModels.push({
-            id: namespacedId,
-            provider: "claude",
-            upstreamModel: modelValue,
-            displayName: modelInfo.displayName || modelValue,
-            capability: "CHAT_ONLY",
-          });
-        }
-
-        return discoveredModels;
-      } catch (error) {
-        if (error instanceof RouterError) {
-          throw error;
-        }
-
-        const err = error as Error;
-
-        // Map authentication errors
-        if (err.message.includes("auth") || err.message.includes("login")) {
-          throw new RouterError(
-            "provider_auth_required",
-            `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
-          );
-        }
-
-        throw new RouterError(
-          "provider_unavailable",
-          `Failed to discover models: ${err.message}`,
-        );
-      }
-    });
-  }
-
-  /**
-   * Check health of the Claude provider by verifying authentication status.
-   * Uses the SDK's resolveSettings to check if the isolated profile is authenticated.
-   */
-  async health(signal?: AbortSignal): Promise<ProviderHealth> {
-    return await withIsolatedClaudeEnv(async () => {
-      try {
-        // Resolve settings with isolated config
-        const settings = await resolveSettings({
-          cwd: NEUTRAL_CWD,
-        });
-
-        // Check if authenticated (apiProvider should be 'firstParty' for subscription)
-        const apiProvider = settings.effective.apiProvider;
-
-        if (!apiProvider || apiProvider === 'firstParty') {
-          // Need to verify actual authentication status
-          // Try a minimal startup to see if we're authenticated
-          try {
-            await startup({
-              options: {
-                cwd: NEUTRAL_CWD,
-              },
-              initializeTimeoutMs: 5000,
-            });
-
-            return {
-              status: "ready",
-              detail: "Authenticated via Claude subscription",
-            };
-          } catch (err) {
-            const error = err as Error;
-            if (error.message.includes("auth") || error.message.includes("login")) {
-              return {
-                status: "auth_required",
-                detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
-              };
-            }
-
-            return {
-              status: "unavailable",
-              detail: error.message,
-            };
-          }
-        }
-
-        return {
-          status: "ready",
-          detail: `API provider: ${apiProvider}`,
-        };
-      } catch (error) {
-        const err = error as Error;
-        if (err.message.includes("auth") || err.message.includes("login")) {
-          return {
-            status: "auth_required",
-            detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
-          };
-        }
-
-        return {
-          status: "unavailable",
-          detail: err.message,
-        };
-      }
-    });
-  }
-
-  /**
-   * Execute a Claude request using the official SDK with isolated environment.
-   * Streams SDK events and maps them to RouterEvents.
-   */
-  async *run(
-    request: RouterRequest,
-    signal: AbortSignal,
-  ): AsyncIterable<RouterEvent> {
-    // Track active request for cancellation
-    const abortController = new AbortController();
-    this.activeRequests.set(request.requestId, { abortController });
-
-    // Link external signal to our controller
-    signal.addEventListener("abort", () => {
-      abortController.abort();
-    }, { once: true });
-
+    // Per-request isolated subprocess environment. options.env REPLACES the
+    // subprocess environment entirely (never merged), so global process.env
+    // is never touched — concurrent requests cannot observe each other.
+    const env = buildIsolatedEnvironment();
     try {
-      // Collect all events in isolated environment, then yield them
-      const events = await withIsolatedClaudeEnv(async (): Promise<RouterEvent[]> => {
-        const collectedEvents: RouterEvent[] = [];
-        
-        // Prepare prompt from messages
-        const prompt = request.messages
-          .filter((m) => m.role === "user")
-          .map((m) => m.content)
-          .join("\n");
-
-        // Configure SDK options with tool restrictions
-        const sdkOptions: Options = {
-          abortController,
+      // Create a minimal query to access supportedModels()
+      // This establishes a session with the isolated profile.
+      // options.env REPLACES the SDK subprocess environment (never merged),
+      // so PAYG variables and the normal profile can never leak in.
+      const queryResult: Query = query({
+        prompt: "",  // Minimal prompt for model discovery
+        options: {
+          env,
           cwd: NEUTRAL_CWD,
-          // Route the request to the model selected from discovery
-          model: request.model.upstreamModel,
-          // Disable all native tools - Qoder remains the tool owner
           disallowedTools: [
             "Bash",
             "Read",
@@ -273,88 +54,298 @@ export class ClaudeAdapter implements ProviderAdapter {
             "NotebookEdit",
             "ImageGen",
           ],
-          // Set permission mode to auto (tools are disabled above so no risk)
           permissionMode: "auto",
-        };
-
-        // Execute query with SDK
-        const queryResult: Query = query({
-          prompt,
-          options: sdkOptions,
-        });
-
-        let hasReceivedOutput = false;
-        let accumulatedText = "";
-
-        // Stream SDK messages and map to RouterEvents
-        for await (const message of queryResult) {
-          if (message.type === "assistant") {
-            // Extract text content from assistant message
-            const contentBlocks = message.message?.content || [];
-            for (const block of contentBlocks) {
-              if (block.type === "text") {
-                const text = block.text;
-                if (text) {
-                  hasReceivedOutput = true;
-                  accumulatedText += text;
-                  collectedEvents.push({ type: "text_delta", text });
-                }
-              }
-            }
-
-            // Collect usage if present (may come before stop_reason in streaming)
-            const usage = message.message?.usage;
-            if (usage && !collectedEvents.some(e => e.type === "usage")) {
-              collectedEvents.push({
-                type: "usage",
-                inputTokens: usage.input_tokens,
-                outputTokens: usage.output_tokens,
-              });
-            }
-          } else if (message.type === "result") {
-            const resultMessage = message as any;
-            
-            if (resultMessage.subtype === "success") {
-              // Successful completion - emit completed event
-              let finishReason: "stop" | "tool_calls" | "length" = "stop";
-              
-              // Try to get stop_reason from the last assistant message if available
-              // (In some cases it may be set on the final assistant message)
-              
-              collectedEvents.push({
-                type: "completed",
-                finishReason,
-              });
-              return collectedEvents;
-            } else if (resultMessage.subtype?.startsWith("error")) {
-              // Handle result error messages
-              const errorMessages = resultMessage.errors || [];
-              const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
-              
-              const error = this.mapSdkErrorMessage(errorMessage);
-              collectedEvents.push({ type: "error", error });
-              return collectedEvents;
-            }
-          }
-        }
-
-        // If we get here without explicit completion, check if aborted
-        if (signal.aborted || abortController.signal.aborted) {
-          // Cancellation - don't treat as error
-          return collectedEvents;
-        }
-
-        // No completion event received - this shouldn't happen
-        throw new RouterError(
-          "provider_protocol_error",
-          "SDK stream ended without completion event",
-        );
+        },
       });
 
-      // Yield all collected events
-      for (const event of events) {
-        yield event;
+      // Get supported models from the SDK
+      const modelInfos = await queryResult.supportedModels();
+
+      // Interrupt the query immediately after getting models
+      try {
+        await queryResult.interrupt();
+      } catch {
+        // Ignore interrupt errors
       }
+
+      if (!modelInfos || modelInfos.length === 0) {
+        throw new RouterError(
+          "provider_protocol_error",
+          "SDK returned no supported models",
+        );
+      }
+
+      // Map SDK ModelInfo to DiscoveredModel with proper namespacing
+      const discoveredModels: DiscoveredModel[] = [];
+      const seenValues = new Set<string>();
+
+      for (const modelInfo of modelInfos) {
+        const modelValue = modelInfo.value;
+
+        // Deduplicate by model value
+        if (seenValues.has(modelValue)) {
+          continue;
+        }
+        seenValues.add(modelValue);
+
+        // Namespace as claude/<model-value>
+        const namespacedId = `claude/${modelValue}`;
+
+        discoveredModels.push({
+          id: namespacedId,
+          provider: "claude",
+          upstreamModel: modelValue,
+          displayName: modelInfo.displayName || modelValue,
+          capability: "CHAT_ONLY",
+        });
+      }
+
+      return discoveredModels;
+    } catch (error) {
+      if (error instanceof RouterError) {
+        throw error;
+      }
+
+      const err = error as Error;
+
+      // Map authentication errors
+      if (err.message.includes("auth") || err.message.includes("login")) {
+        throw new RouterError(
+          "provider_auth_required",
+          `Authentication required. Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+        );
+      }
+
+      throw new RouterError(
+        "provider_unavailable",
+        `Failed to discover models: ${err.message}`,
+      );
+    }
+  }
+
+  /**
+   * Check health of the Claude provider by verifying authentication status.
+   * Uses the SDK's resolveSettings to check if the isolated profile is authenticated.
+   */
+  async health(signal?: AbortSignal): Promise<ProviderHealth> {
+    void signal;
+    const env = buildIsolatedEnvironment();
+    try {
+      // Resolve settings with isolated config
+      const settings = await resolveSettings({
+        cwd: NEUTRAL_CWD,
+      });
+
+      // Check if authenticated (apiProvider should be 'firstParty' for subscription)
+      const apiProvider = settings.effective.apiProvider;
+
+      if (!apiProvider || apiProvider === 'firstParty') {
+        // Need to verify actual authentication status
+        // Try a minimal startup to see if we're authenticated.
+        // options.env REPLACES the SDK subprocess environment.
+        try {
+          await startup({
+            options: {
+              env,
+              cwd: NEUTRAL_CWD,
+            },
+            initializeTimeoutMs: 5000,
+          });
+
+          return {
+            status: "ready",
+            detail: "Authenticated via Claude subscription",
+          };
+        } catch (err) {
+          const error = err as Error;
+          if (error.message.includes("auth") || error.message.includes("login")) {
+            return {
+              status: "auth_required",
+              detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+            };
+          }
+
+          return {
+            status: "unavailable",
+            detail: error.message,
+          };
+        }
+      }
+
+      return {
+        status: "ready",
+        detail: `API provider: ${apiProvider}`,
+      };
+    } catch (error) {
+      const err = error as Error;
+      if (err.message.includes("auth") || err.message.includes("login")) {
+        return {
+          status: "auth_required",
+          detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
+        };
+      }
+
+      return {
+        status: "unavailable",
+        detail: err.message,
+      };
+    }
+  }
+
+  /**
+   * Execute a Claude request using the official SDK with isolated environment.
+   * Yields RouterEvents incrementally as SDK messages arrive — deltas are
+   * never buffered until upstream completion.
+   */
+  async *run(
+    request: RouterRequest,
+    signal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    // Track active request for cancellation
+    const abortController = new AbortController();
+    this.activeRequests.set(request.requestId, { abortController });
+
+    // Link external signal to our controller
+    const onAbort = () => abortController.abort();
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    // Per-request isolated subprocess environment. options.env REPLACES the
+    // SDK subprocess environment entirely (never merged with process.env),
+    // so global process.env is never touched — concurrent requests cannot
+    // observe each other and PAYG values can never leak in.
+    const env = buildIsolatedEnvironment();
+
+    try {
+      // Prepare prompt from messages
+      const prompt = request.messages
+        .filter((m) => m.role === "user")
+        .map((m) => m.content)
+        .join("\n");
+
+      // Configure SDK options with tool restrictions
+      const sdkOptions: Options = {
+        env,
+        abortController,
+        cwd: NEUTRAL_CWD,
+        // Route the request to the model selected from discovery
+        model: request.model.upstreamModel,
+        // Disable all native tools - Qoder remains the tool owner
+        disallowedTools: [
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "WebFetch",
+          "WebSearch",
+          "Glob",
+          "Grep",
+          "NotebookEdit",
+          "ImageGen",
+        ],
+        // Set permission mode to auto (tools are disabled above so no risk)
+        permissionMode: "auto",
+      };
+
+      // Execute query with SDK
+      const queryResult: Query = query({
+        prompt,
+        options: sdkOptions,
+      });
+
+      let usageYielded = false;
+
+      // Stream SDK messages and map to RouterEvents incrementally.
+      for await (const message of queryResult) {
+        if (signal.aborted || abortController.signal.aborted) {
+          return;
+        }
+        if (message.type === "assistant") {
+          // Extract text content from assistant message
+          const contentBlocks = message.message?.content || [];
+          for (const block of contentBlocks) {
+            if (block.type === "text") {
+              const text = block.text;
+              if (text) {
+                yield { type: "text_delta", text };
+              }
+            }
+          }
+
+          // Collect usage if present (may come before stop_reason in streaming)
+          const usage = message.message?.usage as
+            | { input_tokens?: number; output_tokens?: number }
+            | undefined;
+          if (usage && !usageYielded) {
+            usageYielded = true;
+            const usageEvent: RouterEvent = { type: "usage" };
+            if (typeof usage.input_tokens === "number") {
+              (usageEvent as { inputTokens?: number }).inputTokens = usage.input_tokens;
+            }
+            if (typeof usage.output_tokens === "number") {
+              (usageEvent as { outputTokens?: number }).outputTokens = usage.output_tokens;
+            }
+            yield usageEvent;
+          }
+        } else if (message.type === "result") {
+          const resultMessage = message as {
+            subtype?: string;
+            errors?: string[];
+            usage?: { input_tokens?: number; output_tokens?: number };
+          };
+
+          if (resultMessage.subtype === "success") {
+            // Successful completion - map stop reason to finish reason.
+            const stopReason = (resultMessage as { stop_reason?: string }).stop_reason;
+            let finishReason: "stop" | "tool_calls" | "length" = "stop";
+            if (stopReason === "max_tokens") {
+              finishReason = "length";
+            } else if (stopReason === "tool_use") {
+              finishReason = "tool_calls";
+            }
+
+            const resultUsage = resultMessage.usage as
+              | { input_tokens?: number; output_tokens?: number }
+              | undefined;
+            if (resultUsage && !usageYielded) {
+              usageYielded = true;
+              const usageEvent: RouterEvent = { type: "usage" };
+              if (typeof resultUsage.input_tokens === "number") {
+                (usageEvent as { inputTokens?: number }).inputTokens = resultUsage.input_tokens;
+              }
+              if (typeof resultUsage.output_tokens === "number") {
+                (usageEvent as { outputTokens?: number }).outputTokens = resultUsage.output_tokens;
+              }
+              yield usageEvent;
+            }
+
+            yield {
+              type: "completed",
+              finishReason,
+            };
+            return;
+          } else if (resultMessage.subtype?.startsWith("error")) {
+            // Handle result error messages
+            const errorMessages = resultMessage.errors || [];
+            const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
+
+            const error = this.mapSdkErrorMessage(errorMessage);
+            yield { type: "error", error };
+            return;
+          }
+        }
+      }
+
+      // If we get here without explicit completion, check if aborted
+      if (signal.aborted || abortController.signal.aborted) {
+        // Cancellation - don't treat as error
+        return;
+      }
+
+      // No completion event received - this shouldn't happen
+      throw new RouterError(
+        "provider_protocol_error",
+        "SDK stream ended without completion event",
+      );
     } catch (error) {
       if (signal.aborted || abortController.signal.aborted) {
         // Cancellation - don't treat as error
@@ -387,6 +378,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         };
       }
     } finally {
+      signal.removeEventListener("abort", onAbort);
       this.activeRequests.delete(request.requestId);
     }
   }
