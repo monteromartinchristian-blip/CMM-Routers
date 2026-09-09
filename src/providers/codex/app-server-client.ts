@@ -224,9 +224,13 @@ export class CodexAppServerClient {
     // Wait for any of the specified notifications
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.notificationWaiters = this.notificationWaiters.filter(
-          (w) => !methods.includes(w.method),
-        );
+        this.notificationWaiters = this.notificationWaiters.filter((w) => {
+          // Remove exact match waiters for these methods
+          if (methods.includes(w.method)) return false;
+          // Remove __any__ waiters that include these methods
+          if (w.methods && methods.some(m => w.methods!.includes(m))) return false;
+          return true;
+        });
         reject(
           new RouterError(
             "provider_timeout",

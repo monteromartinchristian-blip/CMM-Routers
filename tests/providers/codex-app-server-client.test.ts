@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { CodexAppServerClient } from "../../src/providers/codex/app-server-client.js";
 import { FakeCodexTransport } from "../helpers/fake-codex-transport.js";
+import { RouterError } from "../../src/core/errors.js";
 
 describe("CodexAppServerClient", () => {
   let transport: FakeCodexTransport;
@@ -446,6 +447,122 @@ describe("CodexAppServerClient", () => {
       const result = await promise;
       expect(result.data.length).toBe(2);
       expect(result.data[0]!.id).toBe("gpt-4");
+    });
+  });
+
+  describe("timeout semantics", () => {
+    it("timeout produces provider_timeout error", async () => {
+      const promise = client.waitForNotification("turn/completed", 100);
+
+      await expect(promise).rejects.toThrow("Timeout waiting for notification: turn/completed");
+      await expect(promise).rejects.toMatchObject({ code: "provider_timeout" });
+    });
+
+    it("timeout never produces completed event", async () => {
+      const promise = client.waitForNotification("turn/completed", 100);
+
+      try {
+        await promise;
+        // Should not reach here
+        expect(true).toBe(false);
+      } catch (error) {
+        expect(error).toBeInstanceOf(RouterError);
+        expect((error as RouterError).code).toBe("provider_timeout");
+      }
+    });
+
+    it("timed-out notification waiter is removed", async () => {
+      const initialWaiterCount = (client as any).notificationWaiters.length;
+
+      const promise = client.waitForNotification("nonexistent/notification", 50);
+
+      // Waiter should be added
+      expect((client as any).notificationWaiters.length).toBe(initialWaiterCount + 1);
+
+      // Wait for timeout
+      await expect(promise).rejects.toThrow();
+
+      // Waiter should be removed after timeout
+      expect((client as any).notificationWaiters.length).toBe(initialWaiterCount);
+    });
+
+    it("no stale waiter remains after timeout", async () => {
+      const methods = ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"];
+      const initialWaiterCount = (client as any).notificationWaiters.length;
+
+      const promise = client.waitForAnyNotification(methods, 50);
+
+      // Waiter should be added
+      expect((client as any).notificationWaiters.length).toBe(initialWaiterCount + 1);
+
+      // Wait for timeout
+      await expect(promise).rejects.toThrow();
+
+      // No waiters should remain for these methods
+      const remainingWaiters = (client as any).notificationWaiters.filter((w: any) => 
+        w.method === "__any__" || methods.includes(w.method),
+      );
+      expect(remainingWaiters.length).toBe(0);
+    });
+
+    it("real turn/completed still produces exactly one completed event", async () => {
+      const promise = client.waitForNotification("turn/completed", 1000);
+
+      // Simulate real upstream notification
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          threadId: "thread-123",
+          turn: { id: "turn-456", status: "completed" },
+        },
+      });
+
+      const notification = await promise;
+      expect(notification.method).toBe("turn/completed");
+      expect((notification.params as any).threadId).toBe("thread-123");
+    });
+
+    it("waitForAnyNotification timeout produces provider_timeout", async () => {
+      const methods = ["item/agentMessage/delta", "turn/completed"];
+      const promise = client.waitForAnyNotification(methods, 100);
+
+      await expect(promise).rejects.toThrow("Timeout waiting for any of: item/agentMessage/delta, turn/completed");
+      await expect(promise).rejects.toMatchObject({ code: "provider_timeout" });
+    });
+
+    it("waitForAnyNotification returns first matching notification from queue", async () => {
+      // Queue a notification before waiting
+      transport.receiveMessage({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: { delta: "queued delta" },
+      });
+
+      const methods = ["item/agentMessage/delta", "turn/completed"];
+      const promise = client.waitForAnyNotification(methods, 1000);
+
+      const notification = await promise;
+      expect(notification.method).toBe("item/agentMessage/delta");
+      expect((notification.params as any).delta).toBe("queued delta");
+    });
+
+    it("waitForAnyNotification matches notification arriving after wait starts", async () => {
+      const methods = ["item/agentMessage/delta", "turn/completed"];
+      const promise = client.waitForAnyNotification(methods, 1000);
+
+      // Simulate notification arriving after a delay
+      setTimeout(() => {
+        transport.receiveMessage({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { threadId: "test-thread" },
+        });
+      }, 50);
+
+      const notification = await promise;
+      expect(notification.method).toBe("turn/completed");
+      expect((notification.params as any).threadId).toBe("test-thread");
     });
   });
 });

@@ -110,6 +110,10 @@ export class CodexAdapter implements ProviderAdapter {
       let completed = false;
       let loopCount = 0;
       
+      // Explicit bounded timeout per notification wait (60 seconds)
+      // This ensures we never wait indefinitely and always produce provider_timeout on deadline expiry
+      const NOTIFICATION_TIMEOUT_MS = 60000;
+      
       try {
         while (!completed && !signal.aborted) {
           loopCount++;
@@ -118,7 +122,7 @@ export class CodexAdapter implements ProviderAdapter {
           // This avoids the timeout issues with racing multiple waiters
           const notification = await this.client.waitForAnyNotification(
             ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
-            30000, // 30 second timeout to allow for processing time
+            NOTIFICATION_TIMEOUT_MS,
           );
           
           console.log(`[CodexAdapter] Received notification: ${notification.method}`);
@@ -155,6 +159,8 @@ export class CodexAdapter implements ProviderAdapter {
         this.activeTurns.delete(request.requestId);
       }
     } catch (error) {
+      // Timeout or other errors are caught here and yielded as error events
+      // Timeout produces provider_timeout, never completed
       if (error instanceof RouterError) {
         yield { type: "error", error };
       } else {
