@@ -50,8 +50,12 @@ describe("runtime log hygiene", () => {
     expect(normalizeCodexFinishReason("completed")).toBe("stop");
     expect(normalizeCodexFinishReason("stop")).toBe("stop");
     expect(normalizeCodexFinishReason("tool_calls")).toBe("tool_calls");
+    expect(normalizeCodexFinishReason("tool_calls_requested")).toBe("tool_calls");
     expect(normalizeCodexFinishReason("length")).toBe("length");
     expect(normalizeCodexFinishReason("max_tokens")).toBe("length");
+    expect(normalizeCodexFinishReason("max_output_tokens")).toBe("length");
+    expect(normalizeCodexFinishReason("truncated")).toBe("length");
+    expect(normalizeCodexFinishReason("weird-future-status")).toBe("stop");
     expect(normalizeCodexFinishReason(undefined)).toBe("stop");
   });
 });
