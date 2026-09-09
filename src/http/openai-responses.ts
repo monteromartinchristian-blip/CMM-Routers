@@ -25,6 +25,33 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
   for (const entry of input) {
     const record = asRecord(entry);
     if (!record) return null;
+    // Canonical Responses items carry no chat role: function_call becomes
+    // assistant tool-call history; function_call_output becomes the tool
+    // result message. IDs round-trip byte-exact.
+    if (record.type === "function_call") {
+      if (typeof record.call_id !== "string" || typeof record.name !== "string" || typeof record.arguments !== "string") {
+        return null;
+      }
+      messages.push({
+        role: "assistant",
+        content: null,
+        toolCalls: [
+          {
+            id: record.call_id,
+            type: "function",
+            function: { name: record.name, arguments: record.arguments },
+          },
+        ],
+      });
+      continue;
+    }
+    if (record.type === "function_call_output") {
+      if (typeof record.call_id !== "string" || typeof record.output !== "string") {
+        return null;
+      }
+      messages.push({ role: "tool", content: record.output, toolCallId: record.call_id });
+      continue;
+    }
     const role = record.role;
     if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
       return null;
