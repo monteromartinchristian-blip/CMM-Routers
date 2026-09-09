@@ -47,6 +47,8 @@ ROUTER_SERVICE="${CMM_ROUTER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 ROUTER_ACCOUNT="${CMM_ROUTER_KEYCHAIN_ACCOUNT:-router-bearer}"
 CC_SERVICE="${COMMAND_CODE_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 CC_ACCOUNT="${COMMAND_CODE_KEYCHAIN_ACCOUNT:-command-code-secret}"
+QODER_SERVICE="${CMM_QODER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
+QODER_ACCOUNT="${CMM_QODER_KEYCHAIN_ACCOUNT:-qoder-bearer}"
 
 # Indirect expansion against the CONFIGURED names (never hard-coded).
 if [ -z "${!BEARER_ENV:-}" ]; then
@@ -60,6 +62,15 @@ if [ -z "${!CC_ENV:-}" ]; then
   CC_SECRET="$(security find-generic-password -s "$CC_SERVICE" -a "$CC_ACCOUNT" -w 2>/dev/null || true)"
   if [ -n "$CC_SECRET" ]; then
     export "$CC_ENV"="$CC_SECRET"
+  fi
+fi
+
+# Optional Qoder consumer token: when absent there is simply no Qoder
+# consumer (every client is CMMChat, CHAT_ONLY). Never fatal, never logged.
+if [ -z "${CMM_QODER_TOKEN:-}" ]; then
+  QODER_TOKEN="$(security find-generic-password -s "$QODER_SERVICE" -a "$QODER_ACCOUNT" -w 2>/dev/null || true)"
+  if [ -n "$QODER_TOKEN" ]; then
+    export CMM_QODER_TOKEN="$QODER_TOKEN"
   fi
 fi
 

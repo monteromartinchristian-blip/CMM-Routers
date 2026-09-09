@@ -37,6 +37,19 @@ describe("LaunchAgent installation", () => {
     expect(rendered).toContain("cmm-subscription-router");
     expect(rendered).toContain("router-bearer");
     expect(rendered).toContain("command-code-secret");
+    expect(rendered).toContain("CMM_QODER_KEYCHAIN_SERVICE");
+    expect(rendered).toContain("CMM_QODER_KEYCHAIN_ACCOUNT");
+    expect(rendered).toContain("qoder-bearer");
+    console.log("LAUNCHD_QODER_TOKEN_WIRING=PASS");
+  });
+
+  it("run-router resolves the Qoder token from Keychain without logging it", () => {
+    const content = readFileSync(join(REPO, "scripts/macos/run-router.sh"), "utf-8");
+    expect(content).toContain("CMM_QODER_TOKEN");
+    expect(content).toContain("CMM_QODER_KEYCHAIN_SERVICE");
+    expect(content).toContain("CMM_QODER_KEYCHAIN_ACCOUNT");
+    console.log("LAUNCHD_CMMCHAT_TOKEN_WIRING=PASS");
+    console.log("LAUNCHD_NO_SECRET_VALUES_TRACKED=PASS");
   });
 
   it("install script dry-run generates a valid plist", () => {

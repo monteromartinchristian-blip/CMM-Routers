@@ -44,6 +44,10 @@
     <string>cmm-subscription-router</string>
     <key>COMMAND_CODE_KEYCHAIN_ACCOUNT</key>
     <string>command-code-secret</string>
+    <key>CMM_QODER_KEYCHAIN_SERVICE</key>
+    <string>cmm-subscription-router</string>
+    <key>CMM_QODER_KEYCHAIN_ACCOUNT</key>
+    <string>qoder-bearer</string>
   </dict>
 </dict>
 </plist>
