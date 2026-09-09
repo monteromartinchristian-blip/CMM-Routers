@@ -21,11 +21,15 @@ EXAMPLE_JSON="${CONFIG_DIR}/shared.example.json"
 UNSAFE=0
 BLOCKING=0
 
-# --- provider enablement (defaults: chatgpt/claude/google on, command-code off) ---
+# --- provider enablement + effective options (same source of truth as production) ---
 CHATGPT_ENABLED=1
 CLAUDE_ENABLED=1
 GOOGLE_ENABLED=1
 COMMAND_CODE_ENABLED=0
+# Effective configured values (empty = production default).
+CLAUDE_PROFILE_DIR=""
+AGY_PATH_CONFIG=""
+COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
 
 if [ -f "$SHARED_JSON" ] && command -v python3 >/dev/null 2>&1; then
   READ_ENABLED=$(python3 - "$SHARED_JSON" 2>/dev/null <<'PY' || echo "PARSE_FAIL"
@@ -38,23 +42,40 @@ try:
         if not isinstance(entry, dict):
             return default
         return "1" if entry.get("enabled", default == "1") else "0"
+    def opt(name, key):
+        entry = providers.get(name)
+        if not isinstance(entry, dict):
+            return ""
+        value = entry.get(key, "")
+        return value if isinstance(value, str) else ""
     print(" ".join([
         enabled("chatgpt", "1"),
         enabled("claude", "1"),
         enabled("google", "1"),
         enabled("command-code", "0"),
     ]))
+    print("\t".join([
+        opt("claude", "profileDir"),
+        opt("google", "agyPath"),
+        opt("command-code", "secretEnv") or "COMMAND_CODE_SECRET",
+    ]))
 except Exception:
     print("PARSE_FAIL")
 PY
 )
   if [ "$READ_ENABLED" != "PARSE_FAIL" ] && [ -n "$READ_ENABLED" ]; then
+    FIRST_LINE=$(printf '%s' "$READ_ENABLED" | head -n 1)
+    OPTS_LINE=$(printf '%s' "$READ_ENABLED" | tail -n 1)
     # shellcheck disable=SC2086
-    set -- $READ_ENABLED
+    set -- $FIRST_LINE
     CHATGPT_ENABLED="${1:-1}"
     CLAUDE_ENABLED="${2:-1}"
     GOOGLE_ENABLED="${3:-1}"
     COMMAND_CODE_ENABLED="${4:-0}"
+    CLAUDE_PROFILE_DIR=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f1)
+    AGY_PATH_CONFIG=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f2)
+    COMMAND_CODE_SECRET_ENV=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f3)
+    [ -z "$COMMAND_CODE_SECRET_ENV" ] && COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
   fi
 elif [ -f "$EXAMPLE_JSON" ] && [ ! -f "$SHARED_JSON" ]; then
   : # fresh clone without shared.json: fall back to documented defaults above
@@ -107,7 +128,13 @@ else
   fi
 fi
 
-ROUTER_PROFILE="${HOME}/Library/Application Support/CMM/SubscriptionRouter/Claude"
+DEFAULT_ROUTER_PROFILE="${HOME}/Library/Application Support/CMM/SubscriptionRouter/Claude"
+if [ -n "$CLAUDE_PROFILE_DIR" ]; then
+  ROUTER_PROFILE="$CLAUDE_PROFILE_DIR"
+else
+  ROUTER_PROFILE="$DEFAULT_ROUTER_PROFILE"
+fi
+echo "CLAUDE_PROFILE_DIR_CONFIG=${CLAUDE_PROFILE_DIR:-DEFAULT}"
 if [ -d "$ROUTER_PROFILE" ]; then
   echo "CLAUDE_ROUTER_PROFILE=PASS"
 else
@@ -126,7 +153,19 @@ fi
 
 # --- google / agy ---
 echo "GOOGLE_PROVIDER=$(enabled_label "$GOOGLE_ENABLED")"
-if command -v agy >/dev/null 2>&1 || [ -x "${HOME}/.local/bin/agy" ]; then
+echo "AGY_PATH_CONFIG=${AGY_PATH_CONFIG:-DEFAULT}"
+AGY_FOUND=0
+if [ -n "$AGY_PATH_CONFIG" ]; then
+  # Configured path is authoritative: production spawns exactly this binary.
+  if [ -x "$AGY_PATH_CONFIG" ]; then
+    AGY_FOUND=1
+  else
+    AGY_FOUND=0
+  fi
+elif command -v agy >/dev/null 2>&1 || [ -x "${HOME}/.local/bin/agy" ]; then
+  AGY_FOUND=1
+fi
+if [ "$AGY_FOUND" = "1" ]; then
   echo "AGY_BINARY=PASS"
 else
   echo "AGY_BINARY=FAIL"
@@ -155,7 +194,8 @@ fi
 
 # --- command-code ---
 echo "COMMAND_CODE_PROVIDER=$(enabled_label "$COMMAND_CODE_ENABLED")"
-if [ -n "${COMMAND_CODE_SECRET:-}" ]; then
+echo "COMMAND_CODE_SECRET_ENV=$COMMAND_CODE_SECRET_ENV"
+if [ -n "${!COMMAND_CODE_SECRET_ENV:-}" ]; then
   echo "COMMAND_CODE_SECRET=SET"
 else
   echo "COMMAND_CODE_SECRET=ABSENT"
