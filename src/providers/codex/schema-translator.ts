@@ -156,37 +156,6 @@ export function buildTurnInterruptParams(input: {
   return { threadId: input.threadId, turnId: input.turnId };
 }
 
-/**
- * Build turn/start params. When a tool result is supplied (role:"tool" with
- * toolCallId), attach it as TurnStartParams.toolOutput so the app-server
- * resumes the SAME turn with the executed result — the schema-backed Codex
- * mechanism for tool-result continuation. toolOutput requires the model to
- * have previously requested the tool (matched by name).
- */
-export function buildTurnStartParams(input: {
-  threadId: string;
-  input: Array<{ type: "text"; text: string }>;
-  model?: string;
-  toolOutput?: { name: string; namespace?: string | null; output: string };
-}): Record<string, unknown> {
-  return {
-    threadId: input.threadId,
-    input: input.input,
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.toolOutput !== undefined
-      ? {
-          toolOutput: {
-            name: input.toolOutput.name,
-            ...(input.toolOutput.namespace !== undefined
-              ? { namespace: input.toolOutput.namespace }
-              : {}),
-            output: input.toolOutput.output,
-          },
-        }
-      : {}),
-  };
-}
-
 export type {
   SchemaTokenUsageUpdatedParams,
   SchemaTurnCompletedParams,
