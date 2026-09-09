@@ -438,18 +438,44 @@ export class CommandCodeClient {
     this.fetchFn =
       options.fetchFn ??
       (async (url, init) => {
-        // Compose: the internal timeout must survive even when the caller
-        // passes its own signal (previously init.signal replaced it).
-        const composed = composeTimeoutSignal(init.signal, this.timeoutMs);
+        // The caller passes the already-composed OPERATION signal (deadline
+        // + caller abort fused by composeTimeoutSignal at the call site).
+        // It stays attached for the ENTIRE body lifecycle: cleanup happens
+        // only when this wrapper's consumer finishes, never at headers.
+        // No second composition here — double-compose + early cleanup is
+        // what used to detach the native body reader after headers.
         try {
           const requestInit: RequestInit = {
             method: init.method,
             headers: init.headers,
-            ...(composed.signal ? { signal: composed.signal } : {}),
+            ...(init.signal ? { signal: init.signal } : {}),
           };
           if (init.body !== undefined) requestInit.body = init.body;
           const response = await fetch(url, requestInit);
           const chunks = bodyToAsyncChunks(response.body);
+          const operationSignal = init.signal;
+          const cancelNativeBody = (): void => {
+            try {
+              const reader = (chunks as unknown as { cancel?: unknown })
+                ?.cancel;
+              if (typeof reader === "function") {
+                void (reader as () => Promise<unknown>).call(chunks).catch(() => undefined);
+              }
+            } catch {
+              // Native teardown is best-effort.
+            }
+            try {
+              const body = (response as unknown as { body?: { cancel?: unknown } })
+                ?.body;
+              if (body && typeof body.cancel === "function") {
+                void (body.cancel as () => Promise<unknown>)().catch(() => undefined);
+              }
+            } catch {
+              // Native teardown is best-effort.
+            }
+          };
+          if (operationSignal?.aborted) cancelNativeBody();
+          else operationSignal?.addEventListener("abort", cancelNativeBody, { once: true });
           return {
             status: response.status,
             text: async () => await response.clone().text(),
@@ -460,23 +486,28 @@ export class CommandCodeClient {
                     // never be shared across concurrent responses.
                     const decoder = newStreamDecoder();
                     let carry = "";
-                    for await (const raw of chunks) {
-                      if (init.signal?.aborted) return;
-                      carry += decodeChunk(decoder, raw);
-                      // Split complete SSE frames; keep partial tail buffered.
-                      const frames = carry.split("\n\n");
-                      carry = frames.pop() ?? "";
-                      for (const frame of frames) {
-                        yield frame;
+                    try {
+                      for await (const raw of chunks) {
+                        if (operationSignal?.aborted) return;
+                        carry += decodeChunk(decoder, raw);
+                        // Split complete SSE frames; keep partial tail buffered.
+                        const frames = carry.split("\n\n");
+                        carry = frames.pop() ?? "";
+                        for (const frame of frames) {
+                          yield frame;
+                        }
                       }
+                      if (carry.trim()) yield carry;
+                    } finally {
+                      operationSignal?.removeEventListener("abort", cancelNativeBody);
                     }
-                    if (carry.trim()) yield carry;
                   },
                 }
               : {}),
           };
         } finally {
-          composed.cleanup();
+          // NOTE: no composed.cleanup() here — the operation signal belongs
+          // to the caller and outlives headers by design.
         }
       });
     this.secretOverride = options.secret;
