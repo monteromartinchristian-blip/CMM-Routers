@@ -20,6 +20,35 @@ EXAMPLE_JSON="${CONFIG_DIR}/shared.example.json"
 
 UNSAFE=0
 BLOCKING=0
+CONFIG_INVALID=0
+
+# Validate shared.json with the same strictness as production loadConfig:
+# well-formed JSON, mode/host present, host loopback-locked, no unknown
+# top-level keys. A present-but-invalid file must FAIL, never fall back
+# to defaults silently.
+if [ -f "$SHARED_JSON" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 - "$SHARED_JSON" 2>/dev/null <<'PY'; then
+import json, sys
+raw = json.load(open(sys.argv[1]))
+if not isinstance(raw, dict):
+    raise ValueError("top-level object required")
+allowed = {"mode", "host", "port", "bearerSecretEnv", "providers"}
+unknown = set(raw.keys()) - allowed
+if unknown:
+    raise ValueError(f"unknown keys: {sorted(unknown)}")
+if raw.get("mode", "standalone") != "standalone":
+    raise ValueError("mode must be standalone")
+if "host" in raw and raw["host"] != "127.0.0.1":
+    raise ValueError("host must be 127.0.0.1")
+PY
+      echo "CONFIG=INVALID"
+      CONFIG_INVALID=1
+    else
+      echo "CONFIG=VALID"
+    fi
+  fi
+fi
 
 # --- provider enablement + effective options (same source of truth as production) ---
 CHATGPT_ENABLED=1
@@ -225,6 +254,10 @@ else
   echo "ANTIGRAVITY_SETTINGS=SAFE"
 fi
 
+if [ "$CONFIG_INVALID" != "0" ]; then
+  echo "PREFLIGHT=FAIL"
+  exit 1
+fi
 if [ "$UNSAFE" != "0" ]; then
   echo "PREFLIGHT=FAIL"
   exit 1
