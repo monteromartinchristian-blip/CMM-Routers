@@ -102,13 +102,17 @@ function bodyToAsyncChunks(body: unknown): AsyncIterable<Uint8Array | string> | 
   return null;
 }
 
-const textDecoder =
-  typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
-
-function decodeChunk(chunk: Uint8Array | string): string {
+function decodeChunk(
+  decoder: TextDecoder | null,
+  chunk: Uint8Array | string,
+): string {
   if (typeof chunk === "string") return chunk;
-  if (textDecoder) return textDecoder.decode(chunk, { stream: true });
+  if (decoder) return decoder.decode(chunk, { stream: true });
   return Buffer.from(chunk).toString("utf-8");
+}
+
+function newStreamDecoder(): TextDecoder | null {
+  return typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
 }
 
 async function readBodyText(response: {
@@ -332,27 +336,57 @@ export interface CommandCodeClientOptions {
 }
 
 /**
- * Compose the caller signal with the client timeout. Either side aborts the
- * effective signal; the timeout always fires so a stalled upstream can never
- * outlive timeoutMs. Callers must invoke cleanup() once the request settles.
+ * Compose the caller signal with the client timeout for the fetch-headers
+ * phase. Either side aborts the effective signal. The body phase needs its
+ * own watchdog (armWatchdog): fetch resolving at headers must NOT clear
+ * the overall deadline, so a fresh timer is armed when body iteration
+ * starts and cleaned up when it settles.
  */
 function composeTimeoutSignal(
   caller: AbortSignal | undefined,
   timeoutMs: number,
-): { signal: AbortSignal | undefined; cleanup: () => void } {
-  if (caller?.aborted) return { signal: caller, cleanup: () => undefined };
+): {
+  signal: AbortSignal | undefined;
+  cleanup: () => void;
+  startedAt: number;
+  timeoutMs: number;
+  armWatchdog: () => void;
+} {
+  const startedAt = Date.now();
+  const noop = (): void => undefined;
+  if (caller?.aborted) {
+    return { signal: caller, cleanup: noop, startedAt, timeoutMs, armWatchdog: noop };
+  }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+    () => controller.abort(),
+    timeoutMs,
+  );
+  const clear = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
   const onCallerAbort = (): void => {
-    clearTimeout(timer);
+    clear();
     controller.abort();
   };
   caller?.addEventListener("abort", onCallerAbort, { once: true });
   return {
     signal: controller.signal,
     cleanup: () => {
-      clearTimeout(timer);
+      clear();
       caller?.removeEventListener("abort", onCallerAbort);
+    },
+    startedAt,
+    timeoutMs,
+    armWatchdog: () => {
+      // Fresh watchdog for the body phase, budgeted on REMAINING time so
+      // the full request (headers + body) cannot exceed timeoutMs.
+      clear();
+      const remaining = Math.max(0, startedAt + timeoutMs - Date.now());
+      timer = setTimeout(() => controller.abort(), remaining);
     },
   };
 }
@@ -389,10 +423,13 @@ export class CommandCodeClient {
             ...(chunks
               ? {
                   streamChunks: async function* () {
+                    // Per-response decoder: streaming TextDecoder state must
+                    // never be shared across concurrent responses.
+                    const decoder = newStreamDecoder();
                     let carry = "";
                     for await (const raw of chunks) {
                       if (init.signal?.aborted) return;
-                      carry += decodeChunk(raw);
+                      carry += decodeChunk(decoder, raw);
                       // Split complete SSE frames; keep partial tail buffered.
                       const frames = carry.split("\n\n");
                       carry = frames.pop() ?? "";
@@ -544,16 +581,20 @@ export class CommandCodeClient {
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
-    composed.cleanup();
     // Status must be known BEFORE consuming the stream: buffer only the
     // status line decision, then yield frames incrementally as they arrive.
-    const { status, chunks } = await openStreamOrError(response, signal, "POST /messages");
+    // The composed deadline stays armed through body iteration (cleanup in
+    // iterateWithDeadline), so headers resolving must NOT clear the timer.
+    // The LIVE generator listens on the composed signal: when the deadline
+    // fires mid-frame, the hung body is torn down instead of hanging.
+    const { status, chunks } = await openStreamOrError(response, composed.signal ?? signal, "POST /messages");
     if (status !== 200) {
       // Non-200 bodies are small error payloads; read fully for mapping.
+      composed.cleanup();
       const bodyText = await readBodyText(response);
       throw mapStatusToRouterError(response.status, bodyText, "POST /messages");
     }
-    yield* chunks;
+    yield* iterateWithDeadline(chunks, composed, signal);
   }
 
   private async *streamPath(
@@ -593,20 +634,74 @@ export class CommandCodeClient {
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
-    composed.cleanup();
-    const { status, chunks } = await openStreamOrError(response, signal, context);
+    const { status, chunks } = await openStreamOrError(response, composed.signal ?? signal, context);
     if (status !== 200) {
+      composed.cleanup();
       const bodyText = await readBodyText(response);
       throw mapStatusToRouterError(response.status, bodyText, context);
     }
-    yield* chunks;
+    yield* iterateWithDeadline(chunks, composed, signal);
   }
 }
 
 /**
- * Decide the HTTP status before streaming frames. For real fetch responses
- * the status is available immediately while the body streams; for test
- * doubles without streamChunks, fall back to buffered text split into frames.
+ * Iterate body frames while the composed deadline stays armed. A watchdog
+ * timer fires at the remaining budget and aborts the deadline signal; the
+ * abort-aware live() generator then tears down the hung body and the loop
+ * below observes the abort and raises provider_timeout. Caller abort
+ * returns silently. Cleanup runs only after terminal consumption.
+ */
+async function* iterateWithDeadline(
+  chunks: AsyncGenerator<string, void>,
+  composed: {
+    signal: AbortSignal | undefined;
+    cleanup: () => void;
+    startedAt: number;
+    timeoutMs: number;
+    armWatchdog: () => void;
+  },
+  caller: AbortSignal | undefined,
+): AsyncGenerator<string, void> {
+  const deadline = composed.signal;
+  try {
+    if (!deadline) {
+      yield* chunks;
+      return;
+    }
+    if (deadline.aborted) {
+      if (caller?.aborted) return;
+      throw new RouterError("provider_timeout", "Command Code request timed out");
+    }
+    // Arm the watchdog now: the composed timer was NOT started for the
+    // body phase (composition only guards fetch headers). The watchdog
+    // aborts the deadline at the remaining budget.
+    composed.armWatchdog();
+    for await (const frame of chunks) {
+      if (caller?.aborted) return;
+      if (deadline.aborted) {
+        throw new RouterError("provider_timeout", "Command Code request timed out");
+      }
+      yield frame;
+    }
+    if (deadline.aborted && !caller?.aborted) {
+      throw new RouterError("provider_timeout", "Command Code request timed out");
+    }
+  } finally {
+    composed.cleanup();
+  }
+}
+
+/**
+ * Decide the HTTP status before streaming frames. Shared by both wires.
+ * Returns a frame iterator the caller must consume through
+ * iterateWithDeadline so the deadline stays armed through the body.
+ * For real fetch responses the status is available immediately while the
+ * body streams; for test doubles without streamChunks, the buffered text
+ * is split into frames.
+ *
+ * Every generator created here registers its pending-settle callbacks on
+ * the passed signal: when the deadline fires mid-frame, the hung body is
+ * torn down via generator.throw/return instead of hanging the consumer.
  */
 async function openStreamOrError(
   response: CommandCodeHttpResponse,
@@ -624,10 +719,71 @@ async function openStreamOrError(
   if (!response.streamChunks) {
     return { status: response.status, chunks: buffered() };
   }
+  const source = response.streamChunks!;
   async function* live(): AsyncGenerator<string, void> {
-    for await (const frame of response.streamChunks!()) {
-      if (signal.aborted) return;
-      yield frame;
+    // Single abort-aware body loop: the watchdog below aborts the composed
+    // signal at the remaining budget, which tears down a pending source
+    // next() via tearDown and ends this loop. No nested generator boundary
+    // can trap the abort between live() and its consumer.
+    const iterator = source()[Symbol.asyncIterator]();
+    let tornDown = false;
+    const tearDown = (): void => {
+      if (tornDown) return;
+      tornDown = true;
+      // Tear down synchronously where possible: generator.throw() into a
+      // generator parked at await runs its finally blocks and settles the
+      // pending next(). The returned promise is handled to avoid floating
+      // rejections; settlement itself is synchronous for parked generators.
+      try {
+        const pending = iterator.throw?.(
+          Object.assign(new Error("aborted"), { name: "AbortError" }),
+        ) as Promise<unknown> | unknown;
+        if (pending && typeof (pending as Promise<unknown>).catch === "function") {
+          (pending as Promise<unknown>).catch(() => undefined);
+        }
+      } catch {
+        // Teardown is best-effort.
+      }
+      try {
+        const pending = iterator.return?.(undefined) as Promise<unknown> | unknown;
+        if (pending && typeof (pending as Promise<unknown>).catch === "function") {
+          (pending as Promise<unknown>).catch(() => undefined);
+        }
+      } catch {
+        // Teardown is best-effort.
+      }
+    };
+    if (signal.aborted) return;
+    signal.addEventListener("abort", tearDown, { once: true });
+    const abortEdge = (): Promise<{ kind: "aborted" }> =>
+      new Promise<{ kind: "aborted" }>((resolve) => {
+        if (signal.aborted) {
+          resolve({ kind: "aborted" });
+          return;
+        }
+        signal.addEventListener("abort", () => resolve({ kind: "aborted" }), {
+          once: true,
+        });
+      });
+    try {
+      for (;;) {
+        // Race the source frame against teardown: after tearDown runs, the
+        // source next() may never settle on its own, so the abort edge
+        // must win promptly instead of awaiting a hung body.
+        const next = await Promise.race([
+          iterator.next().then(
+            (value) => ({ kind: "frame" as const, value }),
+            () => ({ kind: "closed" as const }),
+          ),
+          abortEdge(),
+        ]);
+        if (next.kind !== "frame") return;
+        if (signal.aborted) return;
+        if (next.value.done) return;
+        yield next.value.value;
+      }
+    } finally {
+      signal.removeEventListener("abort", tearDown);
     }
   }
   return { status: response.status, chunks: live() };
