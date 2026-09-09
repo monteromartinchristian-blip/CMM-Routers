@@ -64,11 +64,52 @@ export type FetchFn = (
     body?: string | undefined;
     signal?: AbortSignal | undefined;
   },
-) => Promise<{
+) => Promise<CommandCodeHttpResponse>;
+
+export interface CommandCodeHttpResponse {
   status: number;
   text: () => Promise<string>;
   body?: unknown;
-}>;
+  streamChunks?: () => AsyncIterable<string>;
+};
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    Symbol.asyncIterator in (value as Record<symbol, unknown>)
+  );
+}
+
+function bodyToAsyncChunks(body: unknown): AsyncIterable<Uint8Array | string> | null {
+  if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) {
+    return (async function* () {
+      const reader = body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          yield value as Uint8Array;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    })();
+  }
+  if (isAsyncIterable(body)) {
+    return body as AsyncIterable<Uint8Array | string>;
+  }
+  return null;
+}
+
+const textDecoder =
+  typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
+
+function decodeChunk(chunk: Uint8Array | string): string {
+  if (typeof chunk === "string") return chunk;
+  if (textDecoder) return textDecoder.decode(chunk, { stream: true });
+  return Buffer.from(chunk).toString("utf-8");
+}
 
 async function readBodyText(response: {
   status: number;
@@ -314,8 +355,29 @@ export class CommandCodeClient {
           };
           if (init.body !== undefined) requestInit.body = init.body;
           const response = await fetch(url, requestInit);
-          const text = await response.text();
-          return { status: response.status, text: async () => text };
+          const chunks = bodyToAsyncChunks(response.body);
+          return {
+            status: response.status,
+            text: async () => await response.clone().text(),
+            ...(chunks
+              ? {
+                  streamChunks: async function* () {
+                    let carry = "";
+                    for await (const raw of chunks) {
+                      if (init.signal?.aborted) return;
+                      carry += decodeChunk(raw);
+                      // Split complete SSE frames; keep partial tail buffered.
+                      const frames = carry.split("\n\n");
+                      carry = frames.pop() ?? "";
+                      for (const frame of frames) {
+                        yield frame;
+                      }
+                    }
+                    if (carry.trim()) yield carry;
+                  },
+                }
+              : {}),
+          };
         } finally {
           clearTimeout(timer);
         }
@@ -435,7 +497,7 @@ export class CommandCodeClient {
     assertNoSpendPath(model);
     const url = this.buildUrl(ANTHROPIC_MESSAGES_PATH);
     const body = buildAnthropicRequestBody(model, messages, maxOutputTokens);
-    let response: { status: number; text: () => Promise<string> };
+    let response: CommandCodeHttpResponse;
     try {
       response = await this.fetchFn(url, {
         method: "POST",
@@ -452,14 +514,15 @@ export class CommandCodeClient {
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
-    const bodyText = await readBodyText(response);
-    if (response.status !== 200) {
+    // Status must be known BEFORE consuming the stream: buffer only the
+    // status line decision, then yield frames incrementally as they arrive.
+    const { status, chunks } = await openStreamOrError(response, signal, "POST /messages");
+    if (status !== 200) {
+      // Non-200 bodies are small error payloads; read fully for mapping.
+      const bodyText = await readBodyText(response);
       throw mapStatusToRouterError(response.status, bodyText, "POST /messages");
     }
-    for (const chunk of splitSseChunks(bodyText)) {
-      if (signal.aborted) return;
-      yield chunk;
-    }
+    yield* chunks;
   }
 
   private async *streamPath(
@@ -479,7 +542,7 @@ export class CommandCodeClient {
       stream: true,
       ...(extraBody ?? {}),
     };
-    let response: { status: number; text: () => Promise<string> };
+    let response: CommandCodeHttpResponse;
     try {
       response = await this.fetchFn(url, {
         method: "POST",
@@ -496,15 +559,43 @@ export class CommandCodeClient {
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
-    const bodyText = await readBodyText(response);
-    if (response.status !== 200) {
+    const { status, chunks } = await openStreamOrError(response, signal, context);
+    if (status !== 200) {
+      const bodyText = await readBodyText(response);
       throw mapStatusToRouterError(response.status, bodyText, context);
     }
+    yield* chunks;
+  }
+}
+
+/**
+ * Decide the HTTP status before streaming frames. For real fetch responses
+ * the status is available immediately while the body streams; for test
+ * doubles without streamChunks, fall back to buffered text split into frames.
+ */
+async function openStreamOrError(
+  response: CommandCodeHttpResponse,
+  signal: AbortSignal,
+  context: string,
+): Promise<{ status: number; chunks: AsyncGenerator<string, void> }> {
+  void context;
+  async function* buffered(): AsyncGenerator<string, void> {
+    const bodyText = await readBodyText(response);
     for (const chunk of splitSseChunks(bodyText)) {
       if (signal.aborted) return;
       yield chunk;
     }
   }
+  if (!response.streamChunks) {
+    return { status: response.status, chunks: buffered() };
+  }
+  async function* live(): AsyncGenerator<string, void> {
+    for await (const frame of response.streamChunks!()) {
+      if (signal.aborted) return;
+      yield frame;
+    }
+  }
+  return { status: response.status, chunks: live() };
 }
 
 export interface CommandCodeAnthropicMessage {
@@ -559,6 +650,88 @@ export function buildAnthropicRequestBody(
     messages: converted,
     stream: true,
   };
+}
+
+/**
+ * Parse ONE Anthropic Messages SSE frame (a single data: payload, without
+ * the "data:" prefix handling — use parseAnthropicEvent for that).
+ * Throws provider_protocol_error on malformed JSON so callers fail closed.
+ */
+export function parseAnthropicEvent(data: string): {
+  kind: "text" | "usage" | "stop" | "error" | "ignore";
+  text?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  stopReason?: string;
+  error?: string;
+} {
+  let event: unknown;
+  try {
+    event = JSON.parse(data) as unknown;
+  } catch {
+    throw new RouterError(
+      "provider_protocol_error",
+      `Malformed Anthropic SSE payload: ${data.slice(0, 200)}`,
+    );
+  }
+  if (!event || typeof event !== "object") return { kind: "ignore" };
+  const record = event as Record<string, unknown>;
+  const type = record.type;
+  if (type === "error") {
+    const nested = record.error as Record<string, unknown> | undefined;
+    const message =
+      (typeof nested?.message === "string" ? nested.message : null) ??
+      (typeof record.message === "string" ? record.message : null) ??
+      "Anthropic upstream error";
+    return { kind: "error", error: String(message).slice(0, 300) };
+  }
+  if (type === "content_block_delta") {
+    const delta = record.delta as Record<string, unknown> | undefined;
+    if (delta && typeof delta.text_delta === "string" && delta.text_delta.length > 0) {
+      return { kind: "text", text: delta.text_delta };
+    }
+    if (delta && typeof delta.text === "string" && delta.text.length > 0) {
+      return { kind: "text", text: delta.text };
+    }
+    return { kind: "ignore" };
+  }
+  if (type === "message_delta") {
+    const delta = record.delta as Record<string, unknown> | undefined;
+    const usage = record.usage as Record<string, unknown> | undefined;
+    const out: { kind: "usage"; outputTokens?: number; stopReason?: string } = { kind: "usage" };
+    let seen = false;
+    if (delta && typeof delta.stop_reason === "string") {
+      (out as { stopReason?: string }).stopReason = delta.stop_reason;
+      seen = true;
+    }
+    if (usage && typeof usage === "object" && typeof usage.output_tokens === "number") {
+      out.outputTokens = usage.output_tokens;
+      seen = true;
+    }
+    return seen ? out : { kind: "ignore" };
+  }
+  if (type === "message_start") {
+    const message = record.message as Record<string, unknown> | undefined;
+    const usage = message?.usage as Record<string, unknown> | undefined;
+    if (usage && typeof usage === "object") {
+      const out: { kind: "usage"; inputTokens?: number; outputTokens?: number } = { kind: "usage" };
+      let seen = false;
+      if (typeof usage.input_tokens === "number") {
+        out.inputTokens = usage.input_tokens;
+        seen = true;
+      }
+      if (typeof usage.output_tokens === "number") {
+        out.outputTokens = usage.output_tokens;
+        seen = true;
+      }
+      if (seen) return out;
+    }
+    return { kind: "ignore" };
+  }
+  if (type === "message_stop") {
+    return { kind: "stop" };
+  }
+  return { kind: "ignore" };
 }
 
 /**

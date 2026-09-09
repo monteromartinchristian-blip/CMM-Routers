@@ -12,7 +12,7 @@ import {
   DEFAULT_BASE_URL,
   DEFAULT_SECRET_ENV,
   OPENAI_CHAT_COMPLETIONS_PATH,
-  parseAnthropicStreamEvents,
+  parseAnthropicEvent,
   parseSseDataLine,
   type CommandCodeWire,
 } from "./client.js";
@@ -345,6 +345,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
     outerSignal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
     // Anthropic wire accepts no OpenAI-only fields (no tools passthrough here).
+    // Frames yield incrementally as they arrive; completion only on message_stop.
     try {
       const messages = toUpstreamMessages(request).map((message) => ({
         role: String(message.role),
@@ -359,52 +360,106 @@ export class CommandCodeAdapter implements ProviderAdapter {
         request.maxOutputTokens,
       );
 
-      let buffered = "";
-      let firstChunk = true;
-      for await (const chunk of generator) {
-        if (outerSignal.aborted || abortSignal.aborted) return;
-        if (!firstChunk) buffered += "\n\n";
-        firstChunk = false;
-        buffered += chunk;
-      }
-      if (outerSignal.aborted || abortSignal.aborted) return;
+      let carry = "";
+      let sawStop = false;
+      let stopReason: string | undefined;
+      let inputTokens: number | undefined;
+      let outputTokens: number | undefined;
+      let usageYielded = false;
 
-      let state;
-      try {
-        state = parseAnthropicStreamEvents(buffered);
-      } catch (error) {
-        yield {
-          type: "error",
-          error:
-            error instanceof RouterError
-              ? error
-              : new RouterError("provider_protocol_error", String(error)),
-        };
-        return;
-      }
-
-      if (state.error) {
-        yield {
-          type: "error",
-          error: new RouterError("provider_protocol_error", state.error),
-        };
-        return;
-      }
-      for (const delta of state.textDeltas) {
-        yield { type: "text_delta", text: delta };
-      }
-      if (state.inputTokens !== undefined || state.outputTokens !== undefined) {
+      const emitUsage = function* (): Generator<RouterEvent> {
+        if (usageYielded) return;
+        if (inputTokens === undefined && outputTokens === undefined) return;
+        usageYielded = true;
         const usageEvent: RouterEvent = { type: "usage" };
-        if (state.inputTokens !== undefined) {
-          (usageEvent as { inputTokens?: number }).inputTokens = state.inputTokens;
+        if (inputTokens !== undefined) {
+          (usageEvent as { inputTokens?: number }).inputTokens = inputTokens;
         }
-        if (state.outputTokens !== undefined) {
-          (usageEvent as { outputTokens?: number }).outputTokens = state.outputTokens;
+        if (outputTokens !== undefined) {
+          (usageEvent as { outputTokens?: number }).outputTokens = outputTokens;
         }
         yield usageEvent;
+      };
+
+      const handleFrame = function* (frame: string): Generator<RouterEvent> {
+        // Chunks from the client are pre-split SSE frames; each may or may
+        // not carry the "data:" prefix. parseSseDataLine handles both.
+        const data = parseSseDataLine(frame);
+        if (data === null) return;
+        let parsed;
+        try {
+          parsed = parseAnthropicEvent(data);
+        } catch (error) {
+          yield {
+            type: "error",
+            error:
+              error instanceof RouterError
+                ? error
+                : new RouterError("provider_protocol_error", String(error)),
+          } as RouterEvent;
+          return;
+        }
+        if (parsed.kind === "error") {
+          yield {
+            type: "error",
+            error: new RouterError("provider_protocol_error", parsed.error ?? "Anthropic upstream error"),
+          } as RouterEvent;
+          return;
+        }
+        if (parsed.kind === "text" && parsed.text) {
+          yield { type: "text_delta", text: parsed.text };
+        }
+        if (parsed.inputTokens !== undefined) inputTokens = parsed.inputTokens;
+        if (parsed.outputTokens !== undefined) outputTokens = parsed.outputTokens;
+        // Usage is emitted once before completion so ordering stays
+        // text_delta(s) -> usage -> completed regardless of when the
+        // upstream message_start/message_delta frames arrive.
+        if (parsed.stopReason !== undefined) stopReason = parsed.stopReason;
+        if (parsed.kind === "stop") sawStop = true;
+      };
+
+      for await (const chunk of generator) {
+        if (outerSignal.aborted || abortSignal.aborted) return;
+        // Client chunks are pre-split frames without delimiters; restore
+        // the "\n\n" separator so frames never fuse into malformed JSON.
+        carry += chunk + "\n\n";
+        // Frames are \n\n-delimited; a chunk may hold partial or many frames.
+        const frames = carry.split("\n\n");
+        carry = frames.pop() ?? "";
+        for (const frame of frames) {
+          if (outerSignal.aborted || abortSignal.aborted) return;
+          if (!frame.trim()) continue;
+          let terminal = false;
+          for (const event of handleFrame(frame)) {
+            if (event.type === "error") {
+              yield event;
+              return;
+            }
+            if (event.type === "completed") {
+              terminal = true;
+              continue;
+            }
+            yield event;
+          }
+          void terminal;
+          if (sawStop) break;
+        }
+        if (sawStop) break;
       }
-      if (state.completed) {
-        if (state.stopReason === "max_tokens") {
+      if (outerSignal.aborted || abortSignal.aborted) return;
+      if (carry.trim()) {
+        for (const event of handleFrame(carry)) {
+          if (event.type === "error") {
+            yield event;
+            return;
+          }
+          if (event.type !== "completed") yield event;
+        }
+      }
+
+      if (sawStop) {
+        yield* emitUsage();
+        if (stopReason === "max_tokens") {
           yield { type: "completed", finishReason: "length" };
         } else {
           yield { type: "completed", finishReason: "stop" };
