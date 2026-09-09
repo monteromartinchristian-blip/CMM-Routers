@@ -85,10 +85,10 @@ function scriptedSameTurnServer(): {
             },
           });
         }, 20);
-      } else if ((msg as { result?: unknown }).result !== undefined && (msg.id as number) === 901) {
+      } else if ((msg as unknown as { result?: unknown }).result !== undefined && (msg.id as number) === 901) {
         toolResponses.push({
           id: msg.id,
-          result: (msg as { result: Record<string, unknown> }).result,
+          result: (msg as unknown as { result: Record<string, unknown> }).result,
         });
         // Same turn continues after the successful tool response.
         queueMicrotask(() => {
