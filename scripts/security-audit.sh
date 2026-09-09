@@ -94,9 +94,13 @@ fi
 echo "== provider-native tool execution ban =="
 # The Router may REQUEST a tool from the provider (item/tool/call, tool_calls)
 # but must never EXECUTE a provider-native tool itself. Codex approvals are
-# declined; the dynamic tool response is success:false (consumer-owned).
-if grep -rn "result: { decision: \"accept\"\|decision: \"acceptForSession\"\|success: true" src/providers/codex/app-server-client.ts src/providers/codex/adapter.ts | grep -q .; then
+# declined; DynamicToolCallResponse success:true is allowed ONLY with Qoder's
+# already-executed result (same-turn continuation), never as native execution.
+if grep -rn "result: { decision: \"accept\"\|decision: \"acceptForSession\"" src/providers/codex/app-server-client.ts src/providers/codex/adapter.ts | grep -q .; then
   echo "FAIL: provider-native tool approval path present"
+  fail=1
+elif grep -rn "success: true" src/providers/codex/adapter.ts | grep -qv "Qoder\|qoder\|ORIGINAL\|already-executed" | grep -q .; then
+  echo "FAIL: unexplained success:true tool path present"
   fail=1
 else
   echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
