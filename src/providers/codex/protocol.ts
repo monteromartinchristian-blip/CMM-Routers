@@ -1,0 +1,147 @@
+// Protocol types derived from installed codex app-server v0.147.0 schema
+// Generated via: codex app-server generate-json-schema --out tests/fixtures/generated/codex
+
+export interface JSONRPCRequest {
+  jsonrpc?: "2.0";
+  id: number | string;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JSONRPCResponse {
+  jsonrpc?: "2.0";
+  id: number | string;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface JSONRPCNotification {
+  jsonrpc?: "2.0";
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+export interface InitializeParams {
+  clientInfo: {
+    name: string;
+    title?: string;
+    version?: string;
+  };
+  capabilities?: Record<string, unknown>;
+}
+
+export interface InitializeResponse {
+  serverInfo?: {
+    name: string;
+    version?: string;
+  };
+  capabilities?: Record<string, unknown>;
+}
+
+export interface ThreadStartParams {
+  model?: string;
+  context?: Record<string, unknown>;
+  sandboxMode?: string;
+  permissions?: string[];
+}
+
+export interface ThreadStartResponse {
+  threadId: string;
+}
+
+export interface TurnStartParams {
+  threadId: string;
+  input?: Array<{
+    role: "system" | "user" | "assistant";
+    content: string;
+  }>;
+  tools?: Array<{
+    type: string;
+    function: {
+      name: string;
+      description?: string;
+      parameters: Record<string, unknown>;
+    };
+  }>;
+  maxTurns?: number;
+}
+
+export interface TurnStartResponse {
+  turnId: string;
+}
+
+export interface TurnInterruptParams {
+  threadId: string;
+  turnId: string;
+}
+
+export interface ModelListResponse {
+  models: Array<{
+    id: string;
+    name?: string;
+    provider?: string;
+  }>;
+}
+
+// Server notifications
+export interface AgentMessageDeltaNotification {
+  method: "item/agentMessage/delta";
+  params: {
+    threadId: string;
+    turnId: string;
+    delta: string;
+  };
+}
+
+export interface TokenUsageUpdatedNotification {
+  method: "thread/tokenUsage/updated";
+  params: {
+    threadId: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    cacheReadTokens?: number;
+  };
+}
+
+export interface TurnCompletedNotification {
+  method: "turn/completed";
+  params: {
+    threadId: string;
+    turnId: string;
+    finishReason?: "stop" | "tool_calls" | "length" | "error";
+  };
+}
+
+export interface CommandExecutionApprovalParams {
+  method: "item/commandExecution/requestApproval";
+  params: {
+    threadId: string;
+    turnId: string;
+    command: string;
+    args?: string[];
+  };
+}
+
+export interface FileChangeApprovalParams {
+  method: "item/fileChange/requestApproval";
+  params: {
+    threadId: string;
+    turnId: string;
+    path: string;
+    change: string;
+  };
+}
+
+export interface PermissionsApprovalParams {
+  method: "item/permissions/requestApproval";
+  params: {
+    threadId: string;
+    turnId: string;
+    permission: string;
+  };
+}
