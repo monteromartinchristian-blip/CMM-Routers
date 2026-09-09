@@ -172,11 +172,12 @@ export function registerResponsesApi(
     };
 
     const abortController = new AbortController();
+    const tearDown = (): void => {
+      abortController.abort();
+      void adapter.cancel(requestId).catch(() => undefined);
+    };
     request.raw.on("close", () => {
-      if (!reply.sent) {
-        abortController.abort();
-        void adapter.cancel(requestId).catch(() => undefined);
-      }
+      if (!reply.sent) tearDown();
     });
 
     if (body.stream !== true) {
@@ -278,8 +279,7 @@ export function registerResponsesApi(
       for await (const event of tracked) {
         const typed = event as RouterEvent;
         if (reply.raw.destroyed) {
-          abortController.abort();
-          await adapter.cancel(requestId).catch(() => undefined);
+          tearDown();
           break;
         }
         if (typed.type === "text_delta") {
