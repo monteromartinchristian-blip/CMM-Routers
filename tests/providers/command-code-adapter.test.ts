@@ -29,7 +29,7 @@ function makeRequest(upstreamModel = "goat-model-a"): RouterRequest {
       provider: "command-code",
       upstreamModel,
       displayName: upstreamModel,
-      capability: "CHAT_ONLY_PENDING_TASK_13",
+      capability: "CHAT_ONLY",
     },
     messages: [{ role: "user", content: "Hello" }],
     tools: [],
@@ -83,7 +83,7 @@ describe("Command Code adapter", () => {
     const adapter = new CommandCodeAdapter({ ackPath, client });
     const models = await adapter.discoverModels();
     expect(models.map((m) => m.id)).toEqual(["command-code/goat-model-a", "command-code/goat-model-b"]);
-    expect(models[0]!.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+    expect(models[0]!.capability).toBe("CHAT_ONLY");
     expect(seen[0]!.init.headers.Authorization).toBe("Bearer test-secret");
   });
 

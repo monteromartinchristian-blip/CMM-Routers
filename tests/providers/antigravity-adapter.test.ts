@@ -15,7 +15,7 @@ function makeRequest(upstreamModel = "gemini-3.8-flash-low"): RouterRequest {
       provider: "google",
       upstreamModel,
       displayName: upstreamModel,
-      capability: "CHAT_ONLY_PENDING_TASK_13",
+      capability: "CHAT_ONLY",
     },
     messages: [{ role: "user", content: "Hello" }],
     tools: [],
@@ -98,7 +98,7 @@ describe("Antigravity adapter", () => {
     const models = await adapterWithRunner.discoverModels();
     expect(models[0]!.id).toBe("google/gemini-3.8-flash-low");
     expect(models[0]!.provider).toBe("google");
-    expect(models[0]!.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+    expect(models[0]!.capability).toBe("CHAT_ONLY");
   });
 
   it("rejects malformed and ANSI-contaminated model IDs from discovery", async () => {

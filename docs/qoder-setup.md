@@ -59,7 +59,8 @@ The router must never disturb the existing Qwen configuration.
 
 ## Tool capability truth table (v1)
 
-All provider routes report `CHAT_ONLY_PENDING_TASK_13` until Task 13
-proves external tool ownership per route. Where a route remains
+All provider routes report `CHAT_ONLY` (Task 13 closure): no subscription
+path proved safe externally-owned tool calls, so nothing is advertised
+beyond chat. Where a route remains
 chat-only, Qoder Agent-mode tool acceptance is
 `TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY` — do not fake it.

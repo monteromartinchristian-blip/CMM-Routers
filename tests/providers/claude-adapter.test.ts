@@ -25,10 +25,10 @@ describe("ClaudeAdapter", () => {
       expect(models[0]?.displayName).toBeDefined();
     });
 
-    it("all models have CHAT_ONLY_PENDING_TASK_13 capability", async () => {
+    it("all models have CHAT_ONLY capability", async () => {
       const models = await adapter.discoverModels();
       for (const model of models) {
-        expect(model.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+        expect(model.capability).toBe("CHAT_ONLY");
       }
     });
   });

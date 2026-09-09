@@ -24,7 +24,7 @@ export class CodexAdapter implements ProviderAdapter {
         provider: "chatgpt",
         upstreamModel: model.model || model.id,
         displayName: model.displayName || model.id,
-        capability: "CHAT_ONLY_PENDING_TASK_13" as const,
+        capability: "CHAT_ONLY" as const,
       }));
     } catch (error) {
       console.error("Codex model discovery failed:", error);

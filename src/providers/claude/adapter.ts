@@ -131,7 +131,7 @@ export class ClaudeAdapter implements ProviderAdapter {
             provider: "claude",
             upstreamModel: modelValue,
             displayName: modelInfo.displayName || modelValue,
-            capability: "CHAT_ONLY_PENDING_TASK_13",
+            capability: "CHAT_ONLY",
           });
         }
 

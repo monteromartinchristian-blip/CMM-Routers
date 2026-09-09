@@ -50,7 +50,7 @@ UI-level confirmation remains with the human.
 
 ## Tool acceptance per route
 
-All routes report `CHAT_ONLY_PENDING_TASK_13`:
+All routes report `CHAT_ONLY` (Task 13 closure):
 
 ```text
 TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY

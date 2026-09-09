@@ -100,17 +100,17 @@ auth and secrets, offline-capable.
   entries owned by the CLI itself.
 - Command Code Provider API: live use blocked until spend ack + secret
   preconditions are human-confirmed (`BLOCKED_EXTERNAL_PRECONDITION`).
-- All routes: `CHAT_ONLY_PENDING_TASK_13` — external tool ownership
-  unproven per route; `TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY`.
+- All routes: `CHAT_ONLY` — external tool ownership unproven per route;
+  `TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY` (Task 13 closure).
 
 ## Tool capability truth table
 
 | Route | Capability | External tools |
 |---|---|---|
-| chatgpt/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| claude/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| google/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| command-code/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
+| chatgpt/* | CHAT_ONLY | BLOCKED |
+| claude/* | CHAT_ONLY | BLOCKED |
+| google/* | CHAT_ONLY | BLOCKED |
+| command-code/* | CHAT_ONLY | BLOCKED |
 
 ## Preflight
 

@@ -22,7 +22,7 @@ describe("Codex live integration", () => {
         expect(firstModel.provider).toBe("chatgpt");
         expect(firstModel.upstreamModel).toBeDefined();
         expect(firstModel.displayName).toBeDefined();
-        expect(firstModel.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+        expect(firstModel.capability).toBe("CHAT_ONLY");
         
         console.log(`Discovered ${models.length} models:`);
         for (const model of models) {
@@ -66,7 +66,7 @@ describe("Codex live integration", () => {
         throw new Error(`Expected gpt-5.6-sol but got: ${models[0]?.id || 'no models'}`);
       }
       console.log(`Selected model: ${selectedModel.id}`);
-      expect(selectedModel.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+      expect(selectedModel.capability).toBe("CHAT_ONLY");
 
       // Step 3: Create mutation canary
       console.log("\n=== STEP 3: Mutation Canary Setup ===");

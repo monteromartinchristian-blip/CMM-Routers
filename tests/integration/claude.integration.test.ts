@@ -86,7 +86,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
           provider: "claude",
           upstreamModel: "sonnet",
           displayName: "Sonnet",
-          capability: "CHAT_ONLY_PENDING_TASK_13" as any,
+          capability: "CHAT_ONLY" as any,
         },
         messages: [
           { role: "user", content: "Reply exactly: CMM_CLAUDE_SUBSCRIPTION_OK" },
@@ -148,7 +148,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
             provider: "claude",
             upstreamModel: "sonnet",
             displayName: "Sonnet",
-            capability: "CHAT_ONLY_PENDING_TASK_13" as any,
+            capability: "CHAT_ONLY" as any,
           },
           messages: [
             {
@@ -215,7 +215,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
           provider: "claude",
           upstreamModel: "sonnet",
           displayName: "Sonnet",
-          capability: "CHAT_ONLY_PENDING_TASK_13" as any,
+          capability: "CHAT_ONLY" as any,
         },
         messages: [
           {
@@ -298,7 +298,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
           provider: "claude",
           upstreamModel: conversationalModel.upstreamModel,
           displayName: conversationalModel.displayName,
-          capability: "CHAT_ONLY_PENDING_TASK_13" as any,
+          capability: "CHAT_ONLY" as any,
         },
         messages: [
           { role: "user", content: "Reply exactly: CMM_CLAUDE_DISCOVERY_OK" },

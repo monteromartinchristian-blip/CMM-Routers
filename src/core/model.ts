@@ -4,10 +4,9 @@ export type ProviderId =
   | "google"
   | "command-code";
 
-export type ProviderCapability = 
+export type ProviderCapability =
   | "CHAT_AND_TOOLS"
-  | "CHAT_ONLY"
-  | "CHAT_ONLY_PENDING_TASK_13";
+  | "CHAT_ONLY";
 
 export interface DiscoveredModel {
   id: string;

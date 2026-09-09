@@ -45,5 +45,7 @@ Do NOT copy between Macs:
 
 Shared config contains no secrets. Each Mac works offline from the other.
 
-`IMAC_LIVE_INSTALL=NOT_EXECUTED` — the iMac itself is not reachable
-from this environment; installer generation and dry-run are tested here.
+`IMAC_LIVE_INSTALL=BLOCKED_EXTERNAL_PRECONDITION` — the iMac itself is
+not reachable from this environment; `IMAC_REPRODUCIBILITY=PASS` via
+installer generation and dry-run tested here
+(`tests/integration/launchagent.test.ts`).

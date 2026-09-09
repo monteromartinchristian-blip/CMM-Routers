@@ -395,7 +395,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       provider: "google" as const,
       upstreamModel: m.slug,
       displayName: m.displayName,
-      capability: "CHAT_ONLY_PENDING_TASK_13" as const,
+      capability: "CHAT_ONLY" as const,
     }));
   }
 

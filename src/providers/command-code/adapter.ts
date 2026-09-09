@@ -93,7 +93,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
         provider: "command-code",
         upstreamModel: model.id,
         displayName: model.displayName ?? model.id,
-        capability: "CHAT_ONLY_PENDING_TASK_13",
+        capability: "CHAT_ONLY",
       });
     }
     return discovered;

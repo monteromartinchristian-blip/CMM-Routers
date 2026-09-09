@@ -7,8 +7,10 @@ BASE="${1:-http://127.0.0.1:8790}"
 TOKEN="${CMM_ROUTER_TOKEN:-}"
 
 if [ -z "$TOKEN" ]; then
-  echo "QODER_SMOKE=FAIL reason=missing-token"
-  exit 1
+  echo "QODER_SMOKE=BLOCKED reason=missing-token"
+  echo "REQUIRED_ENV=CMM_ROUTER_TOKEN"
+  echo "HINT=export CMM_ROUTER_TOKEN='<router-bearer>' (value never printed)"
+  exit 0
 fi
 
 auth=(-H "Authorization: Bearer $TOKEN")

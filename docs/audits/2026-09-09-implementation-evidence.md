@@ -45,10 +45,10 @@ No `fix:` commit needed (no repo-code bug found).
 - Antigravity: 6/6 PASS (auth, 14 discovered models, inference
   `CMM_ANTIGRAVITY_SUBSCRIPTION_OK` on `google/gemini-3.8-flash-low`,
   canary, cancellation, settings unchanged).
-- Command Code: `BLOCKED_EXTERNAL_PRECONDITION` — spend ack file absent
-  (correctly NOT created on the human's behalf) and secret presence is
-  `ABSENT` in this environment. Adapter + spend-guard fully unit-tested
-  (23 tests). The key pasted in chat was never written to disk, env, or git.
+- Command Code: spend ack now VALID locally; secret remains ABSENT in this
+environment so live inference stays `BLOCKED_EXTERNAL_PRECONDITION`.
+Adapter + spend-guard fully unit-tested (23 tests). The key pasted in
+chat was never written to disk, env, or git.
 - Tool round-trip probes: chatgpt/claude/google all
   `CHAT_ONLY_NO_TOOL_EMITTED`; workspace mutation `BLOCKED`.
 
@@ -64,10 +64,10 @@ No `fix:` commit needed (no repo-code bug found).
 
 | Route | Capability | External tools |
 |---|---|---|
-| chatgpt/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| claude/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| google/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
-| command-code/* | CHAT_ONLY_PENDING_TASK_13 | BLOCKED |
+| chatgpt/* | CHAT_ONLY | BLOCKED |
+| claude/* | CHAT_ONLY | BLOCKED |
+| google/* | CHAT_ONLY | BLOCKED |
+| command-code/* | CHAT_ONLY | BLOCKED |
 
 ## Security invariants
 
@@ -112,6 +112,11 @@ resolution implemented and dry-run tested. iMac procedure documented in
 
 - Command Code live unproven until the human confirms GOAT preconditions
   and provides the spend ack + secret locally.
-- External tool ownership unproven for all routes (chat-only enforced).
+- External tool ownership unproven for all routes: Codex auto-declines
+approvals with no external-tool channel in its app-server protocol;
+Claude SDK runs with native tools disallowed; agy headless has no
+external-tool channel (plan+sandbox only); Command Code passes tools
+through but live ownership is unproven while live is blocked. All routes
+report `CHAT_ONLY` (Task 13 closure).
 - Plan tiers not programmatically exposed (reported honestly).
 - agy 1.1.16 quirks documented in README (duration unit, envelope shape).
