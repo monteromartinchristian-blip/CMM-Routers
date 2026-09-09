@@ -7,10 +7,14 @@ import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import {
+  ANTHROPIC_MESSAGES_PATH,
   CommandCodeClient,
   DEFAULT_BASE_URL,
   DEFAULT_SECRET_ENV,
+  OPENAI_CHAT_COMPLETIONS_PATH,
+  parseAnthropicStreamEvents,
   parseSseDataLine,
+  type CommandCodeWire,
 } from "./client.js";
 import {
   DEFAULT_ACK_PATH,
@@ -19,6 +23,12 @@ import {
 } from "./spend-guard.js";
 
 export { DEFAULT_ACK_PATH, DEFAULT_BASE_URL, DEFAULT_SECRET_ENV };
+export type { CommandCodeWire };
+
+export const COMMAND_CODE_WIRES: Record<CommandCodeWire, { path: string }> = {
+  "openai-chat-completions": { path: OPENAI_CHAT_COMPLETIONS_PATH },
+  "anthropic-messages": { path: ANTHROPIC_MESSAGES_PATH },
+};
 
 export interface CommandCodeAdapterOptions {
   baseUrl?: string | undefined;
@@ -73,6 +83,14 @@ export class CommandCodeAdapter implements ProviderAdapter {
     this.client.readSecret();
   }
 
+  wireForModel(model: DiscoveredModel): CommandCodeWire {
+    const meta = (model as DiscoveredModel & { wire?: unknown }).wire;
+    if (meta === "anthropic-messages" || meta === "openai-chat-completions") {
+      return meta;
+    }
+    return this.client.wireForUpstreamId(model.upstreamModel);
+  }
+
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
     void signal;
     this.requireEnabled();
@@ -94,7 +112,9 @@ export class CommandCodeAdapter implements ProviderAdapter {
         upstreamModel: model.id,
         displayName: model.displayName ?? model.id,
         capability: "CHAT_ONLY",
-      });
+        wire: model.wire,
+        ...(model.family !== undefined ? { family: model.family } : {}),
+      } as DiscoveredModel);
     }
     return discovered;
   }
@@ -133,17 +153,39 @@ export class CommandCodeAdapter implements ProviderAdapter {
 
     assertNoSpendPath(request.model.upstreamModel);
 
+    // Deterministic single-wire routing decided BEFORE any request.
+    // Retrying the other endpoint after an upstream error is FORBIDDEN.
+    const wire = this.wireForModel(request.model);
+
     const abortController = new AbortController();
     const onAbort = () => abortController.abort();
     signal.addEventListener("abort", onAbort, { once: true });
     this.pending.set(request.requestId, { abort: () => abortController.abort() });
 
     try {
+      if (wire === "anthropic-messages") {
+        yield* this.runAnthropicWire(request, abortController.signal, signal);
+        return;
+      }
+      yield* this.runOpenAiWire(request, abortController.signal, signal);
+      return;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      this.pending.delete(request.requestId);
+    }
+  }
+
+  private async *runOpenAiWire(
+    request: RouterRequest,
+    abortSignal: AbortSignal,
+    outerSignal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    try {
       const upstreamTools = toUpstreamTools(request);
       const generator = this.client.streamChatCompletion(
         request.model.upstreamModel,
         toUpstreamMessages(request) as never,
-        abortController.signal,
+        abortSignal,
         {
           ...(request.maxOutputTokens !== undefined
             ? { maxOutputTokens: request.maxOutputTokens as number }
@@ -155,7 +197,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       let sawCompletion = false;
       let toolCallIndex = 0;
       for await (const chunk of generator) {
-        if (signal.aborted || abortController.signal.aborted) return;
+        if (outerSignal.aborted || abortSignal.aborted) return;
         const data = parseSseDataLine(chunk);
         if (data === null) continue;
         let payload: unknown;
@@ -232,7 +274,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
         }
       }
 
-      if (signal.aborted || abortController.signal.aborted) return;
+      if (outerSignal.aborted || abortSignal.aborted) return;
       if (!sawCompletion) {
         yield {
           type: "error",
@@ -243,7 +285,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
         };
       }
     } catch (error) {
-      if (signal.aborted || abortController.signal.aborted) return;
+      if (outerSignal.aborted || abortSignal.aborted) return;
       if (error instanceof RouterError) {
         yield { type: "error", error };
       } else if ((error as Error).name === "AbortError") {
@@ -257,9 +299,103 @@ export class CommandCodeAdapter implements ProviderAdapter {
           ),
         };
       }
-    } finally {
-      signal.removeEventListener("abort", onAbort);
-      this.pending.delete(request.requestId);
+    }
+  }
+
+  private async *runAnthropicWire(
+    request: RouterRequest,
+    abortSignal: AbortSignal,
+    outerSignal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    // Anthropic wire accepts no OpenAI-only fields (no tools passthrough here).
+    try {
+      const messages = toUpstreamMessages(request).map((message) => ({
+        role: String(message.role),
+        content: message.content,
+        ...(typeof message.tool_call_id === "string" ? { tool_call_id: message.tool_call_id } : {}),
+        ...(typeof message.name === "string" ? { name: message.name } : {}),
+      })) as never;
+      const generator = this.client.streamAnthropicMessages(
+        request.model.upstreamModel,
+        messages,
+        abortSignal,
+        request.maxOutputTokens,
+      );
+
+      let buffered = "";
+      let firstChunk = true;
+      for await (const chunk of generator) {
+        if (outerSignal.aborted || abortSignal.aborted) return;
+        if (!firstChunk) buffered += "\n\n";
+        firstChunk = false;
+        buffered += chunk;
+      }
+      if (outerSignal.aborted || abortSignal.aborted) return;
+
+      let state;
+      try {
+        state = parseAnthropicStreamEvents(buffered);
+      } catch (error) {
+        yield {
+          type: "error",
+          error:
+            error instanceof RouterError
+              ? error
+              : new RouterError("provider_protocol_error", String(error)),
+        };
+        return;
+      }
+
+      if (state.error) {
+        yield {
+          type: "error",
+          error: new RouterError("provider_protocol_error", state.error),
+        };
+        return;
+      }
+      for (const delta of state.textDeltas) {
+        yield { type: "text_delta", text: delta };
+      }
+      if (state.inputTokens !== undefined || state.outputTokens !== undefined) {
+        const usageEvent: RouterEvent = { type: "usage" };
+        if (state.inputTokens !== undefined) {
+          (usageEvent as { inputTokens?: number }).inputTokens = state.inputTokens;
+        }
+        if (state.outputTokens !== undefined) {
+          (usageEvent as { outputTokens?: number }).outputTokens = state.outputTokens;
+        }
+        yield usageEvent;
+      }
+      if (state.completed) {
+        if (state.stopReason === "max_tokens") {
+          yield { type: "completed", finishReason: "length" };
+        } else {
+          yield { type: "completed", finishReason: "stop" };
+        }
+        return;
+      }
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Command Code Anthropic stream ended without message_stop",
+        ),
+      };
+    } catch (error) {
+      if (outerSignal.aborted || abortSignal.aborted) return;
+      if (error instanceof RouterError) {
+        yield { type: "error", error };
+      } else if ((error as Error).name === "AbortError") {
+        return;
+      } else {
+        yield {
+          type: "error",
+          error: new RouterError(
+            "provider_unavailable",
+            `Command Code unreachable: ${(error as Error).message}`,
+          ),
+        };
+      }
     }
   }
 

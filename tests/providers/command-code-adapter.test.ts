@@ -87,6 +87,206 @@ describe("Command Code adapter", () => {
     expect(seen[0]!.init.headers.Authorization).toBe("Bearer test-secret");
   });
 
+  it("classifies wires without a static model catalog", async () => {
+    const { classifyCommandCodeWire } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    expect(classifyCommandCodeWire("claude-sonnet-5").wire).toBe("anthropic-messages");
+    expect(classifyCommandCodeWire("anthropic-claude-x").wire).toBe("anthropic-messages");
+    expect(classifyCommandCodeWire("gpt-5-mini").wire).toBe("openai-chat-completions");
+    expect(classifyCommandCodeWire("deepseek-v4").wire).toBe("openai-chat-completions");
+    expect(classifyCommandCodeWire("kimi-k2").wire).toBe("openai-chat-completions");
+    // Explicit wire metadata wins over the family rule.
+    expect(
+      classifyCommandCodeWire("mystery-model", { api: "anthropic-messages" }).wire,
+    ).toBe("anthropic-messages");
+    expect(
+      classifyCommandCodeWire("claude-sonnet-5", { api: "openai" }).wire,
+    ).toBe("openai-chat-completions");
+  });
+
+  it("routes Claude models to POST /provider/v1/messages only", async () => {
+    const seen: { url: string; init: { headers: Record<string, string>; body?: string } }[] = [];
+    const anthropicStream = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":3}}}',
+      "",
+      'data: {"type":"content_block_delta","delta":{"text_delta":"hi"}}',
+      "",
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+      "",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n\n");
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        { "POST https://api.commandcode.ai/provider/v1/messages": { status: 200, body: anthropicStream } },
+        seen,
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const events: { type: string }[] = [];
+    for await (const event of adapter.run(makeRequest("claude-sonnet-5"), new AbortController().signal)) {
+      events.push(event as { type: string });
+    }
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.url).toBe("https://api.commandcode.ai/provider/v1/messages");
+    const body = JSON.parse(seen[0]!.init.body!);
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.stream).toBe(true);
+    expect(typeof body.max_tokens).toBe("number");
+    expect(body).not.toHaveProperty("stream_options");
+    expect(body).not.toHaveProperty("tools");
+    expect(events.map((e) => e.type)).toEqual(["text_delta", "usage", "completed"]);
+  });
+
+  it("routes GPT models to POST /provider/v1/chat/completions only", async () => {
+    const seen: { url: string; init: { headers: Record<string, string>; body?: string } }[] = [];
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}',
+      "",
+    ].join("\n\n");
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        { "POST https://api.commandcode.ai/provider/v1/chat/completions": { status: 200, body: sse } },
+        seen,
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const events: { type: string }[] = [];
+    for await (const event of adapter.run(makeRequest("gpt-5-mini"), new AbortController().signal)) {
+      events.push(event as { type: string });
+    }
+    expect(seen.length).toBe(1);
+    expect(seen[0]!.url).toBe("https://api.commandcode.ai/provider/v1/chat/completions");
+    expect(events.map((e) => e.type)).toContain("completed");
+  });
+
+  it("unknown model still fails closed with no fallback request", async () => {
+    const seen: { url: string; init: { headers: Record<string, string>; body?: string } }[] = [];
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "POST https://api.commandcode.ai/provider/v1/chat/completions": {
+            status: 404,
+            body: "unknown model",
+          },
+        },
+        seen,
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const events: unknown[] = [];
+    for await (const event of adapter.run(makeRequest("gpt-nope-1"), new AbortController().signal)) {
+      events.push(event);
+    }
+    // Exactly one request: deterministic routing forbids endpoint retry.
+    expect(seen.length).toBe(1);
+    const errorEvent = events.find((e) => (e as { type: string }).type === "error") as
+      | { error: RouterError }
+      | undefined;
+    expect(errorEvent?.error.code).toBe("unknown_model");
+  });
+
+  it("maps wrong-wire rejection to provider_protocol_error", async () => {
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "POST https://api.commandcode.ai/provider/v1/messages": {
+            status: 400,
+            body: '{"error":"unsupported_model for this endpoint"}',
+          },
+        },
+        [],
+      ),
+    });
+    // Force the Anthropic wire via model metadata to hit /messages.
+    const AnthropicModelClient = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "POST https://api.commandcode.ai/provider/v1/messages": {
+            status: 400,
+            body: '{"error":"unsupported_model for this endpoint"}',
+          },
+        },
+        [],
+      ),
+    });
+    void client;
+    const adapter = new CommandCodeAdapter({ ackPath, client: AnthropicModelClient });
+    const events: unknown[] = [];
+    for await (const event of adapter.run(makeRequest("claude-sonnet-5"), new AbortController().signal)) {
+      events.push(event);
+    }
+    const errorEvent = events.find((e) => (e as { type: string }).type === "error") as
+      | { error: RouterError }
+      | undefined;
+    expect(errorEvent?.error.code).toBe("provider_protocol_error");
+  });
+
+  it("parses Anthropic streams: partial chunks, usage, terminal completion", async () => {
+    const { parseAnthropicStreamEvents } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    const body = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":8}}}',
+      "",
+      'data: {"type":"content_block_delta","delta":{"text_delta":"hel"}}',
+      "",
+      'data: {"type":"content_block_delta","delta":{"text_delta":"lo"}}',
+      "",
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}',
+      "",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n\n");
+    const state = parseAnthropicStreamEvents(body);
+    expect(state.textDeltas.join("")).toBe("hello");
+    expect(state.inputTokens).toBe(8);
+    expect(state.outputTokens).toBe(2);
+    expect(state.completed).toBe(true);
+  });
+
+  it("rejects malformed Anthropic events and surfaces upstream errors", async () => {
+    const { parseAnthropicStreamEvents } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    expect(() => parseAnthropicStreamEvents("data: {not json}\n\n")).toThrow(RouterError);
+    const errState = parseAnthropicStreamEvents(
+      'data: {"type":"error","error":{"message":"overloaded"}}\n\n',
+    );
+    expect(errState.error).toContain("overloaded");
+    // No message_stop → no synthetic completion.
+    const incomplete = parseAnthropicStreamEvents(
+      'data: {"type":"content_block_delta","delta":{"text_delta":"x"}}\n\n',
+    );
+    expect(incomplete.completed).toBe(false);
+  });
+
+  it("builds Anthropic requests without OpenAI-only fields", async () => {
+    const { buildAnthropicRequestBody } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    const body = buildAnthropicRequestBody(
+      "claude-sonnet-5",
+      [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+      ],
+      5000,
+    );
+    expect(body.model).toBe("claude-sonnet-5");
+    expect(body.stream).toBe(true);
+    expect(body.max_tokens).toBe(4096);
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("stream_options");
+    expect((body.messages as unknown[]).length).toBe(2);
+  });
+
   it("never logs the auth header value", async () => {
     const { buildAuthHeaders, safeLogContext } = await import(
       "../../src/providers/command-code/client.js"

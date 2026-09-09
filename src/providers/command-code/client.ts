@@ -5,9 +5,19 @@ export const DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 export const DEFAULT_SECRET_ENV = "COMMAND_CODE_SECRET";
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
+export const OPENAI_CHAT_COMPLETIONS_PATH = "/chat/completions";
+export const ANTHROPIC_MESSAGES_PATH = "/messages";
+
+export const DEFAULT_ANTHROPIC_MAX_TOKENS = 1024;
+export const MAX_ANTHROPIC_MAX_TOKENS = 4096;
+
+export type CommandCodeWire = "openai-chat-completions" | "anthropic-messages";
+
 export interface CommandCodeModel {
   id: string;
   displayName?: string | undefined;
+  wire: CommandCodeWire;
+  family?: string | undefined;
 }
 
 export interface CommandCodeChatMessage {
@@ -87,13 +97,104 @@ export function mapStatusToRouterError(
   if (status === 429 || lowered.includes("rate limit") || lowered.includes("rolling-window")) {
     return new RouterError("provider_rate_limited", `Command Code rate limited: ${context}`);
   }
-  if (status === 404 || lowered.includes("not found") || lowered.includes("unknown model")) {
+  if (
+    status === 404 ||
+    lowered.includes("not found") ||
+    lowered.includes("unknown model") ||
+    lowered.includes("must be called via")
+  ) {
     return new RouterError("unknown_model", `Unknown Command Code model: ${context}`);
+  }
+  if (
+    status === 400 && (
+      lowered.includes("wrong") && lowered.includes("endpoint") ||
+      lowered.includes("unsupported_model") ||
+      lowered.includes("unsupported model")
+    )
+  ) {
+    return new RouterError(
+      "provider_protocol_error",
+      `Command Code wire mismatch (${context}): ${bodyText.slice(0, 300)}`,
+    );
   }
   return new RouterError(
     "provider_protocol_error",
     `Command Code failure (${context}): ${bodyText.slice(0, 300)}`,
   );
+}
+
+const KNOWN_WIRE_FIELDS = [
+  "provider",
+  "vendor",
+  "owner",
+  "api",
+  "wire",
+  "api_type",
+  "apiType",
+  "endpoint",
+  "family",
+  "model_family",
+  "modelFamily",
+] as const;
+
+function readWireHint(record: Record<string, unknown>): CommandCodeWire | null {
+  for (const field of KNOWN_WIRE_FIELDS) {
+    const value = record[field];
+    if (typeof value !== "string") continue;
+    const lowered = value.toLowerCase();
+    if (
+      lowered.includes("anthropic") ||
+      lowered.includes("messages") && !lowered.includes("chat")
+    ) {
+      return "anthropic-messages";
+    }
+    if (
+      lowered.includes("openai") ||
+      lowered.includes("chat.completions") ||
+      lowered.includes("chat_completions")
+    ) {
+      return "openai-chat-completions";
+    }
+  }
+  return null;
+}
+
+function readFamily(record: Record<string, unknown>): string | undefined {
+  for (const field of ["family", "model_family", "modelFamily", "provider", "vendor", "owner"] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Narrow official Command Code routing rule, derived from the documented
+ * model families (NOT a static catalog of individual model IDs):
+ *
+ *   Command Code Claude/Anthropic model IDs → anthropic-messages
+ *   all other Command Code Provider API models → openai-chat-completions
+ *
+ * Individual model IDs are always discovered dynamically; only the family
+ * convention is classified here.
+ */
+export function classifyCommandCodeWire(
+  modelId: string,
+  metadata: Record<string, unknown> = {},
+): { wire: CommandCodeWire; family: string | undefined } {
+  const hinted = readWireHint(metadata);
+  const family = readFamily(metadata);
+  if (hinted) return { wire: hinted, family };
+  const lowered = modelId.toLowerCase();
+  if (
+    lowered.includes("claude") ||
+    lowered.includes("anthropic") ||
+    /(^|[^a-z])sonnet([^a-z]|$)/.test(lowered) ||
+    /(^|[^a-z])opus([^a-z]|$)/.test(lowered) ||
+    /(^|[^a-z])haiku([^a-z]|$)/.test(lowered)
+  ) {
+    return { wire: "anthropic-messages", family: family ?? "anthropic" };
+  }
+  return { wire: "openai-chat-completions", family };
 }
 
 export interface CommandCodeClientOptions {
@@ -135,6 +236,10 @@ export class CommandCodeClient {
         }
       });
     this.secretOverride = options.secret;
+  }
+
+  wireForUpstreamId(modelId: string): CommandCodeWire {
+    return classifyCommandCodeWire(modelId).wire;
   }
 
   readSecret(): string {
@@ -199,9 +304,12 @@ export class CommandCodeClient {
         const record = entry as Record<string, unknown>;
         const id = typeof record.id === "string" ? record.id : null;
         if (!id) continue;
+        const { wire, family } = classifyCommandCodeWire(id, record);
         models.push({
           id,
           displayName: typeof record.display_name === "string" ? record.display_name : undefined,
+          wire,
+          ...(family !== undefined ? { family } : {}),
         });
       }
     }
@@ -214,20 +322,33 @@ export class CommandCodeClient {
     signal: AbortSignal,
     options: { maxOutputTokens?: number | undefined; tools?: unknown[] | undefined } = {},
   ): AsyncGenerator<string, void> {
-    const secret = this.readSecret();
-    assertNoSpendPath(model);
-    const url = this.buildUrl("/chat/completions");
-    const body: Record<string, unknown> = {
+    yield* this.streamPath(
+      OPENAI_CHAT_COMPLETIONS_PATH,
+      "POST /chat/completions",
       model,
       messages,
-      stream: true,
-    };
-    if (options.maxOutputTokens !== undefined) {
-      body.max_tokens = options.maxOutputTokens;
-    }
-    if (options.tools !== undefined) {
-      body.tools = options.tools;
-    }
+      signal,
+      options.tools !== undefined || options.maxOutputTokens !== undefined
+        ? {
+            ...(options.maxOutputTokens !== undefined
+              ? { max_tokens: options.maxOutputTokens }
+              : {}),
+            ...(options.tools !== undefined ? { tools: options.tools } : {}),
+          }
+        : undefined,
+    );
+  }
+
+  async *streamAnthropicMessages(
+    model: string,
+    messages: CommandCodeChatMessage[],
+    signal: AbortSignal,
+    maxOutputTokens?: number,
+  ): AsyncGenerator<string, void> {
+    const secret = this.readSecret();
+    assertNoSpendPath(model);
+    const url = this.buildUrl(ANTHROPIC_MESSAGES_PATH);
+    const body = buildAnthropicRequestBody(model, messages, maxOutputTokens);
     let response: { status: number; text: () => Promise<string> };
     try {
       response = await this.fetchFn(url, {
@@ -247,13 +368,192 @@ export class CommandCodeClient {
     }
     const bodyText = await readBodyText(response);
     if (response.status !== 200) {
-      throw mapStatusToRouterError(response.status, bodyText, "POST /chat/completions");
+      throw mapStatusToRouterError(response.status, bodyText, "POST /messages");
     }
     for (const chunk of splitSseChunks(bodyText)) {
       if (signal.aborted) return;
       yield chunk;
     }
   }
+
+  private async *streamPath(
+    path: string,
+    context: string,
+    model: string,
+    messages: CommandCodeChatMessage[],
+    signal: AbortSignal,
+    extraBody?: Record<string, unknown>,
+  ): AsyncGenerator<string, void> {
+    const secret = this.readSecret();
+    assertNoSpendPath(model);
+    const url = this.buildUrl(path);
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      stream: true,
+      ...(extraBody ?? {}),
+    };
+    let response: { status: number; text: () => Promise<string> };
+    try {
+      response = await this.fetchFn(url, {
+        method: "POST",
+        headers: buildAuthHeaders(secret),
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (error) {
+      if ((error as Error).name === "AbortError" || signal.aborted) {
+        return;
+      }
+      throw new RouterError(
+        "provider_unavailable",
+        `Command Code unreachable: ${(error as Error).message}`,
+      );
+    }
+    const bodyText = await readBodyText(response);
+    if (response.status !== 200) {
+      throw mapStatusToRouterError(response.status, bodyText, context);
+    }
+    for (const chunk of splitSseChunks(bodyText)) {
+      if (signal.aborted) return;
+      yield chunk;
+    }
+  }
+}
+
+export interface CommandCodeAnthropicMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AnthropicStreamState {
+  textDeltas: string[];
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
+  completed: boolean;
+  stopReason: string | undefined;
+  error: string | undefined;
+}
+
+export function buildAnthropicRequestBody(
+  model: string,
+  messages: CommandCodeChatMessage[],
+  maxOutputTokens?: number,
+): Record<string, unknown> {
+  const converted: CommandCodeAnthropicMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    const content =
+      typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content
+              .map((part) => {
+                if (typeof part === "string") return part;
+                if (part && typeof part === "object") {
+                  const record = part as Record<string, unknown>;
+                  if (record.type === "text" && typeof record.text === "string") {
+                    return record.text;
+                  }
+                }
+                return "";
+              })
+              .join("")
+          : "";
+    converted.push({ role: message.role, content });
+  }
+  if (converted.length === 0) {
+    throw new RouterError("invalid_request", "Anthropic request needs at least one message");
+  }
+  const requested = maxOutputTokens ?? DEFAULT_ANTHROPIC_MAX_TOKENS;
+  const bounded = Math.max(1, Math.min(MAX_ANTHROPIC_MAX_TOKENS, Math.floor(requested)));
+  return {
+    model,
+    max_tokens: bounded,
+    messages: converted,
+    stream: true,
+  };
+}
+
+/**
+ * Parse Anthropic Messages SSE stream events. Handles the standard event
+ * vocabulary (message_start, content_block_start, content_block_delta,
+ * message_delta, message_stop, error) split across arbitrary chunks.
+ */
+export function parseAnthropicStreamEvents(bodyText: string): AnthropicStreamState {
+  const state: AnthropicStreamState = {
+    textDeltas: [],
+    inputTokens: undefined,
+    outputTokens: undefined,
+    completed: false,
+    stopReason: undefined,
+    error: undefined,
+  };
+  for (const chunk of splitSseChunks(bodyText)) {
+    const data = parseSseDataLine(chunk);
+    if (data === null) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(data) as unknown;
+    } catch {
+      throw new RouterError(
+        "provider_protocol_error",
+        `Malformed Anthropic SSE payload: ${data.slice(0, 200)}`,
+      );
+    }
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    const type = record.type;
+    if (type === "error") {
+      const nested = record.error as Record<string, unknown> | undefined;
+      const message =
+        (typeof nested?.message === "string" ? nested.message : null) ??
+        (typeof record.message === "string" ? record.message : null) ??
+        "Anthropic upstream error";
+      state.error = String(message).slice(0, 300);
+      return state;
+    }
+    if (type === "content_block_delta") {
+      const delta = record.delta as Record<string, unknown> | undefined;
+      if (delta && typeof delta.text_delta === "string" && delta.text_delta.length > 0) {
+        state.textDeltas.push(delta.text_delta);
+      } else if (delta && typeof delta.text === "string" && delta.text.length > 0) {
+        state.textDeltas.push(delta.text);
+      }
+      continue;
+    }
+    if (type === "message_delta") {
+      const delta = record.delta as Record<string, unknown> | undefined;
+      if (delta && typeof delta.stop_reason === "string") {
+        state.stopReason = delta.stop_reason;
+      }
+      const usage = record.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object") {
+        if (typeof usage.output_tokens === "number") {
+          state.outputTokens = usage.output_tokens;
+        }
+      }
+      continue;
+    }
+    if (type === "message_start") {
+      const message = record.message as Record<string, unknown> | undefined;
+      const usage = message?.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object") {
+        if (typeof usage.input_tokens === "number") {
+          state.inputTokens = usage.input_tokens;
+        }
+        if (typeof usage.output_tokens === "number") {
+          state.outputTokens = usage.output_tokens;
+        }
+      }
+      continue;
+    }
+    if (type === "message_stop") {
+      state.completed = true;
+      continue;
+    }
+  }
+  return state;
 }
 
 export function splitSseChunks(bodyText: string): string[] {
