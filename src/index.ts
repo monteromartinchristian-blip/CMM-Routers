@@ -1,4 +1,4 @@
-import { loadConfig, type RouterConfig } from "./config/load-config.js";
+import { ensureSharedConfigFromExample, loadConfig, type RouterConfig } from "./config/load-config.js";
 import { ProviderRegistry } from "./registry/provider-registry.js";
 import { buildServer } from "./http/server.js";
 import { UsageStore } from "./observability/usage-store.js";
@@ -40,6 +40,10 @@ export function resolveGoogleAgyPath(config: RouterConfig): string | undefined {
 export async function createProductionRegistry(
   config?: RouterConfig,
 ): Promise<ProductionComposition> {
+  // Fresh-clone bootstrap: a clean checkout ships only
+  // config/shared.example.json. Install it as shared.json (never
+  // overwriting, never secrets) before parsing.
+  if (!config) ensureSharedConfigFromExample();
   const resolved = config ?? loadConfig();
   const registry = new ProviderRegistry();
   const usageStore = new UsageStore();

@@ -18,6 +18,17 @@ if [ ! -f "$BUILT_ENTRYPOINT" ]; then
   exit 1
 fi
 
+# Fresh-clone bootstrap: install config/shared.json from the shipped
+# example when absent. Never overwrites, never writes secrets.
+if [ ! -f "${REPO_DIR}/config/shared.json" ]; then
+  if [ ! -f "${REPO_DIR}/config/shared.example.json" ]; then
+    echo "error: missing ${REPO_DIR}/config/shared.example.json, cannot bootstrap shared.json" >&2
+    exit 1
+  fi
+  cp "${REPO_DIR}/config/shared.example.json" "${REPO_DIR}/config/shared.json"
+  echo "Bootstrapped config/shared.json from shared.example.json"
+fi
+
 mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs/CMM-Subscription-Router"
 
 if ! sed -e "s#__REPO_DIR__#${REPO_DIR}#g" -e "s#__HOME__#${HOME}#g" \
