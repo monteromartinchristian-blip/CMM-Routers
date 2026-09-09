@@ -3,6 +3,7 @@ import { verifyBearer } from "../security/bearer-auth.js";
 import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerChatCompletions } from "./openai-chat.js";
+import { registerResponsesApi } from "./openai-responses.js";
 import { redactObject } from "../security/secret-redaction.js";
 
 export interface ServerOptions {
@@ -80,6 +81,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // OpenAI-compatible chat completions
   registerChatCompletions(fastify, options.registry);
+
+  // OpenAI-compatible responses API
+  registerResponsesApi(fastify, options.registry);
 
   return fastify;
 }
