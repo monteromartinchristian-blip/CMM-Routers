@@ -49,6 +49,13 @@ function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknow
     };
     if (message.toolCallId !== undefined) base.tool_call_id = message.toolCallId;
     if (message.name !== undefined) base.name = message.name;
+    if (message.role === "assistant" && message.toolCalls !== undefined) {
+      base.tool_calls = message.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: { name: call.function.name, arguments: call.function.arguments },
+      }));
+    }
     return base;
   });
 }
@@ -236,11 +243,15 @@ export class CommandCodeAdapter implements ProviderAdapter {
             ? { maxOutputTokens: request.maxOutputTokens as number }
             : {}),
           ...(upstreamTools !== undefined ? { tools: upstreamTools as unknown[] } : {}),
+          ...(request.toolChoice !== undefined ? { tool_choice: request.toolChoice } : {}),
+          ...(request.parallelToolCalls !== undefined
+            ? { parallel_tool_calls: request.parallelToolCalls }
+            : {}),
         },
       );
 
       let sawCompletion = false;
-      let toolCallIndex = 0;
+      const pendingIndexCalls = new Map<number, { id: string; name?: string }>();
       for await (const chunk of generator) {
         if (outerSignal.aborted || abortSignal.aborted) return;
         const data = parseSseDataLine(chunk);
@@ -280,11 +291,58 @@ export class CommandCodeAdapter implements ProviderAdapter {
           for (const call of toolCalls) {
             const callRecord = call as Record<string, unknown>;
             const fn = callRecord.function as Record<string, unknown> | undefined;
+            const upstreamIndex =
+              typeof callRecord.index === "number" && Number.isInteger(callRecord.index)
+                ? (callRecord.index as number)
+                : null;
+            if (upstreamIndex === null) {
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  "Command Code tool fragment missing upstream index",
+                ),
+              };
+              return;
+            }
+            const known = pendingIndexCalls.get(upstreamIndex);
+            if (typeof callRecord.id === "string" && callRecord.id.length > 0) {
+              if (known && known.id !== callRecord.id) {
+                yield {
+                  type: "error",
+                  error: new RouterError(
+                    "provider_protocol_error",
+                    "Command Code tool id changed mid-stream for one index",
+                  ),
+                };
+                return;
+              }
+              pendingIndexCalls.set(upstreamIndex, {
+                id: callRecord.id,
+                ...(typeof fn?.name === "string"
+                  ? { name: fn.name as string }
+                  : known?.name !== undefined
+                    ? { name: known.name }
+                    : {}),
+              });
+            } else if (!known) {
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  "Command Code tool fragment missing id for new index",
+                ),
+              };
+              return;
+            } else if (typeof fn?.name === "string" && known.name === undefined) {
+              known.name = fn.name as string;
+            }
+            const resolved = pendingIndexCalls.get(upstreamIndex)!;
             const toolDelta: RouterEvent = {
               type: "tool_call_delta",
-              index: toolCallIndex++,
-              id: typeof callRecord.id === "string" ? callRecord.id : `call-${toolCallIndex}`,
-              ...(typeof fn?.name === "string" ? { name: fn.name as string } : {}),
+              index: upstreamIndex,
+              id: resolved.id,
+              ...(resolved.name !== undefined ? { name: resolved.name } : {}),
               ...(typeof fn?.arguments === "string"
                 ? { argumentsDelta: fn.arguments as string }
                 : {}),
