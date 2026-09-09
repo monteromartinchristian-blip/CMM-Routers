@@ -2,24 +2,24 @@ import { z } from "zod";
 
 const providerConfigSchema = z.object({
   enabled: z.boolean(),
-});
+}).strict();
 
 const chatgptProviderSchema = providerConfigSchema.extend({
   codexHome: z.string().optional(),
-});
+}).strict();
 
 const claudeProviderSchema = providerConfigSchema.extend({
   profileDir: z.string().optional(),
-});
+}).strict();
 
 const googleProviderSchema = providerConfigSchema.extend({
   agyPath: z.string().optional(),
-});
+}).strict();
 
 const commandCodeProviderSchema = providerConfigSchema.extend({
   baseUrl: z.string().default("https://api.commandcode.ai/provider/v1"),
   secretEnv: z.string(),
-});
+}).strict();
 
 export const sharedConfigSchema = z.object({
   mode: z.literal("standalone"),
@@ -33,6 +33,7 @@ export const sharedConfigSchema = z.object({
       google: googleProviderSchema,
       "command-code": commandCodeProviderSchema,
     })
+    .strict()
     .default(() => ({
       chatgpt: { enabled: false },
       claude: { enabled: false },
@@ -43,37 +44,15 @@ export const sharedConfigSchema = z.object({
         secretEnv: "COMMAND_CODE_SECRET",
       },
     })),
-});
+}).strict();
 
 export type SharedConfig = z.infer<typeof sharedConfigSchema>;
-
-const secretKeyPattern =
-  /^(authorization|api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|oauth|secret|cookie)|\b(oauth|secret|token|key)\w*$/i;
-
-function hasSecretKeys(obj: Record<string, unknown>): boolean {
-  for (const key of Object.keys(obj)) {
-    if (secretKeyPattern.test(key)) {
-      return true;
-    }
-    const value = obj[key];
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      if (hasSecretKeys(value as Record<string, unknown>)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 export const localConfigSchema = z
   .object({
     machineId: z.string().optional(),
     profiles: z.record(z.string(), z.string()).optional(),
   })
-  .passthrough()
-  .refine((data) => !hasSecretKeys(data), {
-    message:
-      "Local configuration must not contain secret-like keys (apiKey, oauthToken, accessToken, etc.)",
-  });
+  .strict();
 
 export type LocalConfig = z.infer<typeof localConfigSchema>;

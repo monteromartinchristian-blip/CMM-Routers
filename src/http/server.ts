@@ -40,13 +40,24 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // Ready endpoint
   fastify.get("/ready", async (_request, reply) => {
-    const models = options.registry.listModels();
-    if (models.length === 0) {
+    const healthMap = await options.registry.getProviderHealth();
+    
+    // Check if at least one registered provider is ready
+    let hasReadyProvider = false;
+    for (const [, health] of healthMap) {
+      if (health.status === "ready") {
+        hasReadyProvider = true;
+        break;
+      }
+    }
+    
+    if (!hasReadyProvider) {
       return reply.code(503).send({
         status: "not_ready",
         reason: "No providers available",
       });
     }
+    
     return { status: "ready" };
   });
 

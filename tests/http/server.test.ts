@@ -162,4 +162,88 @@ describe("HTTP server", () => {
     const bodyStr = JSON.stringify(body);
     expect(bodyStr).not.toContain(bearerSecret);
   });
+
+  // Remediation 5: Honest health/readiness semantics
+  it("/v1/cmm/health reports actual provider health status", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      registry,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/health",
+      headers: {
+        authorization: `Bearer ${bearerSecret}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.providers).toBeDefined();
+    expect(Array.isArray(body.providers)).toBe(true);
+    expect(body.providers[0].id).toBe("chatgpt");
+    expect(body.providers[0].status).toBe("ready");
+  });
+
+  it("/ready returns 503 when all registered providers are unavailable", async () => {
+    class UnavailableProvider implements ProviderAdapter {
+      readonly id = "chatgpt" as const;
+      
+      async discoverModels(): Promise<DiscoveredModel[]> {
+        return [];
+      }
+      
+      async health(): Promise<ProviderHealth> {
+        return { status: "unavailable" };
+      }
+      
+      async *run() {
+        yield { type: "error" as const, error: "not implemented" };
+      }
+      
+      async cancel() {}
+    }
+
+    const unhealthyRegistry = new ProviderRegistry();
+    await unhealthyRegistry.register(new UnavailableProvider());
+    
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      registry: unhealthyRegistry,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/ready",
+      headers: {
+        authorization: `Bearer ${bearerSecret}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+  });
+
+  it("/ready returns 200 when at least one provider is ready", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      registry,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/ready",
+      headers: {
+        authorization: `Bearer ${bearerSecret}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
 });

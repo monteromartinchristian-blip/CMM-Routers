@@ -53,6 +53,32 @@ export class ProviderRegistry {
     return allModels;
   }
 
+  async getProviderHealth(signal?: AbortSignal): Promise<Map<string, import("../core/provider.js").ProviderHealth>> {
+    const healthMap = new Map<string, import("../core/provider.js").ProviderHealth>();
+    
+    const healthChecks: Array<Promise<void>> = [];
+    
+    for (const [id, adapter] of this.providers) {
+      healthChecks.push(
+        (async () => {
+          try {
+            const health = await adapter.health(signal);
+            healthMap.set(id, health);
+          } catch (error) {
+            healthMap.set(id, {
+              status: "unavailable",
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          }
+        })(),
+      );
+    }
+    
+    await Promise.allSettled(healthChecks);
+    
+    return healthMap;
+  }
+
   async resolve(modelId: string): Promise<DiscoveredModel> {
     const slashIndex = modelId.indexOf("/");
     if (slashIndex === -1) {
@@ -94,6 +120,20 @@ export class ProviderRegistry {
     }
 
     const currentCache = this.discoveryCache.get(providerId);
+    
+    // If discovery previously failed, preserve the error
+    if (currentCache?.error) {
+      const cachedError = currentCache.error;
+      if (cachedError instanceof RouterError) {
+        throw cachedError;
+      }
+      throw new RouterError(
+        "provider_unavailable",
+        `Provider discovery failed: ${providerId}`,
+        { provider: providerId, error: cachedError.message },
+      );
+    }
+    
     if (!currentCache?.models.length) {
       throw new RouterError(
         "unknown_model",

@@ -19,16 +19,21 @@ export function registerDiagnostics(
   });
 
   fastify.get("/v1/cmm/health", async () => {
+    const healthMap = await registry.getProviderHealth();
+    const providers: Array<{ id: string; status: string; detail?: string }> = [];
+    
+    for (const [id, health] of healthMap) {
+      providers.push({
+        id,
+        status: health.status,
+        ...(health.detail && { detail: health.detail }),
+      });
+    }
+
     return redactObject({
       status: "ok",
       timestamp: new Date().toISOString(),
-    });
-  });
-
-  fastify.get("/v1/cmm/usage", async () => {
-    return redactObject({
-      requestCount: 0,
-      note: "Usage tracking not yet implemented",
+      providers,
     });
   });
 }
