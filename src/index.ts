@@ -2,6 +2,7 @@ import { loadConfig, type RouterConfig } from "./config/load-config.js";
 import { ProviderRegistry } from "./registry/provider-registry.js";
 import { buildServer } from "./http/server.js";
 import { UsageStore } from "./observability/usage-store.js";
+import { requireSpendAcknowledgement } from "./providers/command-code/spend-guard.js";
 import { CodexAdapter } from "./providers/codex/adapter.js";
 import { ClaudeAdapter } from "./providers/claude/adapter.js";
 import { AntigravityAdapter } from "./providers/antigravity/adapter.js";
@@ -17,7 +18,6 @@ export interface ProductionComposition {
 
 function isCommandCodeAckValid(): boolean {
   try {
-    const { requireSpendAcknowledgement } = require("./providers/command-code/spend-guard.js") as typeof import("./providers/command-code/spend-guard.js");
     requireSpendAcknowledgement();
     return true;
   } catch {
