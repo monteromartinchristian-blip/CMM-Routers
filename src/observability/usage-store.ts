@@ -46,9 +46,9 @@ export class UsageStore {
     requestId: string,
     outcome: {
       status: UsageStatus;
-      inputTokens?: number;
-      outputTokens?: number;
-      errorCode?: string;
+      inputTokens?: number | undefined;
+      outputTokens?: number | undefined;
+      errorCode?: string | undefined;
     },
   ): UsageRecord {
     const started = this.active.get(requestId);

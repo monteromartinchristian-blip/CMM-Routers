@@ -4,6 +4,8 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { mapRouterErrorToHttp } from "./openai-chat.js";
+import type { UsageStore } from "../observability/usage-store.js";
+import { trackProviderStream } from "./usage-tracking.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -111,6 +113,7 @@ function newId(prefix: string): string {
 export function registerResponsesApi(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
+  usageStore?: UsageStore,
 ): void {
   fastify.post("/v1/responses", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -179,7 +182,15 @@ export function registerResponsesApi(
     if (body.stream !== true) {
       const events: RouterEvent[] = [];
       try {
-        for await (const event of adapter.run(routerRequest, abortController.signal)) {
+        const tracked = trackProviderStream(
+          usageStore,
+          requestId,
+          model.provider,
+          model.id,
+          adapter.run(routerRequest, abortController.signal),
+          abortController.signal,
+        );
+        for await (const event of tracked) {
           events.push(event as RouterEvent);
         }
       } catch (error) {
@@ -256,7 +267,15 @@ export function registerResponsesApi(
     try {
       send("response.created", { id: responseId, object: "response", model: model.id, status: "in_progress" });
       let itemIndex = 0;
-      for await (const event of adapter.run(routerRequest, abortController.signal)) {
+      const tracked = trackProviderStream(
+        usageStore,
+        requestId,
+        model.provider,
+        model.id,
+        adapter.run(routerRequest, abortController.signal),
+        abortController.signal,
+      );
+      for await (const event of tracked) {
         const typed = event as RouterEvent;
         if (reply.raw.destroyed) {
           abortController.abort();

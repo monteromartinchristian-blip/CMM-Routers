@@ -8,6 +8,8 @@ import type {
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
 import { redactObject } from "../security/secret-redaction.js";
+import type { UsageStore } from "../observability/usage-store.js";
+import { trackProviderStream } from "./usage-tracking.js";
 
 interface ChatMessageInput {
   role?: unknown;
@@ -176,6 +178,7 @@ function newRequestId(): string {
 export function registerChatCompletions(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
+  usageStore?: UsageStore,
 ): void {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -245,7 +248,15 @@ export function registerChatCompletions(
     if (!stream) {
       const events: RouterEvent[] = [];
       try {
-        for await (const event of adapter.run(routerRequest, abortController.signal)) {
+        const tracked = trackProviderStream(
+          usageStore,
+          requestId,
+          model.provider,
+          model.id,
+          adapter.run(routerRequest, abortController.signal),
+          abortController.signal,
+        );
+        for await (const event of tracked) {
           events.push(event as RouterEvent);
         }
       } catch (error) {
@@ -301,7 +312,15 @@ export function registerChatCompletions(
 
     try {
       let contentIndex = 0;
-      for await (const event of adapter.run(routerRequest, abortController.signal)) {
+      const tracked = trackProviderStream(
+        usageStore,
+        requestId,
+        model.provider,
+        model.id,
+        adapter.run(routerRequest, abortController.signal),
+        abortController.signal,
+      );
+      for await (const event of tracked) {
         const typed = event as RouterEvent;
         if (reply.raw.destroyed) {
           abortController.abort();

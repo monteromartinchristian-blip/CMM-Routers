@@ -82,10 +82,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible chat completions
-  registerChatCompletions(fastify, options.registry);
+  registerChatCompletions(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible responses API
-  registerResponsesApi(fastify, options.registry);
+  registerResponsesApi(fastify, options.registry, options.usageStore);
 
   return fastify;
 }
