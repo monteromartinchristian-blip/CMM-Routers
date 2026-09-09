@@ -321,6 +321,17 @@ export function registerChatCompletions(
         .send({ error: { type: "invalid_request", message: "stream must be a boolean" } });
     }
 
+    let parallelToolCalls: boolean | undefined;
+    if (body.parallel_tool_calls !== undefined) {
+      if (typeof body.parallel_tool_calls !== "boolean") {
+        return reply
+          .code(400)
+          .send({ error: { type: "invalid_request", message: "parallel_tool_calls must be a boolean" } });
+      }
+      parallelToolCalls = body.parallel_tool_calls;
+    }
+    const toolChoice = body.tool_choice;
+
     let model: DiscoveredModel;
     try {
       model = await registry.resolve(body.model);
@@ -342,6 +353,25 @@ export function registerChatCompletions(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
+    // Codex 0.153.4 has no client-to-server tool declaration channel, so a
+    // forced tool_choice cannot be represented there. Fail closed instead of
+    // silently dropping the client constraint. "auto"/"none" degrade explicitly.
+    if (model.provider === "chatgpt" && toolChoice !== undefined) {
+      const forced =
+        toolChoice === "required" ||
+        (typeof toolChoice === "object" &&
+          toolChoice !== null &&
+          (toolChoice as Record<string, unknown>).type === "function");
+      if (forced) {
+        return reply.code(400).send({
+          error: {
+            type: "unsupported_capability",
+            message: "Model supports chat only; tool selection is not supported on this route",
+          },
+        });
+      }
+    }
+
     const requestId = newRequestId();
     const routerRequest = {
       requestId,
@@ -350,6 +380,8 @@ export function registerChatCompletions(
       tools,
       stream: body.stream === true,
       ...(typeof body.max_tokens === "number" ? { maxOutputTokens: body.max_tokens } : {}),
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
     };
 
     const abortController = new AbortController();

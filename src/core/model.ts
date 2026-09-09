@@ -56,4 +56,6 @@ export interface RouterRequest {
   stream: boolean;
   maxOutputTokens?: number;
   reasoningEffort?: "low" | "medium" | "high";
+  toolChoice?: unknown;
+  parallelToolCalls?: boolean;
 }

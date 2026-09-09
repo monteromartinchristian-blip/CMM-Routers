@@ -152,6 +152,16 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "stream must be a boolean" } });
     }
+    let parallelToolCalls: boolean | undefined;
+    if (body.parallel_tool_calls !== undefined) {
+      if (typeof body.parallel_tool_calls !== "boolean") {
+        return reply
+          .code(400)
+          .send({ error: { type: "invalid_request", message: "parallel_tool_calls must be a boolean" } });
+      }
+      parallelToolCalls = body.parallel_tool_calls;
+    }
+    const toolChoice = body.tool_choice;
 
     let model: DiscoveredModel;
     try {
@@ -200,6 +210,8 @@ export function registerResponsesApi(
       ...(typeof body.max_output_tokens === "number"
         ? { maxOutputTokens: body.max_output_tokens }
         : {}),
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
       ...(body.reasoning !== undefined && (body.reasoning as Record<string, unknown>).effort !== undefined
         ? { reasoningEffort: (body.reasoning as Record<string, unknown>).effort as "low" | "medium" | "high" }
         : {}),
