@@ -4,6 +4,26 @@ import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { CodexAppServerClient } from "./app-server-client.js";
 
+/**
+ * Normalize Codex turn status into the neutral Router finish vocabulary.
+ * Upstream uses values like "completed"; the Router contract only allows
+ * stop | tool_calls | length. Unknown statuses fail safe to "stop".
+ */
+export function normalizeCodexFinishReason(
+  status: unknown,
+): "stop" | "tool_calls" | "length" {
+  if (status === "tool_calls" || status === "tool_calls_requested") return "tool_calls";
+  if (
+    status === "length" ||
+    status === "max_tokens" ||
+    status === "max_output_tokens" ||
+    status === "truncated"
+  ) {
+    return "length";
+  }
+  return "stop";
+}
+
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
   private client: CodexAppServerClient | null = null;
@@ -27,7 +47,6 @@ export class CodexAdapter implements ProviderAdapter {
         capability: "CHAT_ONLY" as const,
       }));
     } catch (error) {
-      console.error("Codex model discovery failed:", error);
       if (error instanceof RouterError) {
         throw error;
       }
@@ -108,16 +127,13 @@ export class CodexAdapter implements ProviderAdapter {
 
       // Listen for events - wait for real turn/completed from upstream
       let completed = false;
-      let loopCount = 0;
-      
+
       // Explicit bounded timeout per notification wait (60 seconds)
       // This ensures we never wait indefinitely and always produce provider_timeout on deadline expiry
       const NOTIFICATION_TIMEOUT_MS = 60000;
-      
+
       try {
         while (!completed && !signal.aborted) {
-          loopCount++;
-          
           // Use a single waiter that catches any relevant notification
           // This avoids the timeout issues with racing multiple waiters
           const notification = await this.client.waitForAnyNotification(
@@ -125,36 +141,42 @@ export class CodexAdapter implements ProviderAdapter {
             NOTIFICATION_TIMEOUT_MS,
           );
           
-          console.log(`[CodexAdapter] Received notification: ${notification.method}`);
-          
           if (notification.method === "item/agentMessage/delta") {
-            const params = notification.params as any;
-            if (params?.delta) {
-              console.log(`[CodexAdapter] Yielding delta: "${params.delta.substring(0, 50)}..."`);
+            const params = notification.params as { delta?: unknown };
+            if (typeof params?.delta === "string" && params.delta.length > 0) {
               yield { type: "text_delta", text: params.delta };
             }
           } else if (notification.method === "thread/tokenUsage/updated") {
-            const params = notification.params as any;
-            console.log(`[CodexAdapter] Yielding usage update`);
-            yield {
-              type: "usage",
-              inputTokens: params?.inputTokens,
-              outputTokens: params?.outputTokens,
-              reasoningTokens: params?.reasoningTokens,
-              cacheReadTokens: params?.cacheReadTokens,
+            const params = notification.params as {
+              inputTokens?: unknown;
+              outputTokens?: unknown;
+              reasoningTokens?: unknown;
+              cacheReadTokens?: unknown;
             };
+            const usageEvent: RouterEvent = { type: "usage" };
+            if (typeof params?.inputTokens === "number") {
+              (usageEvent as { inputTokens?: number }).inputTokens = params.inputTokens;
+            }
+            if (typeof params?.outputTokens === "number") {
+              (usageEvent as { outputTokens?: number }).outputTokens = params.outputTokens;
+            }
+            if (typeof params?.reasoningTokens === "number") {
+              (usageEvent as { reasoningTokens?: number }).reasoningTokens = params.reasoningTokens;
+            }
+            if (typeof params?.cacheReadTokens === "number") {
+              (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = params.cacheReadTokens;
+            }
+            yield usageEvent;
           } else if (notification.method === "turn/completed") {
-            console.log(`[CodexAdapter] Turn completed!`);
             completed = true;
-            const params = notification.params as any;
+            const params = notification.params as { turn?: { status?: unknown } };
             yield {
               type: "completed",
-              finishReason: params?.turn?.status || "stop",
+              finishReason: normalizeCodexFinishReason(params?.turn?.status),
             };
           }
         }
       } finally {
-        console.log(`[CodexAdapter] Event loop ended after ${loopCount} iterations`);
         // Clean up active turn tracking
         this.activeTurns.delete(request.requestId);
       }
@@ -180,7 +202,6 @@ export class CodexAdapter implements ProviderAdapter {
 
     const activeTurn = this.activeTurns.get(requestId);
     if (!activeTurn) {
-      console.log(`[CodexAdapter] No active turn found for request ${requestId}`);
       return;
     }
 
@@ -189,9 +210,8 @@ export class CodexAdapter implements ProviderAdapter {
         threadId: activeTurn.threadId,
         turnId: activeTurn.turnId || "",
       });
-      console.log(`[CodexAdapter] Turn interrupted for request ${requestId}`);
-    } catch (error) {
-      console.error(`[CodexAdapter] Failed to interrupt turn for ${requestId}:`, error);
+    } catch {
+      // Interrupt failures still release tracking below.
     } finally {
       this.activeTurns.delete(requestId);
     }

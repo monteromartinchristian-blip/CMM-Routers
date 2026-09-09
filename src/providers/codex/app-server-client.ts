@@ -70,8 +70,7 @@ export class CodexAppServerClient {
     try {
       message = JSON.parse(raw);
     } catch {
-      // Malformed JSON - log but don't crash
-      console.error("Codex protocol error: malformed JSON received");
+      // Malformed JSON - drop the frame without logging content.
       return;
     }
 
@@ -103,8 +102,7 @@ export class CodexAppServerClient {
     // Otherwise it's a notification
     else if ("method" in msg) {
       const notification = msg as JSONRPCNotification;
-      console.log(`[CodexClient] Received notification: ${notification.method}`);
-      
+
       // Find a waiter that matches this notification method
       const waiterIndex = this.notificationWaiters.findIndex((w) => {
         // Check exact match first
@@ -113,14 +111,12 @@ export class CodexAppServerClient {
         if (w.methods && w.methods.includes(notification.method)) return true;
         return false;
       });
-      
+
       if (waiterIndex !== -1) {
         const waiter = this.notificationWaiters[waiterIndex]!;
-        console.log(`[CodexClient] Matched waiter for: ${notification.method}`);
         this.notificationWaiters.splice(waiterIndex, 1);
         waiter.resolve(notification);
       } else {
-        console.log(`[CodexClient] Queuing notification: ${notification.method}`);
         this.notificationQueue.push(notification);
       }
     }
