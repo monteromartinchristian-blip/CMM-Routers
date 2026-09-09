@@ -38,7 +38,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       );
     });
 
-    it("proves OmniRoute unchanged before and after", async () => {
+    it("proves OmniRoute unchanged before and after", { timeout: 15000 }, async () => {
       // Check normal Claude config is untouched
       const normalConfigDir = `${process.env.HOME}/.claude`;
 
@@ -71,7 +71,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       }
     });
 
-    it("executes real subscription-backed inference", async () => {
+    it("executes real subscription-backed inference", { timeout: 30000 }, async () => {
       const health = await adapter.health();
 
       if (health.status === "auth_required") {
@@ -122,7 +122,7 @@ describe.skipIf(!process.env.CMM_RUN_LIVE)(
       expect(completedEvent || errorEvent).toBeDefined();
     });
 
-    it("workspace mutation canary test", async () => {
+    it("workspace mutation canary test", { timeout: 30000 }, async () => {
       // Create temporary fixture directory
       const fixtureDir = join(tmpdir(), `cmm-canary-${Date.now()}`);
       mkdirSync(fixtureDir, { recursive: true });
