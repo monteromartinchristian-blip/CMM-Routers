@@ -286,6 +286,38 @@ export interface InferenceRunner {
   ): Promise<AgyRunResult>;
 }
 
+/**
+ * Unbounded async queue bridging the subprocess callback into the adapter's
+ * async-iterator flow. Parsed NDJSON events are consumable the moment they
+ * arrive — never held until process exit.
+ */
+class StreamEventQueue {
+  private events: ParsedStreamEvent[] = [];
+  private waiters: Array<() => void> = [];
+  private closed = false;
+
+  push(event: ParsedStreamEvent): void {
+    if (this.closed) return;
+    this.events.push(event);
+    const waiter = this.waiters.shift();
+    waiter?.();
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) waiter();
+  }
+
+  async next(): Promise<ParsedStreamEvent | null> {
+    for (;;) {
+      const event = this.events.shift();
+      if (event) return event;
+      if (this.closed) return null;
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+  }
+}
+
 export interface ParsedStreamEvent {
   kind: "text" | "usage" | "completed" | "protocolError";
   texts?: string[];
@@ -508,41 +540,50 @@ export class AntigravityAdapter implements ProviderAdapter {
     enforceAccountOnlySettings();
     const cwd = mkdtempSync(join(tmpdir(), "cmm-antigravity-discovery-"));
     ensureNeutralCwd(cwd);
-    const env = buildAgyChildEnv();
-    assertNoPaygFallback(env);
-    verifyNoPaygInChildEnv(env);
-
-    let result: AgyRunResult;
     try {
-      result = this.modelsRunner.run(["models"], { cwd, timeoutMs: MODELS_TIMEOUT_MS });
-    } catch (error) {
-      throw new RouterError(
-        "provider_unavailable",
-        `Failed to spawn agy: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (result.error && /ENOENT/.test(result.error.message)) {
-      throw new RouterError("provider_unavailable", "agy CLI not found");
-    }
-    if (result.status !== 0) {
-      throw mapAgyFailureToRouterError(result, "agy models");
-    }
+      const env = buildAgyChildEnv();
+      assertNoPaygFallback(env);
+      verifyNoPaygInChildEnv(env);
 
-    const parsed = parseAgyModelsOutput(result.stdout);
-    if (parsed.length === 0) {
-      throw new RouterError(
-        "provider_protocol_error",
-        "Antigravity model discovery returned no usable models",
-      );
-    }
+      let result: AgyRunResult;
+      try {
+        result = this.modelsRunner.run(["models"], { cwd, timeoutMs: MODELS_TIMEOUT_MS });
+      } catch (error) {
+        throw new RouterError(
+          "provider_unavailable",
+          `Failed to spawn agy: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (result.error && /ENOENT/.test(result.error.message)) {
+        throw new RouterError("provider_unavailable", "agy CLI not found");
+      }
+      if (result.status !== 0) {
+        throw mapAgyFailureToRouterError(result, "agy models");
+      }
 
-    return parsed.map((m) => ({
-      id: `google/${m.slug}`,
-      provider: "google" as const,
-      upstreamModel: m.slug,
-      displayName: m.displayName,
-      capability: "CHAT_ONLY" as const,
-    }));
+      const parsed = parseAgyModelsOutput(result.stdout);
+      if (parsed.length === 0) {
+        throw new RouterError(
+          "provider_protocol_error",
+          "Antigravity model discovery returned no usable models",
+        );
+      }
+
+      return parsed.map((m) => ({
+        id: `google/${m.slug}`,
+        provider: "google" as const,
+        upstreamModel: m.slug,
+        displayName: m.displayName,
+        capability: "CHAT_ONLY" as const,
+      }));
+    } finally {
+      // Discovery temp dirs must not accumulate on a long-running router.
+      try {
+        rmSync(cwd, { recursive: true, force: true });
+      } catch {
+        // Cleanup is best-effort; discovery results are already delivered.
+      }
+    }
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
@@ -628,21 +669,23 @@ export class AntigravityAdapter implements ProviderAdapter {
     });
 
     try {
-      // Incremental streaming: deltas yield as NDJSON lines arrive, before
-      // the child exits. Completion is only emitted for an observed terminal
-      // result event — never synthesized from process close.
-      const pendingTexts: string[] = [];
+      // True incremental streaming: the subprocess callback pushes parsed
+      // events into a queue, and this loop drains the queue WHILE the child
+      // is still running. Deltas yield before process exit; completion is
+      // only emitted for an observed terminal result event — never
+      // synthesized from process close.
+      const queue = new StreamEventQueue();
       let terminalSeen = false;
       let terminalFinish: StreamParseResult["finishReason"] = "stop";
       let protocolError: RouterError | undefined;
       let usageYielded = false;
 
-      const yieldUsage = function* (
+      const toUsageEvent = (
         usage: NonNullable<StreamParseResult["usage"]>,
-      ): Generator<RouterEvent> {
-        if (usageYielded) return;
+      ): RouterEvent | null => {
+        if (usageYielded) return null;
         usageYielded = true;
-        yield {
+        return {
           type: "usage",
           ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
           ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
@@ -656,46 +699,67 @@ export class AntigravityAdapter implements ProviderAdapter {
       };
 
       const onEvent = (event: ParsedStreamEvent): void => {
+        queue.push(event);
+      };
+
+      const runPromise = this.runner.streamInference(
+        args,
+        {
+          cwd,
+          timeoutMs: PRINT_TIMEOUT_MS,
+          signal: abortController.signal,
+        },
+        onEvent,
+      );
+      // Close the queue when the subprocess settles so the drain loop ends.
+      // A rejection is handled below; closing here only ends iteration.
+      runPromise.then(
+        () => queue.close(),
+        () => queue.close(),
+      );
+
+      let runError: unknown;
+      let result: AgyRunResult | undefined;
+      const resultPromise = runPromise.then(
+        (value) => {
+          result = value;
+        },
+        (error: unknown) => {
+          runError = error;
+        },
+      );
+
+      // Drain parsed events as they arrive — including while runPromise is
+      // still pending. Terminal bookkeeping only; process-exit verdicts are
+      // evaluated after the runner settles.
+      let drainDone = false;
+      while (!drainDone) {
+        if (signal.aborted || abortController.signal.aborted) return;
+        const event = await queue.next();
+        if (event === null) {
+          drainDone = true;
+          break;
+        }
         if (event.kind === "text" && event.texts) {
           for (const text of event.texts) {
-            pendingTexts.push(text);
+            if (signal.aborted || abortController.signal.aborted) return;
+            yield { type: "text_delta", text };
           }
         } else if (event.kind === "usage" && event.usage) {
-          for (const yielded of yieldUsage(event.usage)) {
-            pendingTexts.push(`\0usage:${JSON.stringify(yielded)}`);
-          }
+          const usageEvent = toUsageEvent(event.usage);
+          if (usageEvent) yield usageEvent;
         } else if (event.kind === "completed") {
           terminalSeen = true;
           terminalFinish = event.finishReason ?? "stop";
         } else if (event.kind === "protocolError" && event.error && !protocolError) {
           protocolError = event.error;
         }
-      };
+      }
 
-      const flushTexts = function* (): Generator<RouterEvent> {
-        while (pendingTexts.length > 0) {
-          const next = pendingTexts.shift()!;
-          if (next.startsWith("\0usage:")) {
-            yield JSON.parse(next.slice("\0usage:".length)) as RouterEvent;
-          } else {
-            yield { type: "text_delta", text: next };
-          }
-        }
-      };
-
-      let result: AgyRunResult;
-      try {
-        result = await this.runner.streamInference(
-          args,
-          {
-            cwd,
-            timeoutMs: PRINT_TIMEOUT_MS,
-            signal: abortController.signal,
-          },
-          onEvent,
-        );
-      } catch (error) {
+      await resultPromise;
+      if (runError !== undefined) {
         if (signal.aborted || abortController.signal.aborted) return;
+        const error: unknown = runError;
         if (error instanceof RouterError) {
           yield { type: "error", error };
         } else {
@@ -710,9 +774,6 @@ export class AntigravityAdapter implements ProviderAdapter {
         return;
       }
 
-      // Drain anything that arrived before close/error resolution.
-      yield* flushTexts();
-
       if (signal.aborted || abortController.signal.aborted) {
         return;
       }
@@ -722,22 +783,31 @@ export class AntigravityAdapter implements ProviderAdapter {
         return;
       }
 
-      if (result.error && /timed out/i.test(result.error.message)) {
+      const settled = result as AgyRunResult | undefined;
+      if (!settled) {
+        yield {
+          type: "error",
+          error: new RouterError("provider_unavailable", "Antigravity run settled without a result"),
+        };
+        return;
+      }
+
+      if (settled.error && /timed out/i.test(settled.error.message)) {
         yield {
           type: "error",
           error: new RouterError("provider_timeout", "Antigravity print timed out"),
         };
         return;
       }
-      if (result.error && /ENOENT/.test(result.error.message)) {
+      if (settled.error && /ENOENT/.test(settled.error.message)) {
         yield {
           type: "error",
           error: new RouterError("provider_unavailable", "agy CLI not found"),
         };
         return;
       }
-      if (result.status !== 0) {
-        yield { type: "error", error: mapAgyFailureToRouterError(result, "agy --print") };
+      if (settled.status !== 0) {
+        yield { type: "error", error: mapAgyFailureToRouterError(settled, "agy --print") };
         return;
       }
 

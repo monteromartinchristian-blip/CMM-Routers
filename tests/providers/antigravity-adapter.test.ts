@@ -451,46 +451,25 @@ describe("Antigravity adapter", () => {
   });
 
   it("yields the first delta before upstream completion (incremental)", async () => {
+    // Race-proof timing coverage lives in
+    // tests/providers/antigravity-true-streaming.test.ts, where the gate is
+    // controlled BY THE TEST. This smoke case keeps the legacy double shape
+    // proving a single early delta still surfaces before the terminal event.
     const firstLine = `${JSON.stringify({ event: "step_update", step_update: { text_delta: "early" } })}\n`;
     const secondLine = `${JSON.stringify({ event: "result", result: { status: "SUCCESS" } })}\n`;
-    let resolveGate!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      resolveGate = resolve;
-    });
-    const seenDeltas: string[] = [];
-    const fakeInference = {
-      async streamInference(
-        _args: string[],
-        options: { cwd: string; signal: AbortSignal },
-        onEvent: (event: ParsedStreamEvent) => void,
-      ) {
-        void options;
-        feedStreamLine(firstLine.trim(), onEvent);
-        resolveGate();
-        await gate.then(() => undefined);
-        // Hold the terminal event until the test observes the first delta.
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        feedStreamLine(secondLine.trim(), onEvent);
-        return { status: 0, signal: null, stdout: "", stderr: "" };
-      },
-      async runInference() {
-        return { status: 0, signal: null, stdout: "", stderr: "" };
-      },
-    };
+    const fakeInference = makeStreamingRunner([firstLine, secondLine]);
     const adapterWithRunner = new AntigravityAdapter(
       fakeInference as unknown as ConstructorParameters<typeof AntigravityAdapter>[0],
     );
-    const iterator = adapterWithRunner.run(makeRequest(), new AbortController().signal)[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    expect(first.value).toMatchObject({ type: "text_delta", text: "early" });
-    seenDeltas.push((first.value as { text: string }).text);
-    console.log("FIRST_ROUTER_DELTA_BEFORE_UPSTREAM_COMPLETION=YES");
-    // Release the terminal event only after the first delta was observed.
-    resolveGate();
-    for await (const event of { [Symbol.asyncIterator]: () => iterator }) {
+    const events: { type: string }[] = [];
+    for await (const event of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
+      events.push(event as { type: string });
+      if (events.length === 1) {
+        expect(event).toMatchObject({ type: "text_delta", text: "early" });
+      }
       if ((event as { type: string }).type === "completed") break;
     }
-    expect(seenDeltas).toEqual(["early"]);
+    expect(events.map((e) => e.type)).toEqual(["text_delta", "completed"]);
   });
 
   it("handles partial lines and multiple lines per chunk", async () => {
