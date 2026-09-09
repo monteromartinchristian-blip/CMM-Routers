@@ -179,6 +179,9 @@ export function registerResponsesApi(
     request.raw.on("close", () => {
       if (!reply.sent) tearDown();
     });
+    reply.raw.on("close", () => {
+      tearDown();
+    });
 
     if (body.stream !== true) {
       const events: RouterEvent[] = [];

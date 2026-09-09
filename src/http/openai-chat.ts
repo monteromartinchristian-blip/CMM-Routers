@@ -240,8 +240,14 @@ export function registerChatCompletions(
       abortController.abort();
       void adapter.cancel(requestId).catch(() => undefined);
     };
+    // request close fires before the handler settles; reply-socket close
+    // fires when the client disconnects mid-stream after headers flush.
+    // Either must tear down the provider run.
     request.raw.on("close", () => {
       if (!reply.sent) tearDown();
+    });
+    reply.raw.on("close", () => {
+      tearDown();
     });
 
     const stream = body.stream === true;
