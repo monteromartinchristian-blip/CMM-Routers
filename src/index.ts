@@ -56,12 +56,12 @@ export async function createProductionRegistry(
   }
 
   if (resolved.providers.claude.enabled) {
-    // The Claude SDK reads its isolated profile from CLAUDE_CONFIG_DIR.
-    // A configured profileDir scopes this process without touching the
-    // user's normal profile; it must be an explicit opt-in.
+    // Explicit runtime injection: the adapter builds its isolated SDK env
+    // from this value per request. No global process.env mutation — the
+    // configured profile is effective even though sdk-client was imported
+    // long before this factory runs.
     const profileDir = resolveClaudeProfileDir(resolved);
-    if (profileDir) process.env.CMM_CLAUDE_PROFILE_DIR = profileDir;
-    const adapter = new ClaudeAdapter();
+    const adapter = new ClaudeAdapter(profileDir ? { profileDir } : {});
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {

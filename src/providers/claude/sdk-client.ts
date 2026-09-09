@@ -3,15 +3,12 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 
 /**
- * Absolute path to isolated Claude configuration directory.
- * This ensures the router's Claude profile is completely separate from
- * the user's normal ~/.claude and any OmniRoute configuration.
- * An explicit CMM_CLAUDE_PROFILE_DIR override (set only from the router's
- * own config profileDir) may relocate it; the default never moves.
+ * Resolve the default isolated Claude configuration directory. Computed per
+ * call — never captured at module load — so runtime configuration supplied
+ * later by production composition always takes effect.
  */
-export const CLAUDE_CONFIG_DIR =
-  process.env.CMM_CLAUDE_PROFILE_DIR ??
-  join(
+export function defaultClaudeConfigDir(): string {
+  return join(
     process.env.HOME || "~",
     "Library",
     "Application Support",
@@ -19,6 +16,17 @@ export const CLAUDE_CONFIG_DIR =
     "SubscriptionRouter",
     "Claude",
   );
+}
+
+/**
+ * Absolute path to isolated Claude configuration directory.
+ * Kept for message/detail strings only. Runtime code must call
+ * defaultClaudeConfigDir() or pass an explicit profileDir so the value is
+ * never frozen at import time.
+ * This ensures the router's Claude profile is completely separate from
+ * the user's normal ~/.claude and any OmniRoute configuration.
+ */
+export const CLAUDE_CONFIG_DIR = defaultClaudeConfigDir();
 
 /**
  * Neutral working directory for Claude operations.
@@ -39,10 +47,13 @@ export const NEUTRAL_CWD = join(tmpdir(), "cmm-claude-neutral");
  * merge the subprocess environment in current versions. We construct a
  * complete allowlisted environment rather than trying to delete specific keys.
  */
-export function buildIsolatedEnvironment(): Record<string, string> {
+export function buildIsolatedEnvironment(
+  profileDir?: string | undefined,
+): Record<string, string> {
+  const configDir = profileDir ?? defaultClaudeConfigDir();
   // Ensure config directory exists
   try {
-    mkdirSync(CLAUDE_CONFIG_DIR, { recursive: true });
+    mkdirSync(configDir, { recursive: true });
   } catch {
     // Directory creation may fail in some environments; continue anyway
   }
@@ -78,7 +89,7 @@ export function buildIsolatedEnvironment(): Record<string, string> {
   }
 
   // Set Claude-specific isolation variables
-  env.CLAUDE_CONFIG_DIR = CLAUDE_CONFIG_DIR;
+  env.CLAUDE_CONFIG_DIR = configDir;
   env.PWD = NEUTRAL_CWD;
 
   // Explicitly ensure NO Anthropic API/PAYG variables are present

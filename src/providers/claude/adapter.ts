@@ -6,6 +6,22 @@ import { CLAUDE_CONFIG_DIR, NEUTRAL_CWD, buildIsolatedEnvironment } from "./sdk-
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
 
 /**
+ * Extract incremental text from an SDKPartialAssistantMessage frame.
+ * Only content_block_delta/text_delta carries user-visible tokens;
+ * every other stream frame (message_start, content_block_start/stop,
+ * message_delta/stop, pings) yields nothing.
+ */
+export function extractStreamEventText(event: unknown): string | null {
+  if (!event || typeof event !== "object") return null;
+  const record = event as Record<string, unknown>;
+  if (record.type !== "content_block_delta") return null;
+  const delta = record.delta as Record<string, unknown> | undefined;
+  if (!delta || typeof delta !== "object") return null;
+  if (delta.type !== "text_delta" || typeof delta.text !== "string") return null;
+  return delta.text.length > 0 ? delta.text : null;
+}
+
+/**
  * Claude subscription provider adapter.
  *
  * Uses the official @anthropic-ai/claude-agent-sdk to interact with Claude
@@ -18,6 +34,15 @@ export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
 
   private activeRequests = new Map<string, { abortController?: AbortController }>();
+  private readonly profileDir: string | undefined;
+
+  constructor(options: { profileDir?: string | undefined } = {}) {
+    this.profileDir = options.profileDir;
+  }
+
+  private sdkEnv(): Record<string, string> {
+    return buildIsolatedEnvironment(this.profileDir);
+  }
 
   /**
    * Discover available Claude models through the SDK's supportedModels() API.
@@ -31,17 +56,20 @@ export class ClaudeAdapter implements ProviderAdapter {
     // Per-request isolated subprocess environment. options.env REPLACES the
     // subprocess environment entirely (never merged), so global process.env
     // is never touched — concurrent requests cannot observe each other.
-    const env = buildIsolatedEnvironment();
+    const env = this.sdkEnv();
     try {
       // Create a minimal query to access supportedModels()
       // This establishes a session with the isolated profile.
       // options.env REPLACES the SDK subprocess environment (never merged),
       // so PAYG variables and the normal profile can never leak in.
+      // settingSources: [] disables user/project/local settings files so
+      // discovery can never inherit the normal Claude/OmniRoute profile.
       const queryResult: Query = query({
         prompt: "",  // Minimal prompt for model discovery
         options: {
           env,
           cwd: NEUTRAL_CWD,
+          settingSources: [],
           disallowedTools: [
             "Bash",
             "Read",
@@ -124,58 +152,53 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   /**
-   * Check health of the Claude provider by verifying authentication status.
-   * Uses the SDK's resolveSettings to check if the isolated profile is authenticated.
+   * Check health of the Claude provider by probing the isolated Router
+   * profile only. Never consults normal user settings: resolveSettings runs
+   * with settingSources [] and the verdict comes from isolated startup(),
+   * never from a third-party apiProvider observation.
    */
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
     void signal;
-    const env = buildIsolatedEnvironment();
+    const env = this.sdkEnv();
     try {
-      // Resolve settings with isolated config
-      const settings = await resolveSettings({
+      // Isolated settings resolution only — user/project/local sources are
+      // disabled so a normal Claude/OmniRoute profile cannot influence us.
+      // The result itself is NOT an auth oracle; startup() decides.
+      await resolveSettings({
         cwd: NEUTRAL_CWD,
+        settingSources: [],
       });
 
-      // Check if authenticated (apiProvider should be 'firstParty' for subscription)
-      const apiProvider = settings.effective.apiProvider;
+      // Verify actual authentication status against the isolated profile.
+      // options.env REPLACES the SDK subprocess environment.
+      try {
+        await startup({
+          options: {
+            env,
+            cwd: NEUTRAL_CWD,
+            settingSources: [],
+          },
+          initializeTimeoutMs: 5000,
+        });
 
-      if (!apiProvider || apiProvider === 'firstParty') {
-        // Need to verify actual authentication status
-        // Try a minimal startup to see if we're authenticated.
-        // options.env REPLACES the SDK subprocess environment.
-        try {
-          await startup({
-            options: {
-              env,
-              cwd: NEUTRAL_CWD,
-            },
-            initializeTimeoutMs: 5000,
-          });
-
+        return {
+          status: "ready",
+          detail: "Authenticated via Claude subscription",
+        };
+      } catch (err) {
+        const error = err as Error;
+        if (error.message.includes("auth") || error.message.includes("login")) {
           return {
-            status: "ready",
-            detail: "Authenticated via Claude subscription",
-          };
-        } catch (err) {
-          const error = err as Error;
-          if (error.message.includes("auth") || error.message.includes("login")) {
-            return {
-              status: "auth_required",
-              detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
-            };
-          }
-
-          return {
-            status: "unavailable",
-            detail: error.message,
+            status: "auth_required",
+            detail: `Run: claude login --config-dir "${CLAUDE_CONFIG_DIR}"`,
           };
         }
-      }
 
-      return {
-        status: "ready",
-        detail: `API provider: ${apiProvider}`,
-      };
+        return {
+          status: "unavailable",
+          detail: error.message,
+        };
+      }
     } catch (error) {
       const err = error as Error;
       if (err.message.includes("auth") || err.message.includes("login")) {
@@ -213,7 +236,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     // SDK subprocess environment entirely (never merged with process.env),
     // so global process.env is never touched — concurrent requests cannot
     // observe each other and PAYG values can never leak in.
-    const env = buildIsolatedEnvironment();
+    const env = this.sdkEnv();
 
     try {
       // Prepare prompt from messages
@@ -229,6 +252,12 @@ export class ClaudeAdapter implements ProviderAdapter {
         cwd: NEUTRAL_CWD,
         // Route the request to the model selected from discovery
         model: request.model.upstreamModel,
+        // Incremental token streaming: without this the SDK only emits
+        // complete AssistantMessage objects after generation finishes.
+        includePartialMessages: true,
+        // Isolation mode: never read user/project/local settings files, so
+        // the normal Claude/OmniRoute profile cannot influence the Router.
+        settingSources: [],
         // Disable all native tools - Qoder remains the tool owner
         disallowedTools: [
           "Bash",
@@ -253,17 +282,30 @@ export class ClaudeAdapter implements ProviderAdapter {
       });
 
       let usageYielded = false;
+      // Once a partial text delta has been emitted, the trailing complete
+      // assistant message repeats the same text and must not be re-emitted.
+      let sawPartialDelta = false;
 
       // Stream SDK messages and map to RouterEvents incrementally.
       for await (const message of queryResult) {
         if (signal.aborted || abortController.signal.aborted) {
           return;
         }
+        if (message.type === "stream_event") {
+          const text = extractStreamEventText(
+            (message as { event?: unknown }).event,
+          );
+          if (text) {
+            sawPartialDelta = true;
+            yield { type: "text_delta", text };
+          }
+          continue;
+        }
         if (message.type === "assistant") {
           // Extract text content from assistant message
           const contentBlocks = message.message?.content || [];
           for (const block of contentBlocks) {
-            if (block.type === "text") {
+            if (block.type === "text" && !sawPartialDelta) {
               const text = block.text;
               if (text) {
                 yield { type: "text_delta", text };
