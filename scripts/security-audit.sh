@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Final security audit: scans tracked files for secret material and unsafe paths.
+# Final security audit: scans tracked files for secret material, unsafe
+# paths, and the production-composition invariants the independent audit
+# found blind (B2/B3/B4/B9, M10). Fails closed: any finding exits non-zero.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -46,6 +48,60 @@ if git ls-files dist/ | grep -q "tests"; then
   fail=1
 else
   echo "BUILD_ARTIFACT_TEST_DUPLICATION=NONE"
+fi
+
+echo "== ESM safety: no require() in production sources =="
+if grep -rn "require(" src/index.ts src/security/bearer-auth.ts 2>/dev/null | grep -q .; then
+  echo "FAIL: CommonJS require() in ESM production path"
+  fail=1
+else
+  echo "ESM_REQUIRE_FREE=PASS"
+fi
+
+echo "== Claude isolation: no global process.env writes in adapter =="
+if grep -n "process\.env\.[A-Z_]*=\|delete process\.env\." src/providers/claude/adapter.ts | grep -q .; then
+  echo "FAIL: Claude adapter mutates global process.env"
+  fail=1
+else
+  echo "CLAUDE_ENV_ISOLATION=PASS"
+fi
+
+echo "== Antigravity spending gate enforced in runtime =="
+if ! grep -q "enforceAccountOnlySettings()" src/providers/antigravity/adapter.ts; then
+  echo "FAIL: account-only settings gate not invoked"
+  fail=1
+else
+  echo "ANTIGRAVITY_SPENDING_GATE=PASS"
+fi
+
+echo "== runtime log hygiene: no completion-content logging =="
+if grep -rn "Yielding delta\|substring(0, 50)" src/providers/ src/http/ --include="*.ts" | grep -q .; then
+  echo "FAIL: completion content logging present"
+  fail=1
+else
+  echo "LOG_HYGIENE=PASS"
+fi
+
+echo "== production composition: providers registered from config =="
+if ! grep -q "createProductionRegistry" src/index.ts; then
+  echo "FAIL: production composition root missing"
+  fail=1
+else
+  echo "PRODUCTION_COMPOSITION=PASS"
+fi
+
+echo "== preflight fail-closed wiring =="
+if ! grep -q 'exit 1' scripts/preflight.sh; then
+  echo "FAIL: preflight cannot exit non-zero on unsafe state"
+  fail=1
+else
+  echo "PREFLIGHT_FAIL_CLOSED=PASS"
+fi
+
+if [ "$fail" != "0" ]; then
+  echo "SECURITY_AUDIT=FAIL"
+else
+  echo "SECURITY_AUDIT=PASS"
 fi
 
 exit "$fail"
