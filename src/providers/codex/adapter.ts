@@ -108,6 +108,16 @@ export class CodexAdapter implements ProviderAdapter {
   private client: CodexAppServerClient | null = null;
   private process: ReturnType<typeof spawn> | null = null;
   private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
+  /**
+   * Pending Qoder-owned tool calls parked across the HTTP boundary, keyed by
+   * provider call id. Each entry holds the ORIGINAL wire request id plus the
+   * thread/turn that must continue once Qoder's result arrives. Bounded by
+   * the broker; entries die on resolve/expire/cancel, never by tool name.
+   */
+  private readonly pendingTools = new Map<
+    string,
+    { wireId: number | string; threadId: string; turnId: string; tool: string; argsJson: string }
+  >();
   private readonly codexHome: string | undefined;
   private readonly codexBinary: string;
 
@@ -181,6 +191,27 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     try {
+      // Follow-up turn carrying Qoder's executed tool results: resolve the
+      // ORIGINAL pending wire requests (same thread/turn) BEFORE opening any
+      // new thread. Each role:"tool" message must match a parked entry by
+      // exact call id; the wire answer carries success:true + Qoder's result.
+      const toolResults = request.messages.filter(
+        (m) => m.role === "tool" && typeof m.toolCallId === "string",
+      );
+      if (toolResults.length > 0 && this.client) {
+        for (const result of toolResults) {
+          const pending = this.pendingTools.get(result.toolCallId as string);
+          if (!pending) continue;
+          this.pendingTools.delete(result.toolCallId as string);
+          this.client.respondToServerRequest(pending.wireId, {
+            success: true,
+            contentItems: [{ type: "inputText", text: result.content ?? "" }],
+          });
+          yield* this.drainTurn(request.requestId, pending.threadId, pending.turnId, signal);
+          return;
+        }
+      }
+
       const seeds = buildCodexThreadSeeds(request.messages);
       // Ephemeral per-request thread: explicitly requested per the plan's
       // privacy/lifecycle requirement (never rely on a server default).
@@ -296,6 +327,17 @@ export class CodexAdapter implements ProviderAdapter {
               typeof params.arguments === "string"
                 ? params.arguments
                 : JSON.stringify(params.arguments ?? {});
+            // Park the ORIGINAL wire request: hold it pending across the Qoder
+            // boundary. The follow-up request carrying the matching role:"tool"
+            // result resolves THIS request with success:true (see run() head).
+            // success:false is reserved for unmatched calls (fail-closed).
+            this.pendingTools.set(callId, {
+              wireId: wireRequestId,
+              threadId,
+              turnId,
+              tool: toolName,
+              argsJson: args,
+            });
             // Surface the structured tool call to Qoder (never execute it).
             yield {
               type: "tool_call_delta",
@@ -305,15 +347,6 @@ export class CodexAdapter implements ProviderAdapter {
               argumentsDelta: args,
             };
             yield { type: "completed", finishReason: "tool_calls" };
-            // This HTTP request ends at the tool boundary. Qoder executes and
-            // submits the result on a follow-up request (injected as history
-            // on that turn). Close the app-server's open tool request so its
-            // turn does not hang: the router never executes, so the outcome is
-            // reported unsuccessful and the next turn carries the real result.
-            this.client.respondToServerRequest(wireRequestId, {
-              success: false,
-              contentItems: [{ type: "inputText", text: "Tool execution owned by the consumer (Qoder); result delivered on the follow-up turn." }],
-            });
             break;
           }
 
@@ -392,6 +425,100 @@ export class CodexAdapter implements ProviderAdapter {
           ),
         };
       }
+    }
+  }
+
+  /**
+   * Continue listening on an already-open thread/turn after the pending tool
+   * request was resolved with Qoder's result. Streams the turn's remaining
+   * deltas/usage/completion on the SAME thread/turn — never a new thread.
+   */
+  private async *drainTurn(
+    requestId: string,
+    threadId: string,
+    turnId: string,
+    signal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    if (!this.client) {
+      throw new RouterError("provider_unavailable", "Codex client not available");
+    }
+    const client = this.client;
+    this.activeTurns.set(requestId, { threadId, turnId });
+    const scope = { threadId, turnId };
+    const NOTIFICATION_TIMEOUT_MS = 60000;
+    try {
+      while (!signal.aborted) {
+        let notification;
+        try {
+          notification = await client.waitForAnyNotification(
+            ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+            NOTIFICATION_TIMEOUT_MS,
+            scope,
+          );
+        } catch (error) {
+          if (signal.aborted) break;
+          yield {
+            type: "error",
+            error:
+              error instanceof RouterError
+                ? error
+                : new RouterError(
+                    "provider_protocol_error",
+                    error instanceof Error ? error.message : String(error),
+                  ),
+          };
+          break;
+        }
+        if (notification.method === "item/agentMessage/delta") {
+          const params = parseAgentDeltaParams(
+            (notification as { params?: unknown }).params,
+          );
+          if (params.delta.length > 0) {
+            yield { type: "text_delta", text: params.delta };
+          }
+        } else if (notification.method === "thread/tokenUsage/updated") {
+          const parsed = parseTokenUsageParams(
+            (notification as { params?: unknown }).params,
+          );
+          const usageEvent: RouterEvent = { type: "usage" };
+          if (parsed.inputTokens !== undefined) {
+            (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
+          }
+          if (parsed.outputTokens !== undefined) {
+            (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
+          }
+          if (parsed.reasoningTokens !== undefined) {
+            (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
+          }
+          if (parsed.cacheReadTokens !== undefined) {
+            (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
+          }
+          yield usageEvent;
+        } else if (notification.method === "turn/completed") {
+          const parsed = parseTurnCompletedParams(
+            (notification as { params?: unknown }).params,
+          );
+          if (parsed.turnId !== turnId) continue;
+          if (parsed.status === "failed") {
+            yield {
+              type: "error",
+              error: new RouterError(
+                "provider_protocol_error",
+                `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
+              ),
+            };
+          } else {
+            yield {
+              type: "completed",
+              finishReason: normalizeCodexFinishReason(parsed.status),
+            };
+          }
+          break;
+        }
+      }
+    } finally {
+      this.activeTurns.delete(requestId);
+      client.discardScope(scope);
     }
   }
 

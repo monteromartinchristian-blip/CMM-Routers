@@ -94,9 +94,14 @@ describe("Codex dynamic external tool mechanism (item/tool/call)", () => {
       },
     });
     const call = await waiter;
+    // Shape check only: success:true + Qoder-produced content is the genuine
+    // continuation; success:false is reserved for unmatched calls. No
+    // declaration payload exists on this wire (Codex 0.153.4 has no
+    // client-to-server dynamic-tool declaration channel), so no
+    // *_TOOL_DEFINITION_SENT marker is asserted here.
     client.respondToServerRequest(call.id, {
-      success: false,
-      contentItems: [{ type: "inputText", text: "external" }],
+      success: true,
+      contentItems: [{ type: "inputText", text: "qoder-result" }],
     });
     const sent = transport.getOutgoingMessages();
     const response = sent
@@ -104,9 +109,9 @@ describe("Codex dynamic external tool mechanism (item/tool/call)", () => {
       .find((m) => (m as { id?: unknown }).id === 55) as {
       result?: { success?: boolean; contentItems?: Array<{ type: string; text: string }> };
     };
-    expect(response?.result?.success).toBe(false);
-    expect(response?.result?.contentItems?.[0]).toMatchObject({ type: "inputText", text: "external" });
-    console.log("CODEX_EXTERNAL_TOOL_DEFINITION_SENT=YES");
+    expect(response?.result?.success).toBe(true);
+    expect(response?.result?.contentItems?.[0]).toMatchObject({ type: "inputText", text: "qoder-result" });
+    console.log("CODEX_DYNAMIC_TOOL_RESPONSE_SHAPE=PASS");
     console.log("QODER_EXECUTION_OWNER=YES");
     console.log("CODEX_NATIVE_EXECUTION=NONE");
   });

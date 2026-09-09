@@ -74,7 +74,7 @@ describe("Command Code strict continuation (RED: assistant tool_calls dropped)",
       model: { id: "command-code/m", provider: "command-code", upstreamModel: "m", displayName: "m", capability: "CHAT_AND_TOOLS" },
       tools: [CMM_ECHO_TOOL],
       stream: false,
-    } as const;
+    };
     for await (const _ of adapter.run(
       { ...base, requestId: "s1", messages: [{ role: "user", content: "echo canary" }] } as RouterRequest,
       new AbortController().signal,
