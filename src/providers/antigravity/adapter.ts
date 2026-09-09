@@ -17,6 +17,7 @@ import {
   FORBIDDEN_PAYG_VARS,
   GLOBAL_SETTINGS_PATH,
   RealAgyRunner,
+  assertAccountOnlySettings,
   buildAgyChildEnv,
   readGlobalSettingsState,
   type AgyRunner,
@@ -30,6 +31,18 @@ export {
   buildAgyChildEnv,
   readGlobalSettingsState,
 };
+
+function enforceAccountOnlySettings(): void {
+  const state = readGlobalSettingsState();
+  try {
+    assertAccountOnlySettings(state);
+  } catch (error) {
+    throw new RouterError(
+      "provider_unavailable",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 const PRINT_TIMEOUT_MS = 120_000;
 const MODELS_TIMEOUT_MS = 30_000;
@@ -360,6 +373,9 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
     void signal;
+    // Account-only spending gate: fail closed BEFORE any spawn that could
+    // consume quota. Never modifies the settings file.
+    enforceAccountOnlySettings();
     const cwd = mkdtempSync(join(tmpdir(), "cmm-antigravity-discovery-"));
     ensureNeutralCwd(cwd);
     const env = buildAgyChildEnv();
@@ -419,6 +435,19 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
+    try {
+      // Account-only spending gate: fail closed BEFORE spawning inference.
+      enforceAccountOnlySettings();
+    } catch (error) {
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_unavailable", String(error)),
+      };
+      return;
+    }
     const cwd = mkdtempSync(join(tmpdir(), "cmm-antigravity-run-"));
     ensureNeutralCwd(cwd);
     const env = buildAgyChildEnv();

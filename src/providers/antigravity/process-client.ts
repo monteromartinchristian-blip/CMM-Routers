@@ -52,6 +52,21 @@ export function readGlobalSettingsState(): {
   };
 }
 
+export function assertAccountOnlySettings(
+  state: { modelProvider: unknown; useG1Credits: unknown },
+): void {
+  if (state.modelProvider === "gemini") {
+    throw new Error(
+      "Antigravity unsafe configuration: modelProvider=gemini routes to Gemini API PAYG",
+    );
+  }
+  if (state.useG1Credits === true) {
+    throw new Error(
+      "Antigravity unsafe configuration: useG1Credits=true enables AI Credits fallback",
+    );
+  }
+}
+
 export const FORBIDDEN_PAYG_VARS = [
   "GEMINI_API_KEY",
   "GOOGLE_GEMINI_BASE_URL",

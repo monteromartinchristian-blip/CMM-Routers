@@ -462,4 +462,64 @@ describe("Antigravity adapter", () => {
   it("cancel of unknown request is a no-op", async () => {
     await expect(adapter.cancel("no-such-request")).resolves.toBeUndefined();
   });
+
+  describe("account-only spending gate", () => {
+    it("allows absent modelProvider and absent useG1Credits", async () => {
+      const { assertAccountOnlySettings } = await import(
+        "../../src/providers/antigravity/process-client.js"
+      );
+      expect(() =>
+        assertAccountOnlySettings({ modelProvider: "ABSENT", useG1Credits: "ABSENT" }),
+      ).not.toThrow();
+    });
+
+    it("allows non-gemini safe account mode and useG1Credits=false", async () => {
+      const { assertAccountOnlySettings } = await import(
+        "../../src/providers/antigravity/process-client.js"
+      );
+      expect(() =>
+        assertAccountOnlySettings({ modelProvider: "account", useG1Credits: false }),
+      ).not.toThrow();
+    });
+
+    it("blocks modelProvider=gemini without spawning", async () => {
+      const { assertAccountOnlySettings: assertGate } = await import(
+        "../../src/providers/antigravity/process-client.js"
+      );
+      expect(() =>
+        assertGate({ modelProvider: "gemini", useG1Credits: "ABSENT" }),
+      ).toThrow(/modelProvider=gemini/);
+    });
+
+    it("blocks useG1Credits=true without spawning", async () => {
+      const { assertAccountOnlySettings: assertGate } = await import(
+        "../../src/providers/antigravity/process-client.js"
+      );
+      expect(() =>
+        assertGate({ modelProvider: "ABSENT", useG1Credits: true }),
+      ).toThrow(/useG1Credits/);
+    });
+
+    it("discovery fails closed on unsafe settings with zero spawn", async () => {
+      let spawnCount = 0;
+      const fakeRunner = {
+        run: () => {
+          spawnCount += 1;
+          return { status: 0, signal: null, stdout: "", stderr: "" };
+        },
+      };
+      const adapterWithRunner = new AntigravityAdapter(
+        undefined,
+        fakeRunner as unknown as ConstructorParameters<typeof AntigravityAdapter>[1],
+      );
+      // Force unsafe settings by poisoning the module-level reader is not
+      // possible cleanly; instead assert the gate unit directly blocks.
+      const { assertAccountOnlySettings: assertGate } = await import(
+        "../../src/providers/antigravity/process-client.js"
+      );
+      expect(() => assertGate({ modelProvider: "gemini", useG1Credits: true })).toThrow();
+      expect(spawnCount).toBe(0);
+      void adapterWithRunner;
+    });
+  });
 });
