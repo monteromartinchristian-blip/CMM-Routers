@@ -55,7 +55,7 @@ describe("LaunchAgent installation", () => {
     ]) {
       const content = readFileSync(join(REPO, script), "utf-8");
       expect(content).toContain("#!/usr/bin/env bash");
-      expect(content).not.toContain("user_4HdV");
+      expect(content).not.toMatch(/user_[A-Za-z0-9]{10,}/);
     }
   });
 });

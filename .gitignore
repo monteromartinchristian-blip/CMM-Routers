@@ -3,6 +3,8 @@ dist/
 .env
 .env.local
 config/local.json
+command-code-spend-ack.json
+*-spend-ack.json
 runtime/
 *.log
 .DS_Store
