@@ -8,6 +8,7 @@ LABEL="com.cmm.subscription-router"
 DEST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 TEMPLATE="${REPO_DIR}/launchd/com.cmm.subscription-router.plist.template"
 BUILT_ENTRYPOINT="${REPO_DIR}/dist/index.js"
+CONFIG_DIR="${CMM_CONFIG_DIR:-${REPO_DIR}/config}"
 
 if [ ! -f "$TEMPLATE" ]; then
   echo "error: missing template $TEMPLATE" >&2
@@ -20,33 +21,97 @@ fi
 
 # Fresh-clone bootstrap: install config/shared.json from the shipped
 # example when absent. Never overwrites, never writes secrets.
-if [ ! -f "${REPO_DIR}/config/shared.json" ]; then
-  if [ ! -f "${REPO_DIR}/config/shared.example.json" ]; then
-    echo "error: missing ${REPO_DIR}/config/shared.example.json, cannot bootstrap shared.json" >&2
+if [ ! -f "${CONFIG_DIR}/shared.json" ]; then
+  if [ ! -f "${CONFIG_DIR}/shared.example.json" ]; then
+    echo "error: missing ${CONFIG_DIR}/shared.example.json, cannot bootstrap shared.json" >&2
     exit 1
   fi
-  cp "${REPO_DIR}/config/shared.example.json" "${REPO_DIR}/config/shared.json"
+  cp "${CONFIG_DIR}/shared.example.json" "${CONFIG_DIR}/shared.json"
   echo "Bootstrapped config/shared.json from shared.example.json"
 fi
 
-# Deterministic executable resolution for the LaunchAgent environment,
-# which does not inherit interactive-shell PATH. Absolute paths are baked
-# into the plist; provider agy path prefers effective config.
-NODE_BIN="$(command -v node 2>/dev/null || echo node)"
-if [ "$NODE_BIN" != "node" ]; then
-  case "$NODE_BIN" in
+# Deterministic executable resolution for the LaunchAgent environment, which
+# does not inherit interactive-shell PATH. Enabled providers whose runtime
+# cannot be resolved to an EXECUTABLE ABSOLUTE PATH abort the install: never
+# write a plist that will predictably fail later, never fall back to a bare
+# command name. Enablement comes from the shared production validator.
+VALIDATOR="${REPO_DIR}/scripts/validate-config.mjs"
+VALIDATOR_OUT=""
+VALIDATOR_STATUS=2
+if command -v node >/dev/null 2>&1; then
+  if VALIDATOR_OUT="$(CMM_CONFIG_DIR="$CONFIG_DIR" node "$VALIDATOR" 2>/dev/null)"; then
+    VALIDATOR_STATUS=0
+  else
+    VALIDATOR_STATUS=$?
+  fi
+fi
+config_field() {
+  printf '%s\n' "$VALIDATOR_OUT" | sed -n "s/^$1=//p" | head -n 1
+}
+if [ "$VALIDATOR_STATUS" != "0" ]; then
+  echo "error: shared config validation failed (status $VALIDATOR_STATUS); refusing to install" >&2
+  exit 1
+fi
+
+CHATGPT_ENABLED="$(config_field CHATGPT_ENABLED)"
+GOOGLE_ENABLED="$(config_field GOOGLE_ENABLED)"
+AGY_PATH_CONFIG="$(config_field AGY_PATH)"
+
+# Resolve a command name or path to an executable absolute path.
+# Prints the path on success; returns non-zero when unresolvable.
+resolve_executable() {
+  local candidate="$1"
+  [ -n "$candidate" ] || return 1
+  local resolved="$candidate"
+  case "$resolved" in
     /*) : ;;
-    *) NODE_BIN="$(cd "$(dirname "$NODE_BIN")" 2>/dev/null && pwd)/$(basename "$NODE_BIN")" || NODE_BIN="node" ;;
+    *) resolved="$(command -v "$candidate" 2>/dev/null || true)" ;;
   esac
+  [ -n "$resolved" ] || return 1
+  case "$resolved" in
+    /*) : ;;
+    *) resolved="$(cd "$(dirname "$resolved")" 2>/dev/null && pwd)/$(basename "$resolved")" ;;
+  esac
+  [ -x "$resolved" ] || return 1
+  printf '%s' "$resolved"
+}
+
+NODE_BIN="$(resolve_executable "${CMM_ROUTER_NODE_BIN:-node}")" || {
+  echo "error: node runtime is not resolvable to an executable absolute path; refusing to install" >&2
+  exit 1
+}
+
+CODEX_BIN=""
+if [ "$CHATGPT_ENABLED" = "1" ]; then
+  CODEX_BIN="$(resolve_executable "${CMM_ROUTER_CODEX_BIN:-codex}")" || {
+    echo "error: ChatGPT provider is enabled but the codex binary is not resolvable; refusing to install" >&2
+    exit 1
+  }
 fi
-CODEX_BIN="${CMM_ROUTER_CODEX_BIN:-$(command -v codex 2>/dev/null || echo codex)}"
+
 AGY_BIN=""
-if [ -f "${REPO_DIR}/config/shared.json" ] && command -v python3 >/dev/null 2>&1; then
-  AGY_BIN=$(python3 -c "import json,sys; print((json.load(open('${REPO_DIR}/config/shared.json')).get('providers',{}).get('google',{}) or {}).get('agyPath',''))" 2>/dev/null || echo "")
+if [ "$GOOGLE_ENABLED" = "1" ]; then
+  if [ -n "$AGY_PATH_CONFIG" ]; then
+    # Configured path is authoritative: never substitute another agy.
+    AGY_BIN="$(resolve_executable "$AGY_PATH_CONFIG")" || {
+      echo "error: Google provider is enabled but configured agyPath is not executable; refusing to install" >&2
+      exit 1
+    }
+  elif [ -n "${CMM_ROUTER_AGY_BIN:-}" ]; then
+    AGY_BIN="$(resolve_executable "$CMM_ROUTER_AGY_BIN")" || {
+      echo "error: Google provider is enabled but CMM_ROUTER_AGY_BIN is not executable; refusing to install" >&2
+      exit 1
+    }
+  else
+    AGY_BIN="$(resolve_executable agy)" || AGY_BIN="$(resolve_executable "${HOME}/.local/bin/agy")" || {
+      echo "error: Google provider is enabled but the agy binary is not resolvable; refusing to install" >&2
+      exit 1
+    }
+  fi
 fi
-if [ -z "$AGY_BIN" ]; then
-  AGY_BIN="${CMM_ROUTER_AGY_BIN:-$(command -v agy 2>/dev/null || echo "${HOME}/.local/bin/agy")}"
-fi
+
+# Command Code is HTTP-based (baseUrl + secretEnv); it has no local runtime
+# binary, so the installer must not require one for it.
 SAFE_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 for dir in "$(dirname "$NODE_BIN")" "$(dirname "$CODEX_BIN")" "$(dirname "$AGY_BIN")"; do
   case "$dir" in

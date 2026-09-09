@@ -50,7 +50,7 @@ describe("launchd deterministic runtime wiring", () => {
     try {
       execFileSync("bash", [
         "-c",
-        `cp -r "${REPO}/scripts" "${repoCopy}/" && cp -r "${REPO}/launchd" "${repoCopy}/" && mkdir -p "${repoCopy}/config" "${repoCopy}/dist" && touch "${repoCopy}/dist/index.js" && python3 -c "import json; json.dump({'mode':'standalone','host':'127.0.0.1','providers':{'chatgpt':{'enabled':False},'claude':{'enabled':False},'google':{'enabled':True,'agyPath':'${fakeAgy}'},'command-code':{'enabled':False,'secretEnv':'COMMAND_CODE_SECRET'}}}, open('${repoCopy}/config/shared.json','w'))"`,
+        `cp -r "${REPO}/scripts" "${REPO}/launchd" "${REPO}/src" "${REPO}/dist" "${repoCopy}/" && ln -s "${REPO}/node_modules" "${repoCopy}/node_modules" && mkdir -p "${repoCopy}/config" && python3 -c "import json; json.dump({'mode':'standalone','host':'127.0.0.1','providers':{'chatgpt':{'enabled':False},'claude':{'enabled':False},'google':{'enabled':True,'agyPath':'${fakeAgy}'},'command-code':{'enabled':False,'secretEnv':'COMMAND_CODE_SECRET'}}}, open('${repoCopy}/config/shared.json','w'))"`,
       ]);
       const dest = join(home, "Library", "LaunchAgents", "com.cmm.subscription-router.plist");
       execFileSync("bash", [`${repoCopy}/scripts/macos/install-router.sh`], {
