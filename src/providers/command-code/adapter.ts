@@ -121,16 +121,28 @@ export class CommandCodeAdapter implements ProviderAdapter {
   }
 
   /**
-   * GOAT-usable subset of discovery. GET /models is a GLOBAL catalog, not a
-   * plan entitlement list: only entries with authoritative GOAT-inclusion
-   * metadata (goatIncluded === true) qualify. Entries with null metadata
-   * are catalog-only until proven otherwise — never assumed plan-usable.
+   * Entitlement tri-state for a discovered catalog entry. GET /models is a
+   * GLOBAL catalog, not a plan list: entries with authoritative inclusion
+   * metadata are KNOWN_INCLUDED, entries with authoritative exclusion
+   * metadata are KNOWN_EXCLUDED, and bare entries (the observed live shape)
+   * are UNKNOWN. UNKNOWN is never presented as proven-included; it stays
+   * visible for deterministic routing and fails closed at request time via
+   * upstream plan enforcement (MODEL_NOT_IN_PLAN → quota error, no spend).
+   */
+  entitlementOf(model: DiscoveredModel): "KNOWN_INCLUDED" | "KNOWN_EXCLUDED" | "UNKNOWN" {
+    const flag = (model as DiscoveredModel & { goatIncluded?: unknown }).goatIncluded;
+    if (flag === true) return "KNOWN_INCLUDED";
+    if (flag === false) return "KNOWN_EXCLUDED";
+    return "UNKNOWN";
+  }
+
+  /**
+   * GOAT-usable subset of discovery: only entries with authoritative
+   * GOAT-inclusion metadata (goatIncluded === true). Kept for the live
+   * acceptance path, which must never select by catalog existence alone.
    */
   goatUsableModels(models: DiscoveredModel[]): DiscoveredModel[] {
-    return models.filter(
-      (model) =>
-        (model as DiscoveredModel & { goatIncluded?: unknown }).goatIncluded === true,
-    );
+    return models.filter((model) => this.entitlementOf(model) === "KNOWN_INCLUDED");
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {

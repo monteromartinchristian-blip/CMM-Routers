@@ -158,6 +158,62 @@ describe("Command Code adapter", () => {
     expect(usable.map((m) => m.upstreamModel)).toEqual(["deepseek/deepseek-v4-flash"]);
   });
 
+  it("keeps unknown-entitlement catalog visible without assuming inclusion", async () => {
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "GET https://api.commandcode.ai/provider/v1/models": {
+            status: 200,
+            body: JSON.stringify({
+              data: [{ id: "deepseek/deepseek-v4-flash" }, { id: "claude-haiku-4-5-20251001" }],
+            }),
+          },
+        },
+        [],
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const models = await adapter.discoverModels();
+    // Both remain dynamically discoverable: no static plan assumption.
+    expect(models.length).toBe(2);
+    for (const model of models) {
+      expect(adapter.entitlementOf(model)).toBe("UNKNOWN");
+      expect(
+        (model as unknown as Record<string, unknown>).goatIncluded,
+      ).not.toBe(true);
+    }
+    // Production usability guard: a bare catalog must not disable the provider.
+    expect(models.length).toBeGreaterThan(0);
+  });
+
+  it("filters explicit exclusion metadata but keeps unknown entries", async () => {
+    const client = new CommandCodeClient({
+      secret: "s",
+      fetchFn: fakeFetch(
+        {
+          "GET https://api.commandcode.ai/provider/v1/models": {
+            status: 200,
+            body: JSON.stringify({
+              data: [
+                { id: "deepseek/deepseek-v4-flash", included_plans: ["GOAT"] },
+                { id: "claude-haiku-4-5", included_plans: ["Pro"] },
+                { id: "mystery-model" },
+              ],
+            }),
+          },
+        },
+        [],
+      ),
+    });
+    const adapter = new CommandCodeAdapter({ ackPath, client });
+    const models = await adapter.discoverModels();
+    expect(models.length).toBe(3);
+    expect(adapter.entitlementOf(models[0]!)).toBe("KNOWN_INCLUDED");
+    expect(adapter.entitlementOf(models[1]!)).toBe("KNOWN_EXCLUDED");
+    expect(adapter.entitlementOf(models[2]!)).toBe("UNKNOWN");
+  });
+
   it("classifies wires without a static model catalog", async () => {
     const { classifyCommandCodeWire } = await import(
       "../../src/providers/command-code/client.js"
