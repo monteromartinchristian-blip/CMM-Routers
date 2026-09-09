@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Router launch wrapper: resolves secrets from macOS Keychain at startup.
 # Never echoes secret values. Never writes them to disk.
-set -u
+set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_DIR"
 
 ROUTER_SERVICE="${CMM_ROUTER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
