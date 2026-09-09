@@ -4,11 +4,17 @@ export type ProviderId =
   | "google"
   | "command-code";
 
+export type ProviderCapability = 
+  | "CHAT_AND_TOOLS"
+  | "CHAT_ONLY"
+  | "CHAT_ONLY_PENDING_TASK_13";
+
 export interface DiscoveredModel {
   id: string;
   provider: ProviderId;
   upstreamModel: string;
   displayName: string;
+  capability?: ProviderCapability;
 }
 
 export interface RouterTool {

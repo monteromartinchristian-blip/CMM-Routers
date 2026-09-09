@@ -15,7 +15,14 @@ describe("Codex live integration", () => {
       if (firstModel) {
         expect(firstModel.id).toMatch(/^chatgpt\//);
         expect(firstModel.provider).toBe("chatgpt");
-        console.log(`Discovered ${models.length} models:`, models.slice(0, 3).map((m) => m.id));
+        expect(firstModel.upstreamModel).toBeDefined();
+        expect(firstModel.displayName).toBeDefined();
+        expect(firstModel.capability).toBe("CHAT_ONLY_PENDING_TASK_13");
+        
+        console.log(`Discovered ${models.length} models:`);
+        for (const model of models) {
+          console.log(`  - ${model.id} (upstream: ${model.upstreamModel}, display: ${model.displayName}, capability: ${model.capability})`);
+        }
       }
     } finally {
       // Cleanup would happen here in a real implementation

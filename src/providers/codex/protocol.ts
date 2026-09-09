@@ -80,11 +80,15 @@ export interface TurnInterruptParams {
 }
 
 export interface ModelListResponse {
-  models: Array<{
+  data: Array<{
     id: string;
-    name?: string;
-    provider?: string;
+    model?: string;
+    displayName?: string;
+    description?: string;
+    hidden?: boolean;
+    isDefault?: boolean;
   }>;
+  nextCursor?: string | null;
 }
 
 // Server notifications

@@ -18,19 +18,21 @@ export class CodexAdapter implements ProviderAdapter {
 
     try {
       const response = await this.client.listModels();
-      return response.models.map((model) => ({
-        id: `chatgpt/${model.id}`,
+      return response.data.map((model) => ({
+        id: `chatgpt/${model.model || model.id}`,
         provider: "chatgpt",
-        upstreamModel: model.id,
-        displayName: model.name || model.id,
+        upstreamModel: model.model || model.id,
+        displayName: model.displayName || model.id,
+        capability: "CHAT_ONLY_PENDING_TASK_13" as const,
       }));
     } catch (error) {
+      console.error("Codex model discovery failed:", error);
       if (error instanceof RouterError) {
         throw error;
       }
       throw new RouterError(
         "provider_unavailable",
-        "Failed to discover Codex models",
+        `Failed to discover Codex models: ${error instanceof Error ? error.message : String(error)}`,
         { error: error instanceof Error ? error.message : String(error) },
       );
     }
