@@ -61,6 +61,23 @@ function parseMessages(input: unknown): RouterMessage[] | null {
     const message: RouterMessage = { role: record.role, content };
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
+    // Preserve assistant tool-call history (OpenAI chat shape) so real tool
+    // IDs round-trip into the internal contract instead of being dropped.
+    if (record.role === "assistant" && Array.isArray(record.tool_calls)) {
+      const toolCalls: RouterMessage["toolCalls"] = [];
+      for (const rawCall of record.tool_calls) {
+        const call = asRecord(rawCall);
+        if (!call || typeof call.id !== "string") continue;
+        const fn = asRecord(call.function);
+        if (!fn || typeof fn.name !== "string" || typeof fn.arguments !== "string") continue;
+        toolCalls.push({
+          id: call.id,
+          type: "function",
+          function: { name: fn.name, arguments: fn.arguments },
+        });
+      }
+      if (toolCalls.length > 0) message.toolCalls = toolCalls;
+    }
     messages.push(message);
   }
   return messages;

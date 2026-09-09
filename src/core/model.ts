@@ -25,11 +25,27 @@ export interface RouterTool {
   };
 }
 
+export interface RouterToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 export interface RouterMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   toolCallId?: string;
   name?: string;
+  /**
+   * Assistant tool-call history in OpenAI shape. Preserved end-to-end so a
+   * provider that supplies real tool-call IDs never needs heuristic
+   * reconstruction, and a provider that receives a follow-up turn can map
+   * the same assistant tool calls back into its native protocol.
+   */
+  toolCalls?: RouterToolCall[];
 }
 
 export interface RouterRequest {

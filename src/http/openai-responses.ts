@@ -30,6 +30,7 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
       return null;
     }
     let content: string | null = null;
+    const toolCalls: RouterMessage["toolCalls"] = [];
     if (typeof record.content === "string") {
       content = record.content;
     } else if (Array.isArray(record.content)) {
@@ -40,6 +41,18 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
         if (partRecord.type === "input_text" || partRecord.type === "output_text") {
           if (typeof partRecord.text !== "string") return null;
           parts.push(partRecord.text);
+        } else if (
+          partRecord.type === "function_call" &&
+          typeof partRecord.call_id === "string" &&
+          typeof partRecord.name === "string" &&
+          typeof partRecord.arguments === "string"
+        ) {
+          // Responses function_call content part → assistant tool-call history.
+          toolCalls.push({
+            id: partRecord.call_id,
+            type: "function",
+            function: { name: partRecord.name, arguments: partRecord.arguments },
+          });
         } else {
           return null;
         }
@@ -51,6 +64,7 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
     const message: RouterMessage = { role, content };
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
+    if (toolCalls.length > 0) message.toolCalls = toolCalls;
     messages.push(message);
   }
   return messages;
