@@ -638,6 +638,8 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
+    // No temp dir exists yet: every early return below happens BEFORE any
+    // filesystem allocation, so nothing can leak on validation paths.
     try {
       // Account-only spending gate: fail closed BEFORE spawning inference.
       enforceAccountOnlySettings();
@@ -651,8 +653,6 @@ export class AntigravityAdapter implements ProviderAdapter {
       };
       return;
     }
-    const cwd = mkdtempSync(join(tmpdir(), "cmm-antigravity-run-"));
-    ensureNeutralCwd(cwd);
     const env = buildAgyChildEnv();
     try {
       assertNoPaygFallback(env);
@@ -688,6 +688,12 @@ export class AntigravityAdapter implements ProviderAdapter {
       };
       return;
     }
+
+    // Temp cwd is created only here — after every validation gate — and the
+    // try/finally below owns ALL exits from this point (success, protocol
+    // error, spawn failure, abort, timeout).
+    const cwd = mkdtempSync(join(tmpdir(), "cmm-antigravity-run-"));
+    ensureNeutralCwd(cwd);
 
     const abortController = new AbortController();
     const onAbort = () => abortController.abort();

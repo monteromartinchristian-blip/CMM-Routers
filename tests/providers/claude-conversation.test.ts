@@ -74,7 +74,7 @@ describe("Claude conversation preservation", () => {
     expect(systemPrompt?.prompt).toContain("SYSTEM_MARKER_123");
     // History travels as an async-iterable SDK user stream: drain it.
     const prompt = call?.prompt as AsyncIterable<{ message?: { role?: string; content?: unknown } }>;
-    const streamed: Array<{ role?: string; content?: unknown }> = [];
+    const streamed: Array<{ role?: string | undefined; content?: unknown }> = [];
     for await (const frame of prompt) {
       streamed.push({ role: frame.message?.role, content: frame.message?.content });
     }
