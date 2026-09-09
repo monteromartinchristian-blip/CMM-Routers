@@ -326,6 +326,10 @@ export class CodexAppServerClient {
     return result as ThreadStartResponse;
   }
 
+  async injectItems(params: { threadId: string; items: unknown[] }): Promise<unknown> {
+    return await this.sendRequest("thread/injectItems", params as unknown as Record<string, unknown>);
+  }
+
   async startTurn(params: TurnStartParams): Promise<TurnStartResponse> {
     const result = await this.sendRequest("turn/start", params as any);
     return result as TurnStartResponse;

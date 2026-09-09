@@ -3,6 +3,14 @@ import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } 
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { CodexAppServerClient } from "./app-server-client.js";
+import {
+  buildThreadStartParams,
+  buildTurnInterruptParams,
+  parseAgentDeltaParams,
+  parseTokenUsageParams,
+  parseTurnCompletedParams,
+  parseTurnStartResponse,
+} from "./schema-translator.js";
 
 /**
  * Normalize Codex turn status into the neutral Router finish vocabulary.
@@ -22,6 +30,77 @@ export function normalizeCodexFinishReason(
     return "length";
   }
   return "stop";
+}
+
+/**
+ * Split Router messages into developer instructions, injectable history,
+ * and the current user turn input. System content becomes Codex
+ * developerInstructions; prior user/assistant turns become Responses-API
+ * history items via thread/injectItems; only the newest user text starts
+ * the turn. Tool-role messages become labelled user text (external loop
+ * owns execution). Returns the pieces without any repository mutation.
+ */
+export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
+  developerInstructions: string | undefined;
+  historyItems: unknown[];
+  turnInput: Array<{ type: "text"; text: string }>;
+} {
+  const systemParts: string[] = [];
+  const historyItems: unknown[] = [];
+  let lastUserIndex = -1;
+  messages.forEach((message, index) => {
+    if (message.role === "user" && (message.content ?? "")) lastUserIndex = index;
+  });
+  const turnInput: Array<{ type: "text"; text: string }> = [];
+  messages.forEach((message, index) => {
+    const text = message.content ?? "";
+    if (message.role === "system") {
+      if (text) systemParts.push(text);
+      return;
+    }
+    if (message.role === "assistant") {
+      if (!text) return;
+      historyItems.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+      });
+      return;
+    }
+    if (message.role === "tool") {
+      if (!text) return;
+      const label =
+        typeof message.toolCallId === "string"
+          ? `[tool_result ${message.toolCallId}] ${text}`
+          : `[tool_result] ${text}`;
+      if (index === lastUserIndex) {
+        turnInput.push({ type: "text", text: label });
+      } else {
+        historyItems.push({
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: label }],
+        });
+      }
+      return;
+    }
+    // user role
+    if (!text) return;
+    if (index === lastUserIndex) {
+      turnInput.push({ type: "text", text });
+    } else {
+      historyItems.push({
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      });
+    }
+  });
+  return {
+    developerInstructions: systemParts.length > 0 ? systemParts.join("\n") : undefined,
+    historyItems,
+    turnInput,
+  };
 }
 
 export class CodexAdapter implements ProviderAdapter {
@@ -94,45 +173,41 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     try {
-      // Start a new thread for this request with restrictive sandbox
-      const threadResponse = await this.client.startThread({
+      const seeds = buildCodexThreadSeeds(request.messages);
+      // Ephemeral per-request thread: explicitly requested per the plan's
+      // privacy/lifecycle requirement (never rely on a server default).
+      const threadParams = buildThreadStartParams({
         model: request.model.upstreamModel,
         sandbox: "read-only",
+        ...(seeds.developerInstructions !== undefined
+          ? { developerInstructions: seeds.developerInstructions }
+          : {}),
+        ephemeral: true,
       });
+      const threadResponse = await this.client.startThread(threadParams as unknown as Record<string, unknown> as never);
       const threadId = threadResponse.thread.id;
 
-      // Prepare input messages as UserInput objects
-      const input = request.messages.map((msg) => {
-        if (msg.role === "user" || msg.role === "system") {
-          return {
-            type: "text" as const,
-            text: msg.content || "",
-          };
-        } else if (msg.role === "assistant") {
-          // Assistant messages are also text type
-          return {
-            type: "text" as const,
-            text: msg.content || "",
-          };
-        } else {
-          // Tool messages - treat as text for now
-          return {
-            type: "text" as const,
-            text: msg.content || "",
-          };
-        }
-      });
+      // Prior conversation history becomes model-visible thread history via
+      // the schema-backed thread/injectItems mechanism (roles preserved).
+      if (seeds.historyItems.length > 0) {
+        await this.client.injectItems({ threadId, items: seeds.historyItems });
+      }
 
-      // Start turn
-      const turnResponse = await this.client.startTurn({
-        threadId,
-        input,
-      });
-      
+      // Only the newest user text starts the active turn.
+      const input =
+        seeds.turnInput.length > 0
+          ? seeds.turnInput
+          : [{ type: "text" as const, text: "" }];
+      const turnStarted = await this.client.startTurn({ threadId, input });
+      // Schema-backed turn id: result.turn.id (never a flat turnId).
+      const { turnId } = parseTurnStartResponse(turnStarted as unknown);
+
       // Track active turn for cancellation
-      this.activeTurns.set(request.requestId, { threadId, turnId: turnResponse.turnId });
+      this.activeTurns.set(request.requestId, { threadId, turnId });
 
-      // Listen for events - wait for real turn/completed from upstream
+      // Listen for events scoped to OUR thread+turn only — concurrent runs
+      // can never consume each other's deltas/usage/completion.
+      const scope = { threadId, turnId };
       let completed = false;
 
       // Explicit bounded timeout per notification wait (60 seconds)
@@ -141,46 +216,59 @@ export class CodexAdapter implements ProviderAdapter {
 
       try {
         while (!completed && !signal.aborted) {
-          // Use a single waiter that catches any relevant notification
-          // This avoids the timeout issues with racing multiple waiters
           const notification = await this.client.waitForAnyNotification(
             ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
             NOTIFICATION_TIMEOUT_MS,
+            scope,
           );
-          
+
           if (notification.method === "item/agentMessage/delta") {
-            const params = notification.params as { delta?: unknown };
-            if (typeof params?.delta === "string" && params.delta.length > 0) {
+            const params = parseAgentDeltaParams(
+              (notification as { params?: unknown }).params,
+            );
+            if (params.delta.length > 0) {
               yield { type: "text_delta", text: params.delta };
             }
           } else if (notification.method === "thread/tokenUsage/updated") {
-            const params = notification.params as {
-              inputTokens?: unknown;
-              outputTokens?: unknown;
-              reasoningTokens?: unknown;
-              cacheReadTokens?: unknown;
-            };
+            const parsed = parseTokenUsageParams(
+              (notification as { params?: unknown }).params,
+            );
             const usageEvent: RouterEvent = { type: "usage" };
-            if (typeof params?.inputTokens === "number") {
-              (usageEvent as { inputTokens?: number }).inputTokens = params.inputTokens;
+            if (parsed.inputTokens !== undefined) {
+              (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
             }
-            if (typeof params?.outputTokens === "number") {
-              (usageEvent as { outputTokens?: number }).outputTokens = params.outputTokens;
+            if (parsed.outputTokens !== undefined) {
+              (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
             }
-            if (typeof params?.reasoningTokens === "number") {
-              (usageEvent as { reasoningTokens?: number }).reasoningTokens = params.reasoningTokens;
+            if (parsed.reasoningTokens !== undefined) {
+              (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
             }
-            if (typeof params?.cacheReadTokens === "number") {
-              (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = params.cacheReadTokens;
+            if (parsed.cacheReadTokens !== undefined) {
+              (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
             }
             yield usageEvent;
           } else if (notification.method === "turn/completed") {
+            const parsed = parseTurnCompletedParams(
+              (notification as { params?: unknown }).params,
+            );
+            // Ignore completions for other turns (defensive; scope already
+            // filters, but a stale queued frame must never terminate us).
+            if (parsed.turnId !== turnId) continue;
             completed = true;
-            const params = notification.params as { turn?: { status?: unknown } };
-            yield {
-              type: "completed",
-              finishReason: normalizeCodexFinishReason(params?.turn?.status),
-            };
+            if (parsed.status === "failed") {
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
+                ),
+              };
+            } else {
+              yield {
+                type: "completed",
+                finishReason: normalizeCodexFinishReason(parsed.status),
+              };
+            }
           }
         }
       } finally {
@@ -213,10 +301,12 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     try {
-      await this.client.interruptTurn({
+      // Fail closed on missing ids: never emit an empty turn interrupt.
+      const params = buildTurnInterruptParams({
         threadId: activeTurn.threadId,
-        turnId: activeTurn.turnId || "",
+        turnId: activeTurn.turnId,
       });
+      await this.client.interruptTurn(params);
     } catch {
       // Interrupt failures still release tracking below.
     } finally {

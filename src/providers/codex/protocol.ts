@@ -1,5 +1,19 @@
 // Protocol types derived from installed codex app-server v0.147.0 schema
 // Generated via: codex app-server generate-json-schema --out tests/fixtures/generated/codex
+//
+// JSON-RPC envelope plumbing only. Method PAYLOADS (turn results, token
+// usage, deltas, thread params) are defined in ./schema-protocol.ts, which
+// mirrors the TRACKED GENERATED v2 artifacts field-for-field:
+//   TurnStartResponse      -> { turn: Turn },       Turn requires id/items/status
+//   TokenUsage notification-> { threadId, turnId, tokenUsage }
+//   AgentMessage delta     -> { delta, itemId, threadId, turnId }
+//   TurnCompleted          -> { threadId, turn }
+//   TurnInterruptParams    -> { threadId, turnId }
+//   ThreadStartParams      -> { ..., developerInstructions?, ephemeral? }
+//   ThreadInjectItemsParams-> { threadId, items }
+// Hand-written payload shapes below are DEPRECATED: they predate the
+// generated schema and are retained only so older imports keep compiling.
+// New code must use the schema-backed layer (see ./schema-translator.ts).
 
 export interface JSONRPCRequest {
   jsonrpc?: "2.0";
@@ -47,6 +61,7 @@ export interface ThreadStartParams {
   sandbox?: string;
 }
 
+/** @deprecated Use SchemaThreadStartParams (schema-protocol.ts). */
 export interface ThreadStartResponse {
   thread: {
     id: string;
@@ -61,6 +76,10 @@ export interface TurnStartParams {
   }>;
 }
 
+/**
+ * @deprecated Stale shape. The generated schema returns
+ * `{ turn: { id, status, items } }` — parse via parseTurnStartResponse().
+ */
 export interface TurnStartResponse {
   turnId: string;
 }
@@ -92,6 +111,10 @@ export interface AgentMessageDeltaNotification {
   };
 }
 
+/**
+ * @deprecated Stale shape. The generated schema nests counts under
+ * `params.tokenUsage.{last,total}` — parse via parseTokenUsageParams().
+ */
 export interface TokenUsageUpdatedNotification {
   method: "thread/tokenUsage/updated";
   params: {
@@ -103,6 +126,10 @@ export interface TokenUsageUpdatedNotification {
   };
 }
 
+/**
+ * @deprecated Stale shape. The generated schema sends
+ * `params: { threadId, turn }` — parse via parseTurnCompletedParams().
+ */
 export interface TurnCompletedNotification {
   method: "turn/completed";
   params: {

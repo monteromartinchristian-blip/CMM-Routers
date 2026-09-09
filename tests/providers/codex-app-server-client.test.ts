@@ -191,11 +191,11 @@ describe("CodexAppServerClient", () => {
       transport.receiveMessage({
         jsonrpc: "2.0",
         id: 1,
-        result: { turnId: "turn-456" },
+        result: { turn: { id: "turn-456", status: "inProgress", items: [] } },
       });
 
       const result = await promise;
-      expect(result.turnId).toBe("turn-456");
+      expect((result as unknown as { turn: { id: string } }).turn.id).toBe("turn-456");
     });
 
     it("interruptTurn sends turn/interrupt method", async () => {
@@ -247,14 +247,30 @@ describe("CodexAppServerClient", () => {
         method: "thread/tokenUsage/updated",
         params: {
           threadId: "thread-123",
-          inputTokens: 100,
-          outputTokens: 50,
+          turnId: "turn-456",
+          tokenUsage: {
+            last: {
+              cachedInputTokens: 0,
+              inputTokens: 100,
+              outputTokens: 50,
+              reasoningOutputTokens: 0,
+              totalTokens: 150,
+            },
+            total: {
+              cachedInputTokens: 0,
+              inputTokens: 100,
+              outputTokens: 50,
+              reasoningOutputTokens: 0,
+              totalTokens: 150,
+            },
+          },
         },
       });
 
       const notification = await promise;
-      expect((notification.params as any).inputTokens).toBe(100);
-      expect((notification.params as any).outputTokens).toBe(50);
+      const tokenUsage = (notification.params as any).tokenUsage;
+      expect(tokenUsage.last.inputTokens).toBe(100);
+      expect(tokenUsage.last.outputTokens).toBe(50);
     });
 
     it("receives turn/completed notifications", async () => {
@@ -265,13 +281,12 @@ describe("CodexAppServerClient", () => {
         method: "turn/completed",
         params: {
           threadId: "thread-123",
-          turnId: "turn-456",
-          finishReason: "stop",
+          turn: { id: "turn-456", status: "completed", items: [] },
         },
       });
 
       const notification = await promise;
-      expect((notification.params as any).finishReason).toBe("stop");
+      expect((notification.params as any).turn.id).toBe("turn-456");
     });
 
     it("times out waiting for notification if not received", async () => {

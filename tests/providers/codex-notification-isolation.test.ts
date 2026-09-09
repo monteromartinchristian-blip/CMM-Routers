@@ -48,10 +48,11 @@ describe("Codex concurrent notification isolation (production dispatcher)", () =
           threadId: "thread-A",
           turnId: "turn-A",
         });
-        const params = n.params as Record<string, unknown>;
+        const params = (n as { params?: Record<string, unknown> }).params ?? {};
         if (n.method === DELTA) textsA.push(String(params.delta));
         else if (n.method === USAGE) {
-          usageA.push(Number((params.tokenUsage as Record<string, Record<string, number>>).last.outputTokens));
+          const lastA = ((params.tokenUsage ?? {}) as Record<string, Record<string, number>>).last ?? {};
+          usageA.push(Number(lastA.outputTokens));
         } else if (n.method === DONE) {
           doneA = true;
           return;
@@ -64,10 +65,11 @@ describe("Codex concurrent notification isolation (production dispatcher)", () =
           threadId: "thread-B",
           turnId: "turn-B",
         });
-        const params = n.params as Record<string, unknown>;
+        const params = (n as { params?: Record<string, unknown> }).params ?? {};
         if (n.method === DELTA) textsB.push(String(params.delta));
         else if (n.method === USAGE) {
-          usageB.push(Number((params.tokenUsage as Record<string, Record<string, number>>).last.outputTokens));
+          const lastB = ((params.tokenUsage ?? {}) as Record<string, Record<string, number>>).last ?? {};
+          usageB.push(Number(lastB.outputTokens));
         } else if (n.method === DONE) {
           doneB = true;
           return;
