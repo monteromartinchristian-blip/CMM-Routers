@@ -237,41 +237,39 @@ export class ClaudeAdapter implements ProviderAdapter {
               }
             }
 
-            // Check for completion
-            if (message.message?.stop_reason) {
-              // Yield usage info if available
-              const usage = message.message.usage;
-              if (usage) {
-                collectedEvents.push({
-                  type: "usage",
-                  inputTokens: usage.input_tokens,
-                  outputTokens: usage.output_tokens,
-                });
-              }
-
-              // Map stop reason to finish reason
+            // Collect usage if present (may come before stop_reason in streaming)
+            const usage = message.message?.usage;
+            if (usage && !collectedEvents.some(e => e.type === "usage")) {
+              collectedEvents.push({
+                type: "usage",
+                inputTokens: usage.input_tokens,
+                outputTokens: usage.output_tokens,
+              });
+            }
+          } else if (message.type === "result") {
+            const resultMessage = message as any;
+            
+            if (resultMessage.subtype === "success") {
+              // Successful completion - emit completed event
               let finishReason: "stop" | "tool_calls" | "length" = "stop";
-              if (message.message.stop_reason === "max_tokens") {
-                finishReason = "length";
-              } else if (message.message.stop_reason === "tool_use") {
-                finishReason = "tool_calls";
-              }
-
+              
+              // Try to get stop_reason from the last assistant message if available
+              // (In some cases it may be set on the final assistant message)
+              
               collectedEvents.push({
                 type: "completed",
                 finishReason,
               });
               return collectedEvents;
+            } else if (resultMessage.subtype?.startsWith("error")) {
+              // Handle result error messages
+              const errorMessages = resultMessage.errors || [];
+              const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
+              
+              const error = this.mapSdkErrorMessage(errorMessage);
+              collectedEvents.push({ type: "error", error });
+              return collectedEvents;
             }
-          } else if (message.type === "result" && message.subtype?.startsWith("error")) {
-            // Handle result error messages
-            const resultError = message as any;
-            const errorMessages = resultError.errors || [];
-            const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
-            
-            const error = this.mapSdkErrorMessage(errorMessage);
-            collectedEvents.push({ type: "error", error });
-            return collectedEvents;
           }
         }
 
