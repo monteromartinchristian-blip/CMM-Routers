@@ -14,101 +14,73 @@
 #                                   when PATH probes are restricted in tests
 set -u
 
-CONFIG_DIR="${CMM_CONFIG_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_DIR="${CMM_CONFIG_DIR:-$REPO_DIR/config}"
 SHARED_JSON="${CONFIG_DIR}/shared.json"
-EXAMPLE_JSON="${CONFIG_DIR}/shared.example.json"
+VALIDATOR="$REPO_DIR/scripts/validate-config.mjs"
 
 UNSAFE=0
 BLOCKING=0
 CONFIG_INVALID=0
 
-# Validate shared.json with the same strictness as production loadConfig:
-# well-formed JSON, mode/host present, host loopback-locked, no unknown
-# top-level keys. A present-but-invalid file must FAIL, never fall back
-# to defaults silently.
-if [ -f "$SHARED_JSON" ]; then
-  if command -v python3 >/dev/null 2>&1; then
-    if ! python3 - "$SHARED_JSON" 2>/dev/null <<'PY'; then
-import json, sys
-raw = json.load(open(sys.argv[1]))
-if not isinstance(raw, dict):
-    raise ValueError("top-level object required")
-allowed = {"mode", "host", "port", "bearerSecretEnv", "providers"}
-unknown = set(raw.keys()) - allowed
-if unknown:
-    raise ValueError(f"unknown keys: {sorted(unknown)}")
-if raw.get("mode", "standalone") != "standalone":
-    raise ValueError("mode must be standalone")
-if "host" in raw and raw["host"] != "127.0.0.1":
-    raise ValueError("host must be 127.0.0.1")
-PY
-      echo "CONFIG=INVALID"
-      CONFIG_INVALID=1
-    else
-      echo "CONFIG=VALID"
-    fi
+# Config validation is delegated to the single authoritative Node entrypoint,
+# which imports the SAME Zod schema production loadConfig() uses. No schema
+# constraints are re-implemented here. Exit codes: 0 valid, 1 invalid,
+# 2 unavailable (fail closed), 3 missing (documented bootstrap defaults).
+CONFIG_STATUS=2
+VALIDATOR_OUT=""
+if command -v node >/dev/null 2>&1; then
+  if VALIDATOR_OUT="$(CMM_CONFIG_DIR="$CONFIG_DIR" node "$VALIDATOR" 2>/dev/null)"; then
+    CONFIG_STATUS=0
+  else
+    CONFIG_STATUS=$?
   fi
 fi
 
-# --- provider enablement + effective options (same source of truth as production) ---
+config_field() {
+  printf '%s\n' "$VALIDATOR_OUT" | sed -n "s/^$1=//p" | head -n 1
+}
+
+# Effective options default to the documented bootstrap values and are
+# overwritten from validated config when one is present.
 CHATGPT_ENABLED=1
 CLAUDE_ENABLED=1
 GOOGLE_ENABLED=1
 COMMAND_CODE_ENABLED=0
-# Effective configured values (empty = production default).
 CLAUDE_PROFILE_DIR=""
 AGY_PATH_CONFIG=""
 COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
 
-if [ -f "$SHARED_JSON" ] && command -v python3 >/dev/null 2>&1; then
-  READ_ENABLED=$(python3 - "$SHARED_JSON" 2>/dev/null <<'PY' || echo "PARSE_FAIL"
-import json, sys
-try:
-    cfg = json.load(open(sys.argv[1]))
-    providers = cfg.get("providers", {})
-    def enabled(name, default):
-        entry = providers.get(name)
-        if not isinstance(entry, dict):
-            return default
-        return "1" if entry.get("enabled", default == "1") else "0"
-    def opt(name, key):
-        entry = providers.get(name)
-        if not isinstance(entry, dict):
-            return ""
-        value = entry.get(key, "")
-        return value if isinstance(value, str) else ""
-    print(" ".join([
-        enabled("chatgpt", "1"),
-        enabled("claude", "1"),
-        enabled("google", "1"),
-        enabled("command-code", "0"),
-    ]))
-    print("\t".join([
-        opt("claude", "profileDir"),
-        opt("google", "agyPath"),
-        opt("command-code", "secretEnv") or "COMMAND_CODE_SECRET",
-    ]))
-except Exception:
-    print("PARSE_FAIL")
-PY
-)
-  if [ "$READ_ENABLED" != "PARSE_FAIL" ] && [ -n "$READ_ENABLED" ]; then
-    FIRST_LINE=$(printf '%s' "$READ_ENABLED" | head -n 1)
-    OPTS_LINE=$(printf '%s' "$READ_ENABLED" | tail -n 1)
-    # shellcheck disable=SC2086
-    set -- $FIRST_LINE
-    CHATGPT_ENABLED="${1:-1}"
-    CLAUDE_ENABLED="${2:-1}"
-    GOOGLE_ENABLED="${3:-1}"
-    COMMAND_CODE_ENABLED="${4:-0}"
-    CLAUDE_PROFILE_DIR=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f1)
-    AGY_PATH_CONFIG=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f2)
-    COMMAND_CODE_SECRET_ENV=$(printf '%s' "$OPTS_LINE" | cut -d'	' -f3)
+case "$CONFIG_STATUS" in
+  0)
+    echo "CONFIG=VALID"
+    CHATGPT_ENABLED="$(config_field CHATGPT_ENABLED)"; CHATGPT_ENABLED="${CHATGPT_ENABLED:-1}"
+    CLAUDE_ENABLED="$(config_field CLAUDE_ENABLED)"; CLAUDE_ENABLED="${CLAUDE_ENABLED:-1}"
+    GOOGLE_ENABLED="$(config_field GOOGLE_ENABLED)"; GOOGLE_ENABLED="${GOOGLE_ENABLED:-1}"
+    COMMAND_CODE_ENABLED="$(config_field COMMAND_CODE_ENABLED)"; COMMAND_CODE_ENABLED="${COMMAND_CODE_ENABLED:-0}"
+    CLAUDE_PROFILE_DIR="$(config_field CLAUDE_PROFILE_DIR)"
+    AGY_PATH_CONFIG="$(config_field AGY_PATH)"
+    COMMAND_CODE_SECRET_ENV="$(config_field COMMAND_CODE_SECRET_ENV)"
     [ -z "$COMMAND_CODE_SECRET_ENV" ] && COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
-  fi
-elif [ -f "$EXAMPLE_JSON" ] && [ ! -f "$SHARED_JSON" ]; then
-  : # fresh clone without shared.json: fall back to documented defaults above
-fi
+    ;;
+  3)
+    # No shared.json: documented bootstrap defaults apply (unchanged behavior).
+    echo "CONFIG=MISSING"
+    ;;
+  1)
+    echo "CONFIG=INVALID"
+    CONFIG_ERROR_DETAIL="$(config_field CONFIG_ERROR)"
+    [ -n "$CONFIG_ERROR_DETAIL" ] && echo "CONFIG_ERROR=$CONFIG_ERROR_DETAIL"
+    CONFIG_INVALID=1
+    ;;
+  *)
+    echo "CONFIG=UNAVAILABLE"
+    CONFIG_ERROR_DETAIL="$(config_field CONFIG_ERROR)"
+    [ -n "$CONFIG_ERROR_DETAIL" ] && echo "CONFIG_ERROR=$CONFIG_ERROR_DETAIL"
+    CONFIG_INVALID=1
+    ;;
+esac
 
 enabled_label() {
   if [ "$1" = "1" ]; then echo "ENABLED"; else echo "DISABLED"; fi
