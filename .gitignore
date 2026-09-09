@@ -3,6 +3,7 @@ dist/
 .env
 .env.local
 config/local.json
+config/shared.json
 command-code-spend-ack.json
 *-spend-ack.json
 runtime/
