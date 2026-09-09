@@ -281,6 +281,9 @@ export class CodexAdapter implements ProviderAdapter {
         this.client.discardScope(scope);
       }
     } catch (error) {
+      // A cancelled/disconnected run terminates silently: the caller aborted
+      // and cancel() released our waiter, so there is no one to notify.
+      if (signal.aborted) return;
       // Timeout or other errors are caught here and yielded as error events
       // Timeout produces provider_timeout, never completed
       if (error instanceof RouterError) {
