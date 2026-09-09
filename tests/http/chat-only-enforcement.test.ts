@@ -11,6 +11,7 @@ import type { RouterEvent } from "../../src/core/events.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 const BEARER = "chat-only-test-secret";
+const QODER_BEARER = "chat-only-qoder-secret";
 
 function authHeader(secret: string): Record<string, string> {
   return { authorization: `Bearer ${secret}` };
@@ -172,8 +173,36 @@ describe("CHAT_ONLY capability enforcement at the HTTP boundary", () => {
     console.log("CROSS_PROVIDER_FALLBACK=NONE");
   });
 
-  it("allows CHAT_AND_TOOLS models to receive tools", async () => {
-    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret: BEARER, registry });
+  it("allows CHAT_AND_TOOLS models to receive tools for the Qoder consumer", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret: BEARER,
+      qoderToken: QODER_BEARER,
+      registry,
+    });
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: authHeader(QODER_BEARER),
+      payload: {
+        model: "claude/tools-model",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [CMM_ECHO_TOOL],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(capable.invocations).toBe(1);
+  });
+
+  it("CMMChat is still CHAT_ONLY even on a CHAT_AND_TOOLS model", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret: BEARER,
+      qoderToken: QODER_BEARER,
+      registry,
+    });
     const response = await server.inject({
       method: "POST",
       url: "/v1/chat/completions",
@@ -184,8 +213,10 @@ describe("CHAT_ONLY capability enforcement at the HTTP boundary", () => {
         tools: [CMM_ECHO_TOOL],
       },
     });
-    expect(response.statusCode).toBe(200);
-    expect(capable.invocations).toBe(1);
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.type).toBe("unsupported_capability");
+    expect(capable.invocations).toBe(0);
+    console.log("CMMCHAT_TOOL_ESCALATION=NONE");
   });
 
   it("plain chat without tools still works on CHAT_ONLY", async () => {

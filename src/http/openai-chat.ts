@@ -10,6 +10,8 @@ import { RouterError } from "../core/errors.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
+import { effectiveToolCapability } from "../core/consumer-capability.js";
+import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
   role?: unknown;
@@ -138,11 +140,12 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
 }
 
 /**
- * Fail closed when a CHAT_ONLY model receives tool semantics. Runs BEFORE
- * provider resolution execution: tools definitions, tool_choice /
- * parallel_tool_calls provider equivalents, or tool-role continuation
- * messages are all rejected deterministically with unsupported_capability.
- * Never strips, never forwards, never falls back.
+ * Fail closed when the EFFECTIVE capability (consumer policy AND model
+ * capability) is CHAT_ONLY and the request carries tool semantics. Runs
+ * BEFORE provider resolution execution: tool definitions, tool_choice /
+ * parallel_tool_calls provider equivalents, tool-role continuation messages,
+ * or assistant tool-call history are all rejected deterministically with
+ * unsupported_capability. Never strips, never forwards, never falls back.
  */
 export function rejectChatOnlyTools(
   capability: string | undefined,
@@ -314,7 +317,9 @@ export function registerChatCompletions(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
-    const capabilityError = rejectChatOnlyTools(model.capability, body, messages);
+    const consumerId = (request as ConsumerRequest).consumerId;
+    const effective = effectiveToolCapability(consumerId, model.capability);
+    const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });

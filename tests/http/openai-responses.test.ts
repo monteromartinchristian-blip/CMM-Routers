@@ -51,6 +51,7 @@ describe("OpenAI Responses API", () => {
   let registry: ProviderRegistry;
   let provider: ScriptedProvider;
   const bearerSecret = "test-secret-123";
+  const qoderSecret = "qoder-secret-456";
 
   beforeEach(async () => {
     registry = new ProviderRegistry();
@@ -152,11 +153,18 @@ describe("OpenAI Responses API", () => {
       },
       { type: "completed", finishReason: "tool_calls" },
     ];
-    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret, registry });
+    // Tools require the Qoder consumer (capability policy).
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      qoderToken: qoderSecret,
+      registry,
+    });
     const response = await server.inject({
       method: "POST",
       url: "/v1/responses",
-      headers: authHeader(bearerSecret),
+      headers: authHeader(qoderSecret),
       payload: {
         model: "chatgpt/test-model",
         input: "hi",

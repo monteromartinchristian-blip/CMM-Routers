@@ -133,11 +133,12 @@ export async function createProductionRegistry(
   return { config: resolved, registry, usageStore, registeredProviders, skippedProviders };
 }
 
-export function createProductionServer(composition: ProductionComposition, bearerSecret: string) {
+export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
     bearerSecret,
+    ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
   });
@@ -162,7 +163,11 @@ async function main() {
     process.exit(1);
   }
 
-  const server = createProductionServer(composition, bearerSecret);
+  // Optional Qoder consumer token. When unset there is no Qoder consumer and
+  // every authenticated client is CMMChat (permanently CHAT_ONLY).
+  const qoderSecret = process.env.CMM_QODER_TOKEN;
+
+  const server = createProductionServer(composition, bearerSecret, qoderSecret);
 
   const shutdown = async () => {
     try {

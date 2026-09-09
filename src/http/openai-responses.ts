@@ -4,6 +4,8 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools } from "./openai-chat.js";
+import { effectiveToolCapability } from "../core/consumer-capability.js";
+import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
 
@@ -149,9 +151,12 @@ export function registerResponsesApi(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
+    const consumerId = (request as ConsumerRequest).consumerId;
+    const effective = effectiveToolCapability(consumerId, model.capability);
+
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.
-    const earlyCapabilityError = rejectChatOnlyTools(model.capability, body, []);
+    const earlyCapabilityError = rejectChatOnlyTools(effective, body, []);
     if (earlyCapabilityError) {
       const mapped = mapRouterErrorToHttp(earlyCapabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
@@ -164,7 +169,7 @@ export function registerResponsesApi(
         .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
     }
 
-    const capabilityError = rejectChatOnlyTools(model.capability, body, messages);
+    const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });

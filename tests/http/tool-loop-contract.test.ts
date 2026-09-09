@@ -11,6 +11,7 @@ import type { RouterEvent } from "../../src/core/events.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 const BEARER = "tool-loop-test-secret";
+const QODER_BEARER = "tool-loop-qoder-secret";
 
 /**
  * Scripted provider that emits a tool call, then — when the tool result is
@@ -65,11 +66,17 @@ describe("externally-owned tool round-trip contract (mocked, no live quota)", ()
     const registry = new ProviderRegistry();
     await registry.register(new ToolLoopScriptedProvider());
     await registry.refresh();
-    server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret: BEARER, registry });
+    server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret: BEARER,
+      qoderToken: QODER_BEARER,
+      registry,
+    });
   });
 
   it("relays a tool request, accepts the Qoder-executed result, and completes", async () => {
-    const auth = { authorization: `Bearer ${BEARER}` };
+    const auth = { authorization: `Bearer ${QODER_BEARER}` };
     // Turn 1: model requests a tool call.
     const first = await server.inject({
       method: "POST",

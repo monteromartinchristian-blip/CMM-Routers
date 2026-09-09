@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { verifyBearer } from "../security/bearer-auth.js";
 import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
@@ -6,6 +6,11 @@ import { registerChatCompletions } from "./openai-chat.js";
 import { registerResponsesApi } from "./openai-responses.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
+import {
+  CONSUMER_CMMCHAT,
+  CONSUMER_QODER,
+  type ConsumerId,
+} from "../core/consumer-capability.js";
 
 export interface ServerOptions {
   host: string;
@@ -13,6 +18,27 @@ export interface ServerOptions {
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
+  /**
+   * Optional second bearer token bound to the Qoder consumer. When absent
+   * there is no Qoder consumer and every authenticated client is CMMChat
+   * (permanently CHAT_ONLY). Server-side and configuration-controlled: a
+   * client can never enable tools by itself, and CMMChat can never use them.
+   */
+  qoderToken?: string;
+}
+
+export type ConsumerRequest = FastifyRequest & { consumerId: ConsumerId };
+
+export function resolveConsumerId(
+  request: FastifyRequest,
+  options: Pick<ServerOptions, "bearerSecret" | "qoderToken">,
+): ConsumerId | null {
+  const authorization = request.headers.authorization;
+  if (verifyBearer(authorization, options.bearerSecret)) return CONSUMER_CMMCHAT;
+  if (options.qoderToken !== undefined && verifyBearer(authorization, options.qoderToken)) {
+    return CONSUMER_QODER;
+  }
+  return null;
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
@@ -20,13 +46,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     logger: false,
   });
 
-  // Bearer auth pre-handler for /v1/* routes
-  fastify.addHook("preHandler", async (request, reply) => {
+  // Bearer auth pre-handler for /v1/* routes. Two configured server-side
+  // tokens exist: the default (CMMChat, always CHAT_ONLY) and the optional
+  // Qoder token. A request authenticates as exactly one consumer; anything
+  // else is 401. Consumer identity is never inferred from prompt text,
+  // User-Agent, or model names.
+  fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
-      const authorization = request.headers.authorization;
-      const isValid = verifyBearer(authorization, options.bearerSecret);
-
-      if (!isValid) {
+      const consumerId = resolveConsumerId(request, options);
+      if (consumerId === null) {
         return reply.code(401).send({
           error: {
             type: "router_unauthorized",
@@ -34,6 +62,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           },
         });
       }
+      (request as ConsumerRequest).consumerId = consumerId;
     }
   });
 
@@ -81,7 +110,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // Diagnostic endpoints
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
-  // OpenAI-compatible chat completions
+  // OpenAI-compatible chat completions. Tool semantics are gated per consumer
+  // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
   registerChatCompletions(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible responses API

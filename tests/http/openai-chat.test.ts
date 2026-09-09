@@ -56,6 +56,7 @@ describe("OpenAI Chat Completions", () => {
   let registry: ProviderRegistry;
   let provider: ScriptedProvider;
   const bearerSecret = "test-secret-123";
+  const qoderSecret = "qoder-secret-456";
 
   beforeEach(async () => {
     registry = new ProviderRegistry();
@@ -158,11 +159,18 @@ describe("OpenAI Chat Completions", () => {
       },
       { type: "completed", finishReason: "tool_calls" },
     ];
-    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret, registry });
+    // Tools require the Qoder consumer (capability policy); plain chat does not.
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      qoderToken: qoderSecret,
+      registry,
+    });
     const response = await server.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      headers: authHeader(bearerSecret),
+      headers: authHeader(qoderSecret),
       payload: {
         model: "chatgpt/test-model",
         messages: [{ role: "user", content: "hi" }],
@@ -216,11 +224,17 @@ describe("OpenAI Chat Completions", () => {
   });
 
   it("forwards tools and generation controls", async () => {
-    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret, registry });
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      qoderToken: qoderSecret,
+      registry,
+    });
     await server.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      headers: authHeader(bearerSecret),
+      headers: authHeader(qoderSecret),
       payload: {
         model: "chatgpt/test-model",
         messages: [{ role: "user", content: "hi" }],
