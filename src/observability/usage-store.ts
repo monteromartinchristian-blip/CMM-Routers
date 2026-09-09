@@ -26,6 +26,7 @@ export interface UsageAggregates {
   quotaEvents: number;
   rateLimitEvents: number;
   timeoutEvents: number;
+  cancelledEvents: number;
   activeRequests: number;
   lastSuccessAt: string | null;
   activeModel: string | null;
@@ -82,6 +83,7 @@ export class UsageStore {
     let quotaEvents = 0;
     let rateLimitEvents = 0;
     let timeoutEvents = 0;
+    let cancelledEvents = 0;
     let latencySum = 0;
     let lastSuccessAt: string | null = null;
     for (const record of this.records) {
@@ -93,6 +95,7 @@ export class UsageStore {
       if (record.status === "quota_error") quotaEvents += 1;
       if (record.status === "rate_limit_error") rateLimitEvents += 1;
       if (record.status === "timeout_error") timeoutEvents += 1;
+      if (record.status === "cancelled") cancelledEvents += 1;
     }
     const activeEntries = [...this.active.values()];
     return {
@@ -102,6 +105,7 @@ export class UsageStore {
       quotaEvents,
       rateLimitEvents,
       timeoutEvents,
+      cancelledEvents,
       activeRequests: this.active.size,
       lastSuccessAt,
       activeModel: activeEntries.length > 0 ? (activeEntries[0]?.model ?? null) : null,

@@ -60,6 +60,7 @@ export function registerDiagnostics(
       quotaEvents: aggregates.quotaEvents,
       rateLimitEvents: aggregates.rateLimitEvents,
       timeoutEvents: aggregates.timeoutEvents,
+      cancelledEvents: aggregates.cancelledEvents,
       recent: usageStore.listRecent(20),
     });
   });

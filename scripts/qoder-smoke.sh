@@ -3,10 +3,14 @@
 # Usage: CMM_ROUTER_TOKEN=<token> bash scripts/qoder-smoke.sh [base-url]
 #
 # Coverage: health, models, non-streaming chat, streaming chat SSE,
-# Responses API, and cancellation reachability. Every inference step
-# requires the exact QODER_SMOKE_OK marker — a PASS verdict is never
-# issued for unmarked or empty content. Loopback only; the bearer token
-# is never printed.
+# Responses API, and REAL cancellation. Every inference step requires the
+# exact QODER_SMOKE_OK marker — a PASS verdict is never issued for unmarked
+# or empty content. Loopback only; the bearer token is never printed.
+#
+# Cancellation is proven, not assumed: a streaming request is opened, the
+# first SSE data frame is awaited, the client socket is destroyed, and the
+# router must record the kill in /v1/cmm/usage (cancelledEvents increments
+# and activeRequests drains to zero). A merely-fast 200 is NOT accepted.
 set -u
 
 BASE="${1:-http://127.0.0.1:8790}"
@@ -70,13 +74,63 @@ RESP_CONTENT=$(curl -sf "${auth[@]}" -H 'Content-Type: application/json' \
   || { echo "QODER_SMOKE=FAIL step=responses"; exit 1; }
 require_marker "RESPONSES" "$RESP_CONTENT"
 
-echo "== cancellation reachability =="
-CANCEL_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${auth[@]}" -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply exactly: $MARKER\"}]}" \
-  "$BASE/v1/chat/completions") || CANCEL_CODE="000"
-case "$CANCEL_CODE" in
-  200) echo "CANCEL_REACHABILITY=PASS" ;;
-  *) echo "QODER_SMOKE=FAIL step=cancel reason=http-$CANCEL_CODE"; exit 1 ;;
-esac
+echo "== real cancellation (abort mid-stream, observe router books) =="
+USAGE_BEFORE=$(curl -sf "${auth[@]}" "$BASE/v1/cmm/usage") || { echo "QODER_SMOKE=FAIL step=cancel reason=usage-unavailable"; exit 1; }
+CANCELLED_BEFORE=$(echo "$USAGE_BEFORE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cancelledEvents',0))")
+SUCCESS_BEFORE=$(echo "$USAGE_BEFORE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('successCount',0))")
+# Open a streaming request in the background to a temp file, wait for the
+# first SSE data frame, then SIGKILL the client. All waits are bounded;
+# no FIFOs, no blocking reads.
+TMPFILE=$(mktemp)
+curl -sN "${auth[@]}" -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply exactly: $MARKER\"}],\"stream\":true}" \
+  "$BASE/v1/chat/completions" > "$TMPFILE" 2>/dev/null &
+CURL_PID=$!
+GOT_FRAME=0
+END=$((SECONDS + 20))
+while [ $SECONDS -lt $END ]; do
+  if grep -q "^data:" "$TMPFILE" 2>/dev/null; then
+    GOT_FRAME=1
+    break
+  fi
+  sleep 0.2
+done
+kill -9 "$CURL_PID" 2>/dev/null || true
+wait "$CURL_PID" 2>/dev/null || true
+rm -f "$TMPFILE"
+if [ "$GOT_FRAME" != "1" ]; then
+  echo "QODER_SMOKE=BLOCKED_EXTERNAL_PRECONDITION reason=no-stream-frame model=$MODEL"
+  exit 0
+fi
+# Poll the router books: the killed request must surface as cancelled and
+# no request may remain active. A request that finished before the kill is
+# reported as BLOCKED (too fast to cancel), never as PASS.
+END=$((SECONDS + 15))
+CANCEL_OK=0
+FINISHED_FIRST=0
+while [ $SECONDS -lt $END ]; do
+  USAGE_AFTER=$(curl -sf "${auth[@]}" "$BASE/v1/cmm/usage" 2>/dev/null || echo "")
+  [ -z "$USAGE_AFTER" ] && sleep 1 && continue
+  CANCELLED_AFTER=$(echo "$USAGE_AFTER" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cancelledEvents',0))")
+  ACTIVE_AFTER=$(echo "$USAGE_AFTER" | python3 -c "import json,sys; print(json.load(sys.stdin).get('activeRequests',0))")
+  SUCCESS_AFTER=$(echo "$USAGE_AFTER" | python3 -c "import json,sys; print(json.load(sys.stdin).get('successCount',0))")
+  if [ "$CANCELLED_AFTER" -gt "$CANCELLED_BEFORE" ] && [ "$ACTIVE_AFTER" = "0" ]; then
+    CANCEL_OK=1
+    break
+  fi
+  if [ "$SUCCESS_AFTER" -gt "$SUCCESS_BEFORE" ]; then
+    FINISHED_FIRST=1
+  fi
+  sleep 1
+done
+if [ "$CANCEL_OK" = "1" ]; then
+  echo "QODER_SMOKE_CANCELLATION=PASS cancelledDelta=$((CANCELLED_AFTER - CANCELLED_BEFORE))"
+elif [ "$FINISHED_FIRST" = "1" ]; then
+  echo "QODER_SMOKE=BLOCKED_EXTERNAL_PRECONDITION reason=request-finished-before-cancel model=$MODEL"
+  exit 0
+else
+  echo "QODER_SMOKE=FAIL step=cancel reason=router-books-unchanged cancelledBefore=$CANCELLED_BEFORE"
+  exit 1
+fi
 
 echo "QODER_SMOKE=PASS"
