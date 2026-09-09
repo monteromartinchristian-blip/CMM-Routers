@@ -123,6 +123,39 @@ async function readBodyText(response: {
   return await response.text();
 }
 
+/**
+ * Bounded text-body reader for discovery and non-2xx error bodies. Races
+ * body consumption against the remaining deadline budget and the caller
+ * signal so headers-immediate/body-stalled responses terminate with
+ * provider_timeout instead of hanging. Caller abort yields null (caller
+ * exits silently); deadline expiry throws provider_timeout.
+ */
+async function readBodyTextBounded(
+  response: { status: number; text: () => Promise<string>; body?: unknown },
+  composed: { startedAt: number; timeoutMs: number },
+  caller: AbortSignal | undefined,
+): Promise<string | null> {
+  const remaining = Math.max(0, composed.startedAt + composed.timeoutMs - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeoutEdge = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new RouterError("provider_timeout", "Command Code request timed out"));
+      }, remaining);
+    });
+    if (!caller) {
+      return await Promise.race([response.text(), timeoutEdge]);
+    }
+    if (caller.aborted) return null;
+    const callerEdge = new Promise<null>((resolve) => {
+      caller.addEventListener("abort", () => resolve(null), { once: true });
+    });
+    return await Promise.race([response.text(), timeoutEdge, callerEdge]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export function mapStatusToRouterError(
   status: number,
   bodyText: string,
@@ -479,14 +512,19 @@ export class CommandCodeClient {
   async listModels(signal?: AbortSignal): Promise<CommandCodeModel[]> {
     const secret = this.readSecret();
     const url = this.buildUrl("/models");
+    const composed = composeTimeoutSignal(signal, this.timeoutMs);
     let response: { status: number; text: () => Promise<string> };
     try {
       response = await this.fetchFn(url, {
         method: "GET",
         headers: buildAuthHeaders(secret),
-        signal,
+        signal: composed.signal,
       });
     } catch (error) {
+      composed.cleanup();
+      if (signal?.aborted) {
+        throw new RouterError("provider_timeout", "Command Code request timed out");
+      }
       if ((error as Error).name === "AbortError") {
         throw new RouterError("provider_timeout", "Command Code request timed out");
       }
@@ -495,7 +533,20 @@ export class CommandCodeClient {
         `Command Code unreachable: ${(error as Error).message}`,
       );
     }
-    const bodyText = await readBodyText(response);
+    // The deadline stays armed through body consumption: a headers-
+    // immediate/body-stalled /models response terminates with
+    // provider_timeout instead of hanging discovery/health/startup.
+    let bodyText: string | null;
+    try {
+      bodyText = await readBodyTextBounded(response, composed, signal);
+    } catch (error) {
+      composed.cleanup();
+      throw error;
+    }
+    composed.cleanup();
+    if (bodyText === null) {
+      throw new RouterError("provider_timeout", "Command Code request timed out");
+    }
     if (response.status !== 200) {
       throw mapStatusToRouterError(response.status, bodyText, "GET /models");
     }
@@ -589,9 +640,20 @@ export class CommandCodeClient {
     // fires mid-frame, the hung body is torn down instead of hanging.
     const { status, chunks } = await openStreamOrError(response, composed.signal ?? signal, "POST /messages");
     if (status !== 200) {
-      // Non-200 bodies are small error payloads; read fully for mapping.
+      // Non-200 bodies are small error payloads but can still stall: bound
+      // the read by the remaining deadline instead of awaiting forever.
+      let bodyText: string | null;
+      try {
+        bodyText = await readBodyTextBounded(response, composed, signal);
+      } catch (error) {
+        composed.cleanup();
+        throw error;
+      }
       composed.cleanup();
-      const bodyText = await readBodyText(response);
+      if (bodyText === null) {
+        if (signal.aborted) return;
+        throw new RouterError("provider_timeout", "Command Code request timed out");
+      }
       throw mapStatusToRouterError(response.status, bodyText, "POST /messages");
     }
     yield* iterateWithDeadline(chunks, composed, signal);
@@ -636,8 +698,18 @@ export class CommandCodeClient {
     }
     const { status, chunks } = await openStreamOrError(response, composed.signal ?? signal, context);
     if (status !== 200) {
+      let bodyText: string | null;
+      try {
+        bodyText = await readBodyTextBounded(response, composed, signal);
+      } catch (error) {
+        composed.cleanup();
+        throw error;
+      }
       composed.cleanup();
-      const bodyText = await readBodyText(response);
+      if (bodyText === null) {
+        if (signal.aborted) return;
+        throw new RouterError("provider_timeout", "Command Code request timed out");
+      }
       throw mapStatusToRouterError(response.status, bodyText, context);
     }
     yield* iterateWithDeadline(chunks, composed, signal);
