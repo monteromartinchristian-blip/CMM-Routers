@@ -106,6 +106,11 @@ export class CommandCodeAdapter implements ProviderAdapter {
     for (const model of models) {
       if (seen.has(model.id)) continue;
       seen.add(model.id);
+      // KNOWN_EXCLUDED entries (authoritative exclusion metadata) are hidden
+      // here: /v1/models and registry resolution must never advertise a model
+      // the account metadata says is plan-excluded. UNKNOWN entries stay
+      // visible and fail closed at request time via upstream plan enforcement.
+      if (model.goatIncluded === false) continue;
       discovered.push({
         id: `command-code/${model.id}`,
         provider: "command-code",
@@ -116,6 +121,12 @@ export class CommandCodeAdapter implements ProviderAdapter {
         ...(model.family !== undefined ? { family: model.family } : {}),
         goatIncluded: model.goatIncluded,
       } as DiscoveredModel);
+    }
+    if (discovered.length === 0) {
+      throw new RouterError(
+        "provider_protocol_error",
+        "Command Code model discovery returned no usable models",
+      );
     }
     return discovered;
   }

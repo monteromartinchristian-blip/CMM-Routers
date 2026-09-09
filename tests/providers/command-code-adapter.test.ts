@@ -153,7 +153,11 @@ describe("Command Code adapter", () => {
     });
     const adapter = new CommandCodeAdapter({ ackPath, client });
     const models = await adapter.discoverModels();
-    expect(models.length).toBe(3);
+    // KNOWN_EXCLUDED (claude-haiku-4-5, Pro-only) is hidden at discovery.
+    expect(models.map((m) => m.upstreamModel).sort()).toEqual([
+      "deepseek/deepseek-v4-flash",
+      "mystery-model",
+    ]);
     const usable = adapter.goatUsableModels(models);
     expect(usable.map((m) => m.upstreamModel)).toEqual(["deepseek/deepseek-v4-flash"]);
   });
@@ -208,10 +212,13 @@ describe("Command Code adapter", () => {
     });
     const adapter = new CommandCodeAdapter({ ackPath, client });
     const models = await adapter.discoverModels();
-    expect(models.length).toBe(3);
+    // KNOWN_EXCLUDED is hidden from discovery; UNKNOWN stays visible.
+    expect(models.map((m) => m.upstreamModel).sort()).toEqual([
+      "deepseek/deepseek-v4-flash",
+      "mystery-model",
+    ]);
     expect(adapter.entitlementOf(models[0]!)).toBe("KNOWN_INCLUDED");
-    expect(adapter.entitlementOf(models[1]!)).toBe("KNOWN_EXCLUDED");
-    expect(adapter.entitlementOf(models[2]!)).toBe("UNKNOWN");
+    expect(adapter.entitlementOf(models[1]!)).toBe("UNKNOWN");
   });
 
   it("classifies wires without a static model catalog", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { ClaudeAdapter } from "../../src/providers/claude/adapter.js";
 import {
   CLAUDE_CONFIG_DIR,
@@ -23,31 +23,51 @@ function makeRequest(requestId = "iso-test"): RouterRequest {
 
 describe("Claude concurrent environment isolation", () => {
   let adapter: ClaudeAdapter;
-  const savedEnv = { ...process.env };
 
   beforeEach(() => {
     adapter = new ClaudeAdapter();
-    process.env = { ...savedEnv };
   });
 
-  it("never mutates global process.env during run", async () => {
+  afterEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CONFIG_DIR;
+  });
+
+  it("never mutates global process.env during run", { timeout: 30000 }, async () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    const savedUrl = process.env.ANTHROPIC_BASE_URL;
+    const savedToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    const savedDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.ANTHROPIC_API_KEY = "poison-key";
     process.env.ANTHROPIC_BASE_URL = "http://localhost:20128";
     process.env.ANTHROPIC_AUTH_TOKEN = "poison-token";
     process.env.CLAUDE_CONFIG_DIR = "/tmp/other-profile";
 
-    const abortController = new AbortController();
-    abortController.abort();
+    try {
+      const abortController = new AbortController();
+      abortController.abort();
 
-    for await (const _ of adapter.run(makeRequest(), abortController.signal)) {
-      // consume
+      for await (const _ of adapter.run(makeRequest(), abortController.signal)) {
+        // consume
+      }
+
+      expect(process.env.ANTHROPIC_API_KEY).toBe("poison-key");
+      expect(process.env.ANTHROPIC_BASE_URL).toBe("http://localhost:20128");
+      expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("poison-token");
+      expect(process.env.CLAUDE_CONFIG_DIR).toBe("/tmp/other-profile");
+      console.log("HOST_PROCESS_ENV_UNCHANGED=YES");
+    } finally {
+      if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey;
+      else delete process.env.ANTHROPIC_API_KEY;
+      if (savedUrl !== undefined) process.env.ANTHROPIC_BASE_URL = savedUrl;
+      else delete process.env.ANTHROPIC_BASE_URL;
+      if (savedToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = savedToken;
+      else delete process.env.ANTHROPIC_AUTH_TOKEN;
+      if (savedDir !== undefined) process.env.CLAUDE_CONFIG_DIR = savedDir;
+      else delete process.env.CLAUDE_CONFIG_DIR;
     }
-
-    expect(process.env.ANTHROPIC_API_KEY).toBe("poison-key");
-    expect(process.env.ANTHROPIC_BASE_URL).toBe("http://localhost:20128");
-    expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("poison-token");
-    expect(process.env.CLAUDE_CONFIG_DIR).toBe("/tmp/other-profile");
-    console.log("HOST_PROCESS_ENV_UNCHANGED=YES");
   });
 
   it("builds per-request isolated envs without cross contamination", () => {

@@ -133,29 +133,34 @@ describe("Claude Model Discovery", () => {
     );
   });
 
-  it("ensures PAYG variables remain absent during discovery", async () => {
+  it("ensures PAYG variables never reach the SDK subprocess env", async () => {
     const originalApiKey = process.env.ANTHROPIC_API_KEY;
     const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
     const originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
 
     try {
-      // Set PAYG variables before discovery
+      // Poison the parent environment: the adapter must NOT mutate it and
+      // must NOT forward these into options.env for the SDK subprocess.
       process.env.ANTHROPIC_API_KEY = "test-key";
       process.env.ANTHROPIC_BASE_URL = "http://localhost:9999";
       process.env.ANTHROPIC_AUTH_TOKEN = "test-token";
 
-      const mockQuery = makeQueryMock(
-        [{ value: "sonnet", displayName: "Sonnet" }],
-        () => {
-          // During discovery, PAYG vars should be absent
-          expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
-          expect(process.env.ANTHROPIC_BASE_URL).toBeUndefined();
-          expect(process.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-        },
-      );
+      const mockQuery = makeQueryMock([{ value: "sonnet", displayName: "Sonnet" }]);
       queryMock.mockReturnValue(mockQuery as any);
 
       await adapter.discoverModels();
+
+      // Parent env untouched (no global mutation).
+      expect(process.env.ANTHROPIC_API_KEY).toBe("test-key");
+      // SDK subprocess env carries none of the poisoned variables.
+      const passedOptions = queryMock.mock.calls[0]?.[0]?.options as
+        | Record<string, unknown>
+        | undefined;
+      const passedEnv = passedOptions?.env as Record<string, unknown> | undefined;
+      expect(passedEnv).toBeDefined();
+      expect(passedEnv?.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(passedEnv?.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(passedEnv?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     } finally {
       // Restore
       if (originalApiKey !== undefined) process.env.ANTHROPIC_API_KEY = originalApiKey;

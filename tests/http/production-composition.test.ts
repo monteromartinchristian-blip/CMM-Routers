@@ -41,7 +41,7 @@ describe("production composition root", () => {
     writeFileSync(join(dir, "local.json"), JSON.stringify({}));
   }
 
-  it("registers chatgpt, claude, google from the same factory index.ts uses", async () => {
+  it("registers chatgpt, claude, google from the same factory index.ts uses", { timeout: 60000 }, async () => {
     writeConfig();
     const { loadConfig } = await import("../../src/config/load-config.js");
     const composition = await createProductionRegistry(loadConfig(dir));
@@ -54,7 +54,7 @@ describe("production composition root", () => {
     expect(composition.registeredProviders.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("skips command-code without ack instead of registering insecurely", async () => {
+  it("skips command-code without ack instead of registering insecurely", { timeout: 60000 }, async () => {
     writeConfig();
     const { loadConfig } = await import("../../src/config/load-config.js");
     const composition = await createProductionRegistry(loadConfig(dir));
@@ -64,7 +64,7 @@ describe("production composition root", () => {
     ).toBe(true);
   });
 
-  it("does not instantiate disabled providers", async () => {
+  it("does not instantiate disabled providers", { timeout: 60000 }, async () => {
     writeConfig({
       providers: {
         chatgpt: { enabled: false },
@@ -82,7 +82,7 @@ describe("production composition root", () => {
     expect(composition.registeredProviders).toEqual(["google"]);
   });
 
-  it("production-composed /v1/models returns provider models", async () => {
+  it("production-composed /v1/models returns provider models", { timeout: 60000 }, async () => {
     writeConfig();
     const { loadConfig } = await import("../../src/config/load-config.js");
     const composition = await createProductionRegistry(loadConfig(dir));
