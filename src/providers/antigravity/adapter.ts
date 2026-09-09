@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -756,6 +756,12 @@ export class AntigravityAdapter implements ProviderAdapter {
     } finally {
       signal.removeEventListener("abort", onAbort);
       this.activeRequests.delete(request.requestId);
+      // Per-request temp dirs must not accumulate on a long-running router.
+      try {
+        rmSync(cwd, { recursive: true, force: true });
+      } catch {
+        // Cleanup is best-effort; inference results are already delivered.
+      }
     }
   }
 
