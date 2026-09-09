@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const { queryMock, duplexSendMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
@@ -14,6 +16,21 @@ vi.mock("node:child_process", () => ({
 
 import { CodexAdapter, buildCodexThreadSeeds } from "../../src/providers/codex/adapter.js";
 import type { RouterRequest } from "../../src/core/model.js";
+
+function generatedInjectMethod(): string {
+  const schema = JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, "../fixtures/generated/codex/ClientRequest.json"),
+      "utf-8",
+    ),
+  ) as {
+    oneOf?: Array<{ properties?: { method?: { enum?: string[] } }; title?: string }>;
+  };
+  const entry = (schema.oneOf ?? []).find((e) => e.title === "Thread/injectItemsRequest");
+  const method = entry?.properties?.method?.enum?.[0];
+  expect(method).toBe("thread/inject_items");
+  return method ?? "thread/inject_items";
+}
 
 function conversationRequest(): RouterRequest {
   return {
@@ -77,7 +94,8 @@ describe("Codex conversation roles and thread lifecycle", () => {
     console.log("CODEX_ROLE_FLATTENING=NONE");
   });
 
-  it("emits ephemeral thread/start, injectItems, and schema turn/start over JSON-RPC", async () => {
+  it("emits ephemeral thread/start, inject_items, and schema turn/start over JSON-RPC", async () => {
+    const expectedInject = generatedInjectMethod();
     const seen: Array<{ method: string; params: Record<string, unknown>; id?: unknown }> = [];
     const duplex = scriptedServer((msg: Record<string, unknown>) => {
       seen.push(msg as { method: string; params: Record<string, unknown>; id?: unknown });
@@ -86,7 +104,7 @@ describe("Codex conversation roles and thread lifecycle", () => {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
       } else if (msg.method === "thread/start") {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: { thread: { id: "thread-X" } } });
-      } else if (msg.method === "thread/injectItems") {
+      } else if (msg.method === expectedInject) {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
       } else if (msg.method === "turn/start") {
         send(duplex, {
@@ -128,8 +146,13 @@ describe("Codex conversation roles and thread lifecycle", () => {
     console.log("CODEX_THREAD_EPHEMERAL_EXPLICIT=YES");
     console.log("CODEX_THREAD_EPHEMERAL_VALUE=true");
     expect(String(threadStart?.params.developerInstructions)).toContain("SYSTEM_MARKER_CODEX");
-    const inject = seen.find((m) => m.method === "thread/injectItems");
+    const inject = seen.find((m) => m.method === expectedInject);
     expect(inject).toBeDefined();
+    expect(expectedInject).toBe("thread/inject_items");
+    expect(seen.some((m) => m.method === "thread/injectItems")).toBe(false);
+    console.log(`CODEX_THREAD_INJECT_METHOD=${expectedInject}`);
+    console.log("CODEX_THREAD_INJECT_ITEMS_WIRE=PASS");
+    console.log("CODEX_STALE_INJECTITEMS_METHOD=ABSENT");
     expect(JSON.stringify(inject?.params)).toContain("USER_ONE_CODEX");
     expect(JSON.stringify(inject?.params)).toContain("ASSISTANT_HISTORY_CODEX");
     const turnStart = seen.find((m) => m.method === "turn/start");
@@ -146,7 +169,7 @@ describe("Codex conversation roles and thread lifecycle", () => {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
       } else if (msg.method === "thread/start") {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: { thread: { id: "thread-C" } } });
-      } else if (msg.method === "thread/injectItems") {
+      } else if (msg.method === "thread/inject_items") {
         send(duplex, { jsonrpc: "2.0", id: msg.id, result: {} });
       } else if (msg.method === "turn/start") {
         send(duplex, {

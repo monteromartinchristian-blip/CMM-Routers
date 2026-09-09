@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { RouterError } from "../../src/core/errors.js";
+import { CodexAppServerClient } from "../../src/providers/codex/app-server-client.js";
 import {
   buildThreadStartParams,
   buildTurnInterruptParams,
@@ -12,6 +13,16 @@ import {
 } from "../../src/providers/codex/schema-translator.js";
 
 const V2 = join(import.meta.dirname, "../fixtures/generated/codex/v2");
+const GENERATED = join(import.meta.dirname, "../fixtures/generated/codex");
+
+function generatedClientMethods(): string[] {
+  const schema = JSON.parse(readFileSync(join(GENERATED, "ClientRequest.json"), "utf-8")) as {
+    oneOf?: Array<{ properties?: { method?: { enum?: string[] } } }>;
+  };
+  return (schema.oneOf ?? [])
+    .map((entry) => entry.properties?.method?.enum?.[0])
+    .filter((m): m is string => typeof m === "string");
+}
 
 function requiredOf(fixture: string): string[] {
   const schema = JSON.parse(readFileSync(join(V2, fixture), "utf-8")) as {
@@ -131,6 +142,31 @@ describe("Codex generated-schema conformance", () => {
     expect(requiredOf("TurnInterruptParams.json")).toEqual(
       expect.arrayContaining(["threadId", "turnId"]),
     );
+    console.log("CODEX_PROTOCOL_PAYLOAD_DRIFT_GUARD=PASS");
+  });
+
+  it("drift guard: production outbound methods match generated discriminators", () => {
+    const methods = generatedClientMethods();
+    for (const required of [
+      "thread/start",
+      "thread/inject_items",
+      "turn/start",
+      "turn/interrupt",
+      "model/list",
+      "initialize",
+    ]) {
+      expect(methods).toContain(required);
+    }
+    expect(CodexAppServerClient.INJECT_ITEMS_METHOD).toBe("thread/inject_items");
+    expect(methods).toContain(CodexAppServerClient.INJECT_ITEMS_METHOD);
+    console.log("CODEX_PROTOCOL_METHOD_DRIFT_GUARD=PASS");
     console.log("CODEX_PROTOCOL_DRIFT_GUARD=PASS");
+  });
+
+  it("drift guard: stale camelCase inject method is not a valid discriminator", () => {
+    const methods = generatedClientMethods();
+    expect(methods).not.toContain("thread/injectItems");
+    expect(CodexAppServerClient.INJECT_ITEMS_METHOD).not.toBe("thread/injectItems");
+    console.log("CODEX_STALE_INJECTITEMS_METHOD=ABSENT");
   });
 });
