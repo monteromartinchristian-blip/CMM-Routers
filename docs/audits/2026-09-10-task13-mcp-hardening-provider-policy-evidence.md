@@ -3,7 +3,7 @@
 **Date:** 2026-09-10
 **Status:** `IMPLEMENTED_PENDING_INDEPENDENT_REAUDIT`
 **Starting HEAD:** `b439378c47c0764bb4c651e48b94bbe752c2c3f2`
-**Final HEAD:** `970c31b33a21bc21bf1dd470810887f7d6dcdf24`
+**Final code HEAD:** `970c31b33a21bc21bf1dd470810887f7d6dcdf24` (this evidence document is the documentation-only commit immediately after it; the full gate sequence was re-run on the commit containing this file)
 **Worktree after 10 s stability wait:** clean, HEAD unchanged
 **Live tool acceptance run:** NO
 **Final Task 13 closure:** NO
