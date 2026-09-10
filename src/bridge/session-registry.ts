@@ -1,5 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RouterError } from "../core/errors.js";
@@ -23,6 +33,21 @@ export const REGISTRY_DIR_ENV = "CMM_BRIDGE_REGISTRY_DIR";
 export const SESSION_SELECTOR_ENV = "CMM_BRIDGE_SESSION_ID";
 export const SESSION_REGISTRY_MAX_LIVE = 64;
 export const MAX_ANCESTOR_DEPTH = 4;
+
+/** Descriptor file naming contract: `agy-<pid>.json`, nothing else. */
+const DESCRIPTOR_FILE = /^agy-(\d+)\.json$/;
+/** Exclusive lock file guarding the registry directory critical section. */
+const LOCK_FILE_NAME = ".lock";
+/** Bound on how long a registration waits for the directory lock. */
+const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
+/** A lock older than this was left by a crashed process and is reclaimed. */
+const DEFAULT_STALE_LOCK_MS = 30_000;
+const LOCK_RETRY_MS = 10;
+
+const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+  Atomics.wait(sleepBuffer, 0, 0, ms);
+}
 
 export interface BridgeToolSpec {
   name: string;
@@ -107,27 +132,14 @@ export function readSessionDescriptor(
 ): BridgeSessionDescriptor | null {
   const path = selectorFile(agyPid);
   if (!existsSync(path)) return null;
-  let parsed: BridgeSessionDescriptor;
-  try {
-    const value = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-    if (
-      !isRecord(value) ||
-      typeof value.sessionId !== "string" ||
-      typeof value.agyPid !== "number" ||
-      typeof value.socketPath !== "string" ||
-      typeof value.token !== "string" ||
-      !Array.isArray(value.tools)
-    ) {
-      rmSync(path, { force: true });
-      return null;
-    }
-    parsed = value as unknown as BridgeSessionDescriptor;
-  } catch {
-    rmSync(path, { force: true });
+  // Same structural validation the registry reconciliation uses.
+  const parsed = readDescriptorStructure(path);
+  if (parsed === null) {
+    removeFileQuietly(path);
     return null;
   }
   if (parsed.agyPid !== agyPid || !pidAlive(agyPid) || !existsSync(parsed.socketPath)) {
-    rmSync(path, { force: true });
+    removeFileQuietly(path);
     return null;
   }
   return parsed;
@@ -179,12 +191,27 @@ export function resolveBridgeSession(options: {
  * Router-side registry of live parked provider runs. The number of live
  * descriptors is explicitly bounded: a finite TTL alone is not a maximum under
  * burst load.
+ *
+ * The bound is enforced against the EFFECTIVE registry — the reconciled set of
+ * descriptors on disk unioned with this process's in-memory live set — so a
+ * Router restart cannot inherit a stale, empty in-memory view of the bound, and
+ * two Router processes sharing one registry directory cannot each believe they
+ * are below the global maximum. The reconcile → count → publish critical section
+ * runs under an exclusive directory lock.
  */
 export class BridgeSessionRegistry {
   /** agyPid -> sessionId */
   private readonly live = new Map<number, string>();
+  private readonly lockTimeoutMs: number;
+  private readonly staleLockMs: number;
 
-  constructor(private readonly maxLive: number = SESSION_REGISTRY_MAX_LIVE) {}
+  constructor(
+    private readonly maxLive: number = SESSION_REGISTRY_MAX_LIVE,
+    options: { lockTimeoutMs?: number; staleLockMs?: number } = {},
+  ) {
+    this.lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+    this.staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
+  }
 
   liveCount(): number {
     return this.live.size;
@@ -195,43 +222,129 @@ export class BridgeSessionRegistry {
   }
 
   register(descriptor: BridgeSessionDescriptor): () => void {
-    if (this.live.size >= this.maxLive) {
-      throw new RouterError(
-        "provider_rate_limited",
-        "Bridge session registry is at capacity; refusing another provider tool session",
-      );
-    }
-    if (this.live.has(descriptor.agyPid)) {
-      throw new RouterError(
-        "provider_protocol_error",
-        "Duplicate bridge session selector for a live provider run",
-      );
-    }
-    for (const sessionId of this.live.values()) {
-      if (sessionId === descriptor.sessionId) {
-        throw new RouterError(
-          "provider_protocol_error",
-          "Duplicate bridge session id for a live provider run",
-        );
-      }
-    }
     const dir = registryDir();
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(selectorFile(descriptor.agyPid), JSON.stringify(descriptor), {
-      mode: 0o600,
-    });
-    this.live.set(descriptor.agyPid, descriptor.sessionId);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      try {
-        rmSync(selectorFile(descriptor.agyPid), { force: true });
-      } catch {
-        // Best effort: a stale descriptor is rejected by the launcher anyway.
+    return this.withDirectoryLock(dir, () => {
+      const onDisk = this.reconcileOnDisk(dir);
+      const effective = new Set<number>(onDisk);
+      for (const pid of this.live.keys()) effective.add(pid);
+      if (effective.size >= this.maxLive) {
+        throw new RouterError(
+          "provider_rate_limited",
+          "Bridge session registry is at capacity; refusing another provider tool session",
+        );
       }
-      this.live.delete(descriptor.agyPid);
-    };
+      if (this.live.has(descriptor.agyPid)) {
+        throw new RouterError(
+          "provider_protocol_error",
+          "Duplicate bridge session selector for a live provider run",
+        );
+      }
+      for (const sessionId of this.live.values()) {
+        if (sessionId === descriptor.sessionId) {
+          throw new RouterError(
+            "provider_protocol_error",
+            "Duplicate bridge session id for a live provider run",
+          );
+        }
+      }
+      writeFileSync(selectorFile(descriptor.agyPid), JSON.stringify(descriptor), {
+        mode: 0o600,
+      });
+      this.live.set(descriptor.agyPid, descriptor.sessionId);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          rmSync(selectorFile(descriptor.agyPid), { force: true });
+        } catch {
+          // Best effort: a stale descriptor is rejected by the launcher anyway.
+        }
+        this.live.delete(descriptor.agyPid);
+      };
+    });
+  }
+
+  /**
+   * Remove every descriptor that cannot belong to a live provider run and
+   * return the set of owner pids that survive. A descriptor survives only when
+   * its structure validates, its file name matches its owner pid, the owner
+   * process is alive, and its control socket still exists. A run this process
+   * is actively holding is always treated as verified-live: its descriptor is
+   * never removed while the run is parked.
+   */
+  private reconcileOnDisk(dir: string): Set<number> {
+    const surviving = new Set<number>(this.live.keys());
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return surviving;
+    }
+    for (const entry of entries) {
+      const match = DESCRIPTOR_FILE.exec(entry);
+      if (match === null) continue;
+      const pid = Number.parseInt(match[1] as string, 10);
+      if (this.live.has(pid)) continue;
+      const path = join(dir, entry);
+      const descriptor = readDescriptorStructure(path);
+      if (
+        descriptor === null ||
+        descriptor.agyPid !== pid ||
+        !isProcessAlive(pid) ||
+        !existsSync(descriptor.socketPath)
+      ) {
+        removeFileQuietly(path);
+        continue;
+      }
+      surviving.add(pid);
+    }
+    return surviving;
+  }
+
+  /**
+   * Run `action` while holding an exclusive directory lock. Fail-closed on
+   * contention: past the bounded timeout the caller is refused rather than
+   * allowed to race past the global capacity check.
+   */
+  private withDirectoryLock<T>(dir: string, action: () => T): T {
+    const lockPath = join(dir, LOCK_FILE_NAME);
+    const deadline = Date.now() + this.lockTimeoutMs;
+    for (;;) {
+      try {
+        closeSync(openSync(lockPath, "wx", 0o600));
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (this.reclaimStaleLock(lockPath)) continue;
+        if (Date.now() >= deadline) {
+          throw new RouterError(
+            "provider_rate_limited",
+            "Bridge session registry lock is held by another Router process",
+          );
+        }
+        sleepSync(LOCK_RETRY_MS);
+      }
+    }
+    try {
+      return action();
+    } finally {
+      removeFileQuietly(lockPath);
+    }
+  }
+
+  /** True when a lock older than the bounded threshold was reclaimed. */
+  private reclaimStaleLock(lockPath: string): boolean {
+    try {
+      const age = Date.now() - statSync(lockPath).mtimeMs;
+      if (age <= this.staleLockMs) return false;
+      removeFileQuietly(lockPath);
+      return true;
+    } catch {
+      // The lock disappeared underneath us: retry acquisition immediately.
+      return true;
+    }
   }
 
   /** Test/diagnostic: number of descriptors currently on disk. */
@@ -243,5 +356,33 @@ export class BridgeSessionRegistry {
     } catch {
       return 0;
     }
+  }
+}
+
+/** Structural validation only; liveness is decided by the caller. */
+function readDescriptorStructure(path: string): BridgeSessionDescriptor | null {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (
+      !isRecord(value) ||
+      typeof value.sessionId !== "string" ||
+      typeof value.agyPid !== "number" ||
+      typeof value.socketPath !== "string" ||
+      typeof value.token !== "string" ||
+      !Array.isArray(value.tools)
+    ) {
+      return null;
+    }
+    return value as unknown as BridgeSessionDescriptor;
+  } catch {
+    return null;
+  }
+}
+
+function removeFileQuietly(path: string): void {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort; ENOENT and permission errors are not fatal here.
   }
 }
