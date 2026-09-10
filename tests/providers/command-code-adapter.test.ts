@@ -6,6 +6,7 @@ import { CommandCodeAdapter } from "../../src/providers/command-code/adapter.js"
 import { CommandCodeClient } from "../../src/providers/command-code/client.js";
 import type { RouterRequest } from "../../src/core/model.js";
 import { RouterError } from "../../src/core/errors.js";
+import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 function validAck(dir: string): string {
   const path = join(dir, "ack.json");
@@ -496,7 +497,12 @@ describe("Command Code adapter", () => {
     });
     const adapter = new CommandCodeAdapter({ ackPath, client });
     const events: { type: string }[] = [];
-    for await (const event of adapter.run(makeRequest(), new AbortController().signal)) {
+    // The returned tool call must be declared by the request: an undeclared
+    // provider tool request now fails closed at the adapter boundary.
+    const declared = makeRequest();
+    declared.tools = [CMM_ECHO_TOOL];
+    declared.model.capability = "CHAT_AND_TOOLS";
+    for await (const event of adapter.run(declared, new AbortController().signal)) {
       events.push(event as { type: string });
     }
     expect(events.map((e) => e.type)).toEqual([

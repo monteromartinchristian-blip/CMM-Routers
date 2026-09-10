@@ -9,6 +9,12 @@ import { BridgeControlClient } from "./control-ipc.js";
  * already-produced Qoder result. It performs NO filesystem, shell, or edit
  * side effect of any kind — transport only.
  *
+ * Authorization: `tools/call` accepts ONLY names in the declared tool set. The
+ * MCP transport being authenticated is not authorization to call an arbitrary
+ * function. An undeclared name fails closed with an MCP error and is never
+ * forwarded to the Router, so no Router/Qoder executable tool call is surfaced
+ * and no broker entry is created.
+ *
  * Configuration is supplied via environment so the Router can start it
  * request-scoped without touching any global provider configuration:
  *   CMM_BRIDGE_SOCKET       Unix socket path of the control channel
@@ -33,6 +39,9 @@ export function serialize(obj: unknown): string {
   return `${JSON.stringify(obj)}\n`;
 }
 
+/** MCP error code for an invalid parameter, including an undeclared tool name. */
+export const MCP_INVALID_PARAMS = -32602;
+
 function readToolsFromEnv(): BridgeToolDefinition[] {
   const raw = process.env.CMM_BRIDGE_TOOLS;
   if (typeof raw !== "string" || raw.length === 0) return [];
@@ -56,6 +65,8 @@ export function startMcpBridgeProcess(write: (line: string) => void = (line) => 
   const token = process.env.CMM_BRIDGE_TOKEN;
   const serverName = process.env.CMM_BRIDGE_SERVER_NAME ?? "cmm_qoder";
   const tools = readToolsFromEnv();
+  // Immutable per-session declared-tool ACL.
+  const declaredTools = new Set(tools.map((tool) => tool.name));
   const client =
     typeof socketPath === "string" && typeof token === "string"
       ? new BridgeControlClient(socketPath, token)
@@ -111,6 +122,21 @@ export function startMcpBridgeProcess(write: (line: string) => void = (line) => 
       if (method === "tools/call") {
         const params = message.params ?? {};
         const name = typeof params.name === "string" ? params.name : "";
+        if (!declaredTools.has(name)) {
+          // Authentication is not authorization: an undeclared tool is refused
+          // here and never reaches the Router or Qoder.
+          write(
+            serialize({
+              jsonrpc: "2.0",
+              id,
+              error: {
+                code: MCP_INVALID_PARAMS,
+                message: "undeclared tool name refused by the CMM bridge",
+              },
+            }),
+          );
+          continue;
+        }
         const callId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         if (client === null) {
           write(

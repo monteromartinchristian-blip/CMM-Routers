@@ -329,6 +329,10 @@ export class CodexAdapter implements ProviderAdapter {
       // call that arrives without tool definitions is declined so the turn
       // fails closed instead of hanging.
       const toolDefinitionsRequested = request.tools.length > 0;
+      // Immutable per-thread declared-tool ACL: only the dynamicTools sent on
+      // THIS thread's thread/start may be requested. Authentication of the
+      // transport is not authorization to call an undeclared function.
+      const declaredToolNames = new Set(request.tools.map((tool) => tool.function.name));
       // Single tool-call waiter for the whole run, created once and raced
       // against notifications each iteration so a late-arriving call is never
       // lost to a stale per-iteration waiter. The waiter is released by
@@ -420,6 +424,22 @@ export class CodexAdapter implements ProviderAdapter {
               typeof params.arguments === "string"
                 ? params.arguments
                 : JSON.stringify(params.arguments);
+            if (!declaredToolNames.has(toolName)) {
+              // Undeclared dynamic tool: answer the wire request so the turn
+              // terminates, then fail closed. No Qoder surface, no broker entry.
+              this.client.respondToServerRequest(wireRequestId, {
+                success: false,
+                contentItems: [],
+              });
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  "Codex requested a dynamic tool that was not declared on this thread",
+                ),
+              };
+              break;
+            }
             // Park the ORIGINAL wire request in the shared bounded broker. The
             // consumer-visible id is a Router-generated globally unique PUBLIC
             // id; the provider's own callId stays internal. A follow-up request

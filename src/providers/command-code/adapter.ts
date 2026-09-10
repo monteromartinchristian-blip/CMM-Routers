@@ -262,6 +262,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
 
       let sawCompletion = false;
       const pendingIndexCalls = new Map<number, { id: string; name?: string }>();
+      // Declared-tool ACL: a returned tool call must belong to request.tools.
+      const declaredToolNames = new Set(request.tools.map((tool) => tool.function.name));
       for await (const chunk of generator) {
         if (outerSignal.aborted || abortSignal.aborted) return;
         const data = parseSseDataLine(chunk);
@@ -348,6 +350,17 @@ export class CommandCodeAdapter implements ProviderAdapter {
               known.name = fn.name as string;
             }
             const resolved = pendingIndexCalls.get(upstreamIndex)!;
+            if (resolved.name !== undefined && !declaredToolNames.has(resolved.name)) {
+              // An undeclared function name must never reach Qoder.
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  "Command Code returned a tool call that was not declared in this request",
+                ),
+              };
+              return;
+            }
             const toolDelta: RouterEvent = {
               type: "tool_call_delta",
               index: upstreamIndex,
@@ -440,6 +453,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
         abortSignal,
         request.maxOutputTokens,
         upstreamTools as unknown[] | undefined,
+        request.toolChoice,
+        request.parallelToolCalls,
       );
 
       let carry = "";
@@ -451,6 +466,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // Streaming tool-use assembly, keyed by upstream content-block index.
       const toolBlocks = new Map<number, { id: string; name: string; args: string }>();
       let sawToolUse = false;
+      // Declared-tool ACL: tool_use.name must belong to request.tools.
+      const declaredToolNames = new Set(request.tools.map((tool) => tool.function.name));
 
       const emitUsage = function* (): Generator<RouterEvent> {
         if (usageYielded) return;
@@ -495,6 +512,17 @@ export class CommandCodeAdapter implements ProviderAdapter {
           yield { type: "text_delta", text: parsed.text };
         }
         if (parsed.kind === "tool_use_start" && parsed.toolUse) {
+          // Declared-tool ACL: tool_use.name must belong to request.tools.
+          if (!declaredToolNames.has(parsed.toolUse.name)) {
+            yield {
+              type: "error",
+              error: new RouterError(
+                "provider_protocol_error",
+                "Command Code returned a tool_use that was not declared in this request",
+              ),
+            } as RouterEvent;
+            return;
+          }
           toolBlocks.set(parsed.toolUse.index, {
             id: parsed.toolUse.id,
             name: parsed.toolUse.name,
