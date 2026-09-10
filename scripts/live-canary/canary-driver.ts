@@ -73,8 +73,13 @@ export interface CanaryDeps {
   fetchImpl: FetchLike;
   /** Injected keychain reader (tests); production uses `security`. */
   readKeychain?: (service: string, account: string) => string | null;
-  /** Injected sentinel generator (tests); production uses crypto random. */
+  /** Injected call sentinel generator (tests); production uses crypto random. */
   sentinel?: string;
+  /**
+   * Injected result-only nonce (tests); production uses crypto random. It MUST
+   * differ from the call sentinel and is generated only after a valid tool call.
+   */
+  nonce?: string;
 }
 
 export interface CanaryOutcome {
@@ -120,10 +125,25 @@ function canonicalProvider(provider: string): Provider | null {
   return (PROVIDERS as readonly string[]).includes(provider) ? (provider as Provider) : null;
 }
 
-export function defaultSentinel(): string {
-  const bytes = new Uint8Array(16);
+function randomHex(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
   globalThis.crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function defaultSentinel(): string {
+  return randomHex(16);
+}
+
+/**
+ * The result-only nonce. It is generated ONLY after a valid tool call has been
+ * received and must never appear in the original prompt, the assistant tool
+ * call, the tool arguments or any earlier message. Because it is unpredictable
+ * from information the provider already had, a final response containing it can
+ * only have consumed the tool-result message.
+ */
+export function defaultResultNonce(): string {
+  return randomHex(16);
 }
 
 function errorTypeOf(body: unknown): string | null {
@@ -192,16 +212,17 @@ export function validateEchoArguments(rawArgs: string): { text: string } | { fai
 }
 
 /**
- * The Qoder-side synthetic execution: pure, in-memory, no I/O. The result embeds
- * the sentinel the canary itself generated, so the final provider response can
- * only reproduce it by actually consuming this tool result.
+ * The Qoder-side synthetic execution: pure, in-memory, no I/O. The result
+ * carries the result-only nonce the canary generated AFTER receiving the tool
+ * call, so the final provider response can only reproduce it by actually
+ * consuming this tool result.
  */
-export function synthesizeEchoResult(sentinel: string, text: string): string {
-  return `RESULT=${sentinel}|echo=${text}`;
+export function synthesizeEchoResult(resultNonce: string, echoText: string): string {
+  return `RESULT_NONCE=${resultNonce}|echo=${echoText}`;
 }
 
-export function expectedFinalToken(sentinel: string): string {
-  return `RESULT=${sentinel}|echo=`;
+export function expectedFinalToken(resultNonce: string): string {
+  return `RESULT_NONCE=${resultNonce}`;
 }
 
 function finalContentOf(body: unknown): string | null {
@@ -374,9 +395,21 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
 
   const args = validateEchoArguments(call.args);
   if ("fail" in args) return fail(args.fail);
+  // The echo argument must be exactly the call sentinel; anything else means the
+  // provider did not do what request 1 asked, so the result would be meaningless.
+  if (args.text !== sentinel) return fail("tool-argument-not-call-sentinel");
+
+  // The result-only nonce is generated HERE — only after a valid tool call has
+  // been received — so it appears nowhere in the prompt, the tool call or the
+  // tool arguments. It must also differ from the call sentinel, otherwise it is
+  // not independent information.
+  const resultNonce = deps.nonce ?? defaultResultNonce();
+  if (resultNonce === sentinel) return fail("result-nonce-not-independent");
+  lines.push("LIVE_CANARY_RESULT_NONCE_ONLY_AFTER_TOOL_CALL=YES");
+  lines.push("LIVE_CANARY_TOOL_RESULT_IS_UNIQUE_INFORMATION=YES");
 
   // Qoder-side synthetic execution: pure in-memory transform, no I/O at all.
-  const resultContent = synthesizeEchoResult(sentinel, args.text);
+  const resultContent = synthesizeEchoResult(resultNonce, args.text);
   lines.push("LIVE_CANARY_QODER_SYNTHETIC_EXECUTION=YES");
 
   const request2Body = JSON.stringify({
@@ -414,7 +447,7 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
 
   const content = finalContentOf(second.json);
   if (content === null) return fail("continuation-no-content");
-  if (!content.includes(expectedFinalToken(sentinel))) {
+  if (!content.includes(expectedFinalToken(resultNonce))) {
     return fail("final-not-derived-from-tool-result");
   }
   lines.push("LIVE_CANARY_FINAL_DERIVED_FROM_TOOL_RESULT=YES");

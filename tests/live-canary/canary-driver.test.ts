@@ -17,6 +17,7 @@ import {
 
 const CONFIRM = "yes-i-accept-subscription-quota-spend";
 const SENTINEL = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+const NONCE = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
 const QODER_TOKEN = "qoder-bearer-token";
 const CMMCHAT_TOKEN = "cmmchat-bearer-token";
 const BASE = "http://127.0.0.1:8790";
@@ -46,6 +47,13 @@ interface FakeConfig {
    * uses it to reject a driver that forces a tool on the final turn.
    */
   policyFaithful?: boolean;
+  /**
+   * Adversarial provider: never consumes the tool-result message and instead
+   * fabricates the final text from information it already saw in the original
+   * prompt. Used to prove the final proof requires truly result-only knowledge.
+   */
+  ignoreToolResult?: boolean;
+  fabricatedFinal?: string;
 }
 
 function completion(model: string, message: Record<string, unknown>, finishReason = "stop"): unknown {
@@ -162,6 +170,11 @@ function fakeRouter(config: FakeConfig = {}): { fetchImpl: FetchLike; requests: 
       if (config.continuationStatus !== undefined) {
         return { status: config.continuationStatus, json: errorBody("provider_protocol_error", "boom") };
       }
+      if (config.ignoreToolResult === true) {
+        // Deliberately ignore `toolMessage.content` and answer from the sentinel
+        // the provider already saw in the original user prompt.
+        return { status: 200, json: completion(String(record.model), { content: config.fabricatedFinal ?? "" }) };
+      }
       const content = config.finalOverride ?? `FINAL ${String(toolMessage.content)}`;
       return { status: 200, json: completion(String(record.model), { content }) };
     }
@@ -188,7 +201,7 @@ describe("canary driver — deterministic fake Router", () => {
   it("proves the full Qoder tool round-trip (exit 0)", async () => {
     const { fetchImpl, requests } = fakeRouter();
     const env = makeEnv();
-    const outcome = await runCanary({ provider: "command-code", env, fetchImpl, sentinel: SENTINEL });
+    const outcome = await runCanary({ provider: "command-code", env, fetchImpl, sentinel: SENTINEL, nonce: NONCE });
 
     expect(outcome.exitCode).toBe(0);
     const out = text(outcome);
@@ -201,6 +214,8 @@ describe("canary driver — deterministic fake Router", () => {
       "LIVE_CANARY_QODER_SYNTHETIC_EXECUTION=YES",
       "LIVE_CANARY_TOOL_RESULT_SUBMITTED=YES",
       "LIVE_CANARY_SAME_PROVIDER_CONTINUATION=YES",
+      "LIVE_CANARY_RESULT_NONCE_ONLY_AFTER_TOOL_CALL=YES",
+      "LIVE_CANARY_TOOL_RESULT_IS_UNIQUE_INFORMATION=YES",
       "LIVE_CANARY_FINAL_DERIVED_FROM_TOOL_RESULT=YES",
       "LIVE_CANARY_FULL_ROUNDTRIP=PASS",
       "LIVE_CANARY_PASS_EXIT=0",
@@ -220,8 +235,11 @@ describe("canary driver — deterministic fake Router", () => {
     expect(posts).toHaveLength(2);
     const body2 = posts[1]?.body as { messages: Array<Record<string, unknown>> };
     const toolMessage = body2.messages.find((m) => m.role === "tool");
-    expect(toolMessage?.content).toBe(synthesizeEchoResult(SENTINEL, SENTINEL));
-    expect(toolMessage?.content).toContain(expectedFinalToken(SENTINEL));
+    expect(toolMessage?.content).toBe(synthesizeEchoResult(NONCE, SENTINEL));
+    expect(toolMessage?.content).toContain(expectedFinalToken(NONCE));
+    // The result-only nonce must be unpredictable from request 1: it is generated
+    // only after a valid tool call and appears nowhere before the tool result.
+    expect(JSON.stringify(posts[0]?.body)).not.toContain(NONCE);
     // Only the one harmless synthetic tool is ever declared.
     const body1 = posts[0]?.body as { tools: Array<{ function: { name: string } }> };
     expect(body1.tools.map((t) => t.function.name)).toEqual([CANARY_ECHO_NAME]);
@@ -318,6 +336,48 @@ describe("canary driver — deterministic fake Router", () => {
     const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL });
     expect(outcome.exitCode).toBe(1);
     expect(text(outcome)).toContain("reason=final-not-derived-from-tool-result");
+  });
+
+  it("rejects a continuation that ignores the tool result and fabricates from the prompt sentinel", async () => {
+    // The adversarial provider never reads the tool-result message; it answers
+    // using only the call sentinel it already saw in the original user prompt.
+    // The pre-fix proof (final must contain `RESULT=<call-sentinel>|echo=`) is
+    // satisfiable by this fabrication, so this test is RED before the result-only
+    // nonce is required.
+    const { fetchImpl } = fakeRouter({
+      ignoreToolResult: true,
+      fabricatedFinal: `RESULT=${SENTINEL}|echo=${SENTINEL}`,
+    });
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: NONCE });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=final-not-derived-from-tool-result");
+    console.log("LIVE_CANARY_FINAL_CAUSALITY_PROOF=PASS");
+  });
+
+  it("rejects a fabricated final that merely guesses the nonce as the call sentinel", async () => {
+    const { fetchImpl } = fakeRouter({
+      ignoreToolResult: true,
+      fabricatedFinal: `RESULT_NONCE=${SENTINEL}|echo=${SENTINEL}`,
+    });
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: NONCE });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=final-not-derived-from-tool-result");
+  });
+
+  it("requires the echo tool argument to equal the call sentinel", async () => {
+    const { fetchImpl } = fakeRouter({
+      toolCall: { id: "c1", name: CANARY_ECHO_NAME, args: JSON.stringify({ text: "not-the-sentinel" }) },
+    });
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: NONCE });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=tool-argument-not-call-sentinel");
+  });
+
+  it("refuses a result nonce that equals the call sentinel (no independent information)", async () => {
+    const { fetchImpl } = fakeRouter();
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: SENTINEL });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=result-nonce-not-independent");
   });
 
   it("maps Router 401 to BLOCKED, 429 to BLOCKED and 500 to FAIL", async () => {
