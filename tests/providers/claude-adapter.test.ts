@@ -2,6 +2,13 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { ClaudeAdapter } from "../../src/providers/claude/adapter.js";
 import type { RouterRequest } from "../../src/core/provider.js";
 
+/**
+ * These cases spawn the real Claude Agent SDK process (no model turn). Measured
+ * isolated runtimes are 11-13s, so the previous 15s budget was exceeded under
+ * full-suite worker load. The budget is widened; no assertion is relaxed.
+ */
+const LIVE_SDK_TIMEOUT_MS = 45_000;
+
 describe("ClaudeAdapter", () => {
   let adapter: ClaudeAdapter;
 
@@ -45,7 +52,7 @@ describe("ClaudeAdapter", () => {
   });
 
   describe("run", () => {
-    it("yields text_delta events for user messages", { timeout: 15000 }, async () => {
+    it("yields text_delta events for user messages", { timeout: LIVE_SDK_TIMEOUT_MS }, async () => {
       const request: RouterRequest = {
         requestId: "test-001",
         model: {
@@ -72,7 +79,7 @@ describe("ClaudeAdapter", () => {
       expect(events.length).toBeGreaterThan(0);
     });
 
-    it("yields completed event at end OR error if not authenticated", { timeout: 15000 }, async () => {
+    it("yields completed event at end OR error if not authenticated", { timeout: LIVE_SDK_TIMEOUT_MS }, async () => {
       const request: RouterRequest = {
         requestId: "test-002",
         model: {
@@ -103,7 +110,7 @@ describe("ClaudeAdapter", () => {
       expect(completedEvent || errorEvent).toBeDefined();
     });
 
-    it("handles signal abortion gracefully", { timeout: 15000 }, async () => {
+    it("handles signal abortion gracefully", { timeout: LIVE_SDK_TIMEOUT_MS }, async () => {
       const request: RouterRequest = {
         requestId: "test-003",
         model: {
@@ -182,7 +189,7 @@ describe("ClaudeAdapter", () => {
       await expect(adapter.cancel("non-existent")).resolves.toBeUndefined();
     });
 
-    it("cleans up active request tracking after cancel", { timeout: 15000 }, async () => {
+    it("cleans up active request tracking after cancel", { timeout: LIVE_SDK_TIMEOUT_MS }, async () => {
       const request: RouterRequest = {
         requestId: "test-cleanup-001",
         model: {
