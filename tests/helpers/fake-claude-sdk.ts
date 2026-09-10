@@ -33,6 +33,11 @@ export interface FakeClaudeSdkOptions {
   finalPrefix?: string;
   /** Bounded wait for each MCP request. */
   requestTimeoutMs?: number;
+  /**
+   * Optional gate awaited AFTER the tool result arrives and BEFORE the final
+   * message is emitted. Lets a test hold the provider in RESUMING state.
+   */
+  holdAfterResult?: (() => Promise<void>) | undefined;
 }
 
 export interface FakeClaudeSdk {
@@ -49,6 +54,10 @@ export interface FakeClaudeSdk {
   declaredTools: () => string[];
   /** True once the MCP child exited. */
   childExited: () => boolean;
+  /** True once the SDK abort signal fired (provider run terminated). */
+  wasAborted: () => boolean;
+  /** True once the provider-facing MCP child was torn down. */
+  childKilled: () => boolean;
   /** Performs initialize/tools/list without the model turn (preflight helper). */
   handshake: (options: Record<string, unknown>) => Promise<string[]>;
 }
@@ -207,6 +216,8 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): FakeClaudeSd
   let toolResultText: string | undefined;
   let declaredToolNames: string[] = [];
   let child: ChildProcess | undefined;
+  let aborted = false;
+  let childKilled = false;
 
   const startChild = (sdkOptions: Record<string, unknown>): McpStdioClient => {
     const config = readStdioConfig(sdkOptions);
@@ -236,7 +247,11 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): FakeClaudeSd
     const abortController = args.options.abortController as AbortController | undefined;
     return (async function* () {
       const client = startChild(args.options);
-      const abort = (): void => client.kill();
+      const abort = (): void => {
+        aborted = true;
+        childKilled = true;
+        client.kill();
+      };
       abortController?.signal.addEventListener("abort", abort, { once: true });
 
       yield {
@@ -269,6 +284,7 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): FakeClaudeSd
         });
         // The ONLY source of the final text: the tool-result wire value.
         toolResultText = firstTextOf(callResult) ?? "";
+        if (options.holdAfterResult) await options.holdAfterResult();
       } catch (error) {
         if (abortController?.signal.aborted) return;
         throw error;
@@ -304,6 +320,8 @@ export function createFakeClaudeSdk(options: FakeClaudeSdkOptions): FakeClaudeSd
     mcpToolResult: () => toolResultText,
     declaredTools: () => declaredToolNames,
     childExited: () => (child?.exitCode ?? null) !== null || (child?.signalCode ?? null) !== null,
+    wasAborted: () => aborted,
+    childKilled: () => childKilled,
     handshake,
   };
 }

@@ -7,6 +7,7 @@ import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from ".
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
 import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
+import { BoundedQueue } from "../../core/bounded-queue.js";
 
 /** Injection seam: production uses the real SDK query. */
 type QueryFn = typeof query;
@@ -14,27 +15,17 @@ type QueryFn = typeof query;
 /**
  * Finite lifetime for a parked tool session. The broker entry expires on the
  * same bound, so a session whose continuation never arrives cannot leak its
- * SDK query, bridge process, or control socket.
+ * SDK query, MCP child, or control socket.
  */
-const SESSION_TTL_MS = 120_000;
+const DEFAULT_SESSION_TTL_MS = 120_000;
 
-/** Simple async hand-off queue used to race tool calls against SDK messages. */
-class AsyncQueue<T> {
-  private readonly items: T[] = [];
-  private readonly waiters: Array<(value: T) => void> = [];
-
-  push(value: T): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter(value);
-    else this.items.push(value);
-  }
-
-  next(): Promise<T> {
-    const item = this.items.shift();
-    if (item !== undefined) return Promise.resolve(item);
-    return new Promise<T>((resolve) => this.waiters.push(resolve));
-  }
-}
+/**
+ * Maximum simultaneously parked provider tool sessions. A second concurrent
+ * MCP tools/call on one session is refused: the split HTTP round-trip supports
+ * exactly one parked call per provider session.
+ */
+const DEFAULT_MAX_LIVE_TOOL_SESSIONS = 64;
+const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
 
 /**
  * A live Claude SDK query held across the split HTTP interaction while its
@@ -44,11 +35,11 @@ class AsyncQueue<T> {
  */
 interface LiveClaudeSession {
   sessionKey: string;
-  /** Router request that opened this SDK query (for cancellation scoping). */
+  /** Router request that currently drives this SDK query (for cancellation). */
   requestId: string;
   iterator: AsyncIterator<unknown>;
   inflight: Promise<IteratorResult<unknown>> | undefined;
-  toolCalls: AsyncQueue<BridgeToolRequest>;
+  toolCalls: BoundedQueue<BridgeToolRequest>;
   toolCallPromise: Promise<BridgeToolRequest> | undefined;
   control: BridgeControlServer;
   abortController: AbortController;
@@ -58,8 +49,12 @@ interface LiveClaudeSession {
   parkedRequestId: string | undefined;
   /** Public id handed to Qoder for the parked call. */
   publicToolCallId: string | undefined;
+  /** True once this session has parked a call: no second call is accepted. */
+  gate: { parked: boolean };
   /** Bounded lifetime for a parked session whose continuation never arrives. */
   ttlTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Set once the session has reached a terminal state (cleanup ran). */
+  terminated: boolean;
 }
 
 
@@ -153,11 +148,18 @@ export class ClaudeAdapter implements ProviderAdapter {
   private activeRequests = new Map<string, { abortController?: AbortController }>();
   /** Live tool-capable sessions, keyed by Router-generated public tool-call id. */
   private readonly sessions = new Map<string, LiveClaudeSession>();
+  /**
+   * Live tool-capable sessions keyed by the Router request that currently
+   * drives them. Lets a continuation cancellation reach the exact provider run.
+   */
+  private readonly sessionsByRequest = new Map<string, LiveClaudeSession>();
   private readonly profileDir: string | undefined;
   private readonly broker: DeferredToolBroker;
   private readonly queryFn: QueryFn;
   private readonly bridgeEntryPath: string;
   private readonly bridgeCommand: string;
+  private readonly sessionTtlMs: number;
+  private readonly maxLiveSessions: number;
 
   constructor(
     options: {
@@ -166,6 +168,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       queryFn?: QueryFn | undefined;
       bridgeEntryPath?: string | undefined;
       bridgeCommand?: string | undefined;
+      sessionTtlMs?: number | undefined;
+      maxLiveSessions?: number | undefined;
     } = {},
   ) {
     this.profileDir = options.profileDir;
@@ -173,6 +177,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.queryFn = options.queryFn ?? query;
     this.bridgeEntryPath = options.bridgeEntryPath ?? defaultBridgeEntryPath();
     this.bridgeCommand = options.bridgeCommand ?? process.execPath;
+    this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
+    this.maxLiveSessions = options.maxLiveSessions ?? DEFAULT_MAX_LIVE_TOOL_SESSIONS;
   }
 
   /** Live tool sessions held across the HTTP split (test/diagnostic accessor). */
@@ -479,19 +485,48 @@ export class ClaudeAdapter implements ProviderAdapter {
     throw new RouterError("provider_protocol_error", "SDK stream ended without completion event");
   }
 
-  /** Release a live session: control channel, bridge process, broker entry. */
+  /**
+   * Terminate a live provider run and release every Router-side resource.
+   *
+   * Order is deliberate and race-free:
+   *   1. stop the TTL timer
+   *   2. abort the provider run (the SDK owns the MCP child and tears it down)
+   *   3. reject/close the pending bridge request
+   *   4. broker scope cleanup
+   *   5. release the SDK iterator
+   *   6. close the control channel
+   *   7. session map cleanup
+   */
   private async closeSession(session: LiveClaudeSession): Promise<void> {
+    if (session.terminated) return;
+    session.terminated = true;
     if (session.ttlTimer !== undefined) {
       clearTimeout(session.ttlTimer);
       session.ttlTimer = undefined;
     }
+    // Terminate the live SDK query. Never invent an SDK method: the standard
+    // AbortController passed as options.abortController is the supported
+    // cancellation handle, and the SDK owns the MCP child process.
+    try {
+      session.abortController.abort();
+    } catch {
+      // An already-aborted controller needs no further action.
+    }
+    if (session.parkedRequestId !== undefined) {
+      session.control.reject(session.parkedRequestId, "provider run terminated");
+      session.parkedRequestId = undefined;
+    }
+    this.sessionsByRequest.delete(session.requestId);
     if (session.publicToolCallId !== undefined) {
       this.sessions.delete(session.publicToolCallId);
-      this.broker.cancelScope({ provider: "claude", sessionId: session.sessionKey });
       session.publicToolCallId = undefined;
     }
-    // The SDK owns the provider-facing MCP process; aborting the SDK query is
-    // what tears that process down. No Router-side bridge process exists.
+    this.broker.cancelScope({ provider: "claude", sessionId: session.sessionKey });
+    try {
+      await session.iterator.return?.();
+    } catch {
+      // The iterator may already be finished; cleanup continues.
+    }
     await session.control.close().catch(() => undefined);
   }
 
@@ -504,9 +539,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     session: LiveClaudeSession,
     request: BridgeToolRequest,
   ): AsyncIterable<RouterEvent> {
-    if (session.parkedRequestId !== undefined) {
+    if (session.gate.parked) {
       // One parked call per session: a second concurrent MCP call is refused
-      // rather than silently dropped.
+      // rather than silently dropped or left unanswered.
       session.control.reject(request.id, "concurrent tool calls are not supported");
       await this.closeSession(session);
       yield {
@@ -518,7 +553,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       };
       return;
     }
+    if (this.sessions.size >= this.maxLiveSessions) {
+      session.control.reject(request.id, "too many live provider tool sessions");
+      await this.closeSession(session);
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_rate_limited",
+          "Live provider tool sessions are at capacity; refusing another parked call",
+        ),
+      };
+      return;
+    }
     const publicId = createPublicToolCallId("claude");
+    session.gate.parked = true;
     session.parkedRequestId = request.id;
     session.publicToolCallId = publicId;
     try {
@@ -530,11 +578,12 @@ export class ClaudeAdapter implements ProviderAdapter {
           toolCallId: publicId,
           publicToolCallId: publicId,
         },
-        SESSION_TTL_MS,
+        this.sessionTtlMs,
         undefined,
         session,
       );
     } catch (error) {
+      session.gate.parked = false;
       session.parkedRequestId = undefined;
       session.publicToolCallId = undefined;
       session.control.reject(request.id, "router could not park the tool call");
@@ -550,10 +599,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     this.sessions.set(publicId, session);
     // Bounded lifetime: a continuation that never arrives must not leak the
-    // live SDK query, the bridge process, or the control socket.
+    // live SDK query, the MCP child, or the control socket.
     const timer = setTimeout(() => {
       void this.closeSession(session);
-    }, SESSION_TTL_MS);
+    }, this.sessionTtlMs);
     if (typeof timer.unref === "function") timer.unref();
     session.ttlTimer = timer;
     yield {
@@ -576,10 +625,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
     const state = { sawPartialDelta: session.sawPartialDelta, usageYielded: session.usageYielded };
+    // A session that parked a call must survive this drain (the continuation
+    // arrives on a later request); every other exit terminates the provider run.
+    let parkedHere = false;
     try {
       while (true) {
         if (signal.aborted || session.abortController.signal.aborted) {
-          await this.closeSession(session);
           return;
         }
         session.inflight ??= session.iterator.next();
@@ -592,13 +643,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           session.toolCallPromise = undefined;
           session.sawPartialDelta = state.sawPartialDelta;
           session.usageYielded = state.usageYielded;
+          parkedHere = true;
           yield* this.parkToolCall(session, outcome.tc);
           return;
         }
         session.inflight = undefined;
         const { value, done } = outcome.r;
         if (done) {
-          await this.closeSession(session);
           if (signal.aborted || session.abortController.signal.aborted) return;
           throw new RouterError(
             "provider_protocol_error",
@@ -608,14 +659,12 @@ export class ClaudeAdapter implements ProviderAdapter {
         const terminal = yield* this.processSdkMessage(value, state);
         session.sawPartialDelta = state.sawPartialDelta;
         session.usageYielded = state.usageYielded;
-        if (terminal) {
-          await this.closeSession(session);
-          return;
-        }
+        if (terminal) return;
       }
-    } catch (error) {
-      await this.closeSession(session);
-      throw error;
+    } finally {
+      // Guaranteed cleanup even when the consumer stops iterating at the
+      // terminal event instead of draining the generator to completion.
+      if (!parkedHere) await this.closeSession(session);
     }
   }
 
@@ -642,6 +691,11 @@ export class ClaudeAdapter implements ProviderAdapter {
         const session = claim.context;
         this.sessions.delete(publicId);
         session.publicToolCallId = undefined;
+        // Rebind the session to THIS request so a cancellation of the
+        // continuation reaches the exact same live provider run.
+        this.sessionsByRequest.delete(session.requestId);
+        session.requestId = request.requestId;
+        this.sessionsByRequest.set(request.requestId, session);
         if (session.parkedRequestId !== undefined) {
           session.control.resolve(session.parkedRequestId, result.content ?? "");
           session.parkedRequestId = undefined;
@@ -650,6 +704,8 @@ export class ClaudeAdapter implements ProviderAdapter {
           yield* this.drainSession(session, signal);
         } catch (error) {
           yield { type: "error", error: this.toRouterError(error) };
+        } finally {
+          this.sessionsByRequest.delete(request.requestId);
         }
         return;
       }
@@ -698,12 +754,28 @@ export class ClaudeAdapter implements ProviderAdapter {
       // the Router-side control channel it connects back to. The bridge
       // performs transport only and can never reach into this process.
       let control: BridgeControlServer | undefined;
-      let toolCalls: AsyncQueue<BridgeToolRequest> | undefined;
+      let toolCalls: BoundedQueue<BridgeToolRequest> | undefined;
+      // The gate closes as soon as this session parks a call, so a second
+      // concurrent tools/call is refused deterministically instead of sitting
+      // unanswered in a queue.
+      const gate = { parked: false };
+      let sessionRef: LiveClaudeSession | undefined;
       let mcpServers: Options["mcpServers"];
       if (request.tools.length > 0) {
-        toolCalls = new AsyncQueue<BridgeToolRequest>();
+        toolCalls = new BoundedQueue<BridgeToolRequest>(MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION);
         const queue = toolCalls;
-        control = await BridgeControlServer.listen({ onToolCall: (r) => queue.push(r) });
+        control = await BridgeControlServer.listen({
+          onToolCall: (r) => {
+            if (gate.parked || !queue.tryPush(r)) {
+              control!.reject(r.id, "concurrent tool calls are not supported");
+            }
+          },
+          // A dead MCP bridge while the provider waits must fail the parked
+          // session closed immediately rather than at TTL.
+          onDisconnect: () => {
+            if (sessionRef !== undefined) void this.closeSession(sessionRef);
+          },
+        });
         const bridgeEnv = {
           PATH: process.env.PATH ?? "",
           CMM_BRIDGE_SOCKET: control.socketPath,
@@ -793,9 +865,14 @@ export class ClaudeAdapter implements ProviderAdapter {
           usageYielded: false,
           parkedRequestId: undefined,
           publicToolCallId: undefined,
+          gate,
           ttlTimer: undefined,
+          terminated: false,
         };
+        sessionRef = session;
+        this.sessionsByRequest.set(request.requestId, session);
         yield* this.drainSession(session, signal);
+        this.sessionsByRequest.delete(request.requestId);
         return;
       }
 
@@ -838,15 +915,21 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   /**
-   * Cancel an active request using AbortController.
+   * Cancel an active request using the SDK-supported cancellation handle.
+   *
+   * A request that currently drives a live tool session (parked awaiting Qoder,
+   * or resuming after a result) is terminated through the same AbortController,
+   * so post-result cancellation reaches the exact provider run. A session that
+   * is merely parked with no request bound to it is left to its TTL: the HTTP
+   * layer closes the reply socket after the normal tool_calls response, which is
+   * not a cancellation.
    */
   async cancel(requestId: string): Promise<void> {
-    // NOTE: a session parked awaiting Qoder's continuation is intentionally NOT
-    // torn down here. The HTTP layer closes the reply socket after the
-    // tool_calls response, which is indistinguishable from a cancel at this
-    // layer; killing the parked session would break the legitimate
-    // cross-request round-trip. Parked sessions are bounded by SESSION_TTL_MS,
-    // released on resolution, and released when the bridge process dies.
+    const session = this.sessionsByRequest.get(requestId);
+    if (session !== undefined) {
+      await this.closeSession(session);
+      return;
+    }
     const activeRequest = this.activeRequests.get(requestId);
     if (!activeRequest) {
       return;
