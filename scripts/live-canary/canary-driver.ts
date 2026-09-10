@@ -47,7 +47,14 @@ export const CANARY_ECHO_TOOL = {
 
 export const CANARY_ECHO_NAME = "canary_echo";
 
-/** PAYG/API credential sentinels. A real code path would fail loudly on these. */
+/**
+ * PAYG/API credential sentinels. These poison THIS canary process's environment
+ * so a real code path would fail loudly on them. They are CLIENT-LOCAL: the canary
+ * cannot retrofit another process's environment, so this is NOT proof that the
+ * already-running Router/provider subprocess was poisoned. The Router's own
+ * startup PAYG guard (`assertNoPaygFallback`) is proven separately and
+ * deterministically by `tests/security/payg-guard.test.ts`.
+ */
 const PAYG_POISON: Record<string, string> = {
   GEMINI_API_KEY: "canary-poison-not-a-key",
   GOOGLE_API_KEY: "canary-poison-not-a-key",
@@ -332,9 +339,13 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
   lines.push(`LIVE_CANARY_BEARER_SOURCE=${bearer.source.split(":")[0]}`);
   lines.push("LIVE_CANARY_CMMCHAT_BEARER_USED=NO");
 
-  // Poison PAYG surfaces before any provider turn.
+  // Poison PAYG surfaces in THIS canary process before any provider turn. This
+  // is client-local only: the provider turn runs in the already-started Router
+  // process, whose environment this cannot mutate. The Router's independent
+  // startup guard is covered deterministically outside this harness.
   for (const [key, value] of Object.entries(PAYG_POISON)) deps.env[key] = value;
-  lines.push("LIVE_CANARY_PAYG_POISON=PASS");
+  lines.push("LIVE_CANARY_CLIENT_PAYG_POISON=PASS");
+  lines.push("LIVE_CANARY_REMOTE_ROUTER_PAYG_POISON_PROOF=NO");
   lines.push("LIVE_CANARY_NO_PROVIDER_NATIVE_TOOL=PASS");
   lines.push("LIVE_CANARY_NO_REPO_MUTATION=PASS");
 
