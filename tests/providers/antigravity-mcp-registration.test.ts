@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { RouterError } from "../../src/core/errors.js";
 import {
   CMM_QODER_TOOLS_MCP_SERVER_NAME,
   ensureAntigravityMcpRegistration,
   parseAgyMcpList,
   reconcileAntigravityMcpRegistration,
+  resetAntigravityMcpRegistrationProcessState,
 } from "../../src/providers/antigravity/mcp-registration.js";
 
 const SERVER = "cmm-qoder-tools";
@@ -188,6 +189,8 @@ describe("agy mcp list parsing", () => {
 });
 
 describe("agy mcp registration restart idempotence", () => {
+  beforeEach(() => resetAntigravityMcpRegistrationProcessState());
+
   it("adds the CMM-owned server when it is absent", () => {
     const fake = new FakeAgy();
     const result = ensureAntigravityMcpRegistration(options(fake));
@@ -202,17 +205,35 @@ describe("agy mcp registration restart idempotence", () => {
     console.log("ANTIGRAVITY_MCP_REGISTRATION_RESTART_IDEMPOTENCE=PASS");
   });
 
-  it("is a no-op when the persisted registration already matches", () => {
+  it("canonicalizes once on the first ensure of a process, then no-ops", () => {
     const fake = new FakeAgy();
     fake.seed({ name: SERVER, type: "stdio", status: "enabled", command: NODE, args: [LAUNCHER] });
 
     const first = ensureAntigravityMcpRegistration(options(fake));
     const second = ensureAntigravityMcpRegistration(options(fake));
 
-    expect(first.action).toBe("noop");
+    // The first ensure rewrites even a visible-canonical entry, because a
+    // hidden persisted env cannot be ruled out from `mcp list` alone.
+    expect(first.action).toBe("canonicalized");
+    expect(addCalls(fake)).toEqual([EXPECTED_ADD_ARGV]);
     expect(second.action).toBe("noop");
-    expect(addCalls(fake)).toEqual([]);
+    expect(addCalls(fake)).toEqual([EXPECTED_ADD_ARGV]);
     expect(fake.entriesFor(SERVER)).toHaveLength(1);
+    console.log("ANTIGRAVITY_MCP_NEW_PROCESS_CANONICALIZATION=PASS");
+  });
+
+  it("re-canonicalizes after a simulated Router restart", () => {
+    const fake = new FakeAgy();
+    fake.seed({ name: SERVER, type: "stdio", status: "enabled", command: NODE, args: [LAUNCHER] });
+
+    ensureAntigravityMcpRegistration(options(fake));
+    expect(addCalls(fake)).toHaveLength(1);
+
+    // A new Router process starts with no canonicalization marker.
+    resetAntigravityMcpRegistrationProcessState();
+    const restarted = ensureAntigravityMcpRegistration(options(fake));
+    expect(restarted.action).toBe("canonicalized");
+    expect(addCalls(fake)).toHaveLength(2);
   });
 
   it("repairs a stale registration idempotently without a restart", () => {
@@ -309,6 +330,8 @@ describe("agy mcp registration restart idempotence", () => {
 });
 
 describe("agy mcp registration startup reconciliation", () => {
+  beforeEach(() => resetAntigravityMcpRegistrationProcessState());
+
   it("reports duplicates without throwing and converges the store", () => {
     const fake = new FakeAgy();
     fake.seed({ name: SERVER, type: "stdio", status: "enabled", command: NODE, args: [LAUNCHER] });

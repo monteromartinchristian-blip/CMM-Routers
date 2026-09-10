@@ -18,10 +18,25 @@ import { RouterError } from "../../core/errors.js";
  *   `agy mcp list`                                           — NAME/TYPE/STATUS/COMMAND-URL table
  * `mcp add` fully REPLACES an existing entry (command, args and env), and
  * re-adds it in the enabled state, which is what makes repair idempotent.
+ *
+ * `agy mcp list` NEVER prints env, so a visible-canonical row can still hide a
+ * stale persisted secret. Canonical state is therefore established by
+ * CONSTRUCTION: the first ensure in every Router process re-issues
+ * `agy mcp add` WITHOUT `--env`, which clears any hidden env as a side effect.
  */
 
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
 export const CMM_QODER_TOOLS_MCP_SERVER_NAME = "cmm-qoder-tools";
+
+/**
+ * Finite bound on every CMM-owned `agy mcp` CLI call. The Router must never be
+ * blocked indefinitely by a stuck registration subprocess.
+ */
+export const AGY_MCP_CLI_TIMEOUT_MS = 10_000;
+/** Finite output bound for every CMM-owned `agy mcp` CLI call. */
+export const AGY_MCP_CLI_MAX_BUFFER_BYTES = 1024 * 1024;
+/** Diagnostic text kept from a failed CLI call, after redaction. */
+export const AGY_MCP_CLI_DIAGNOSTIC_CHARS = 200;
 
 export interface AgyMcpRegistration {
   name: string;
@@ -39,16 +54,22 @@ export interface AgyMcpRegistration {
   env?: Record<string, string>;
 }
 
+/** Why a CLI invocation failed, when the failure was not a plain nonzero exit. */
+export type AgyCliFailure = "timeout" | "max_buffer" | "signal" | "not_found";
+
 export interface AgyRunOutcome {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** Present when the call was terminated/failed rather than exiting normally. */
+  failure?: AgyCliFailure;
 }
 
 export type AgyRunner = (argv: string[]) => AgyRunOutcome;
 
 export type McpRegistrationAction =
   | "noop"
+  | "canonicalized"
   | "added"
   | "repaired"
   | "reconciled"
@@ -83,6 +104,34 @@ export interface AntigravityMcpRegistrationOptions {
 
 const HEADER_TOKENS = ["NAME", "TYPE", "STATUS", "COMMAND/URL"];
 const EMPTY_STORE = /^\s*no mcp servers configured\.?\s*$/i;
+
+/** The only transport the CMM-owned registration may use. */
+const CANONICAL_TRANSPORT_TYPE = "stdio";
+
+/**
+ * Process-local marker of successful canonicalization, keyed by the exact
+ * registration identity. Every new Router process starts empty, so its first
+ * ensure always rewrites the entry (clearing any hidden persisted env); later
+ * ensures in the same process may no-op once the visible state is canonical.
+ */
+const canonicalizedThisProcess = new Set<string>();
+
+/**
+ * Test-only: forget the per-process canonicalization markers so a new Router
+ * process can be simulated inside one test runner.
+ */
+export function resetAntigravityMcpRegistrationProcessState(): void {
+  canonicalizedThisProcess.clear();
+}
+
+function canonicalizationKey(
+  agyPath: string,
+  serverName: string,
+  command: string,
+  args: string[],
+): string {
+  return [agyPath, serverName, command, ...args].join("\u0000");
+}
 
 /**
  * Parse `agy mcp list` output into registrations. Uses the header row to locate
@@ -190,13 +239,57 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-/** The default runner: exact CLI invocation, never a shell. */
-export function execFileAgyRunner(agyPath: string): AgyRunner {
+/** Common secret shapes that must never reach a log or an error message. */
+const SECRET_PATTERNS: RegExp[] = [
+  /\bsk-[A-Za-z0-9_-]{8,}/g,
+  /\bBearer\s+\S+/gi,
+  /([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_?KEY)[A-Za-z0-9_]*)\s*[=:]\s*\S+/gi,
+];
+
+/** Bound and redact provider/CLI diagnostic text before it is surfaced. */
+function boundedDiagnostic(raw: string): string {
+  const firstLine =
+    raw
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? "";
+  const truncated =
+    firstLine.length > AGY_MCP_CLI_DIAGNOSTIC_CHARS
+      ? `${firstLine.slice(0, AGY_MCP_CLI_DIAGNOSTIC_CHARS)}…`
+      : firstLine;
+  let redacted = truncated;
+  for (const pattern of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, (match: string, key?: string) =>
+      key !== undefined && key.length > 0 ? `${key}=[REDACTED]` : "[REDACTED]",
+    );
+  }
+  return redacted;
+}
+
+export interface ExecFileAgyRunnerBounds {
+  timeoutMs?: number;
+  maxBufferBytes?: number;
+}
+
+/**
+ * The default runner: exact CLI invocation, never a shell, always bounded by a
+ * finite timeout and maxBuffer. Timeout, output overflow, an unexpected signal
+ * and a missing binary are reported as explicit failures so callers fail closed.
+ */
+export function execFileAgyRunner(
+  agyPath: string,
+  bounds: ExecFileAgyRunnerBounds = {},
+): AgyRunner {
+  const timeoutMs = bounds.timeoutMs ?? AGY_MCP_CLI_TIMEOUT_MS;
+  const maxBufferBytes = bounds.maxBufferBytes ?? AGY_MCP_CLI_MAX_BUFFER_BYTES;
   return (argv) => {
     try {
       const stdout = execFileSync(agyPath, argv, {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
+        timeout: timeoutMs,
+        maxBuffer: maxBufferBytes,
+        killSignal: "SIGTERM",
       });
       return { status: 0, stdout, stderr: "" };
     } catch (error) {
@@ -204,19 +297,55 @@ export function execFileAgyRunner(agyPath: string): AgyRunner {
         status?: number | null;
         stdout?: string | Buffer;
         stderr?: string | Buffer;
+        code?: string;
+        signal?: NodeJS.Signals | null;
       };
-      return {
-        status: typeof failure.status === "number" ? failure.status : null,
-        stdout: Buffer.isBuffer(failure.stdout) ? failure.stdout.toString("utf-8") : (failure.stdout ?? ""),
-        stderr: Buffer.isBuffer(failure.stderr) ? failure.stderr.toString("utf-8") : (failure.stderr ?? ""),
-      };
+      const stdout = Buffer.isBuffer(failure.stdout)
+        ? failure.stdout.toString("utf-8")
+        : (failure.stdout ?? "");
+      const stderr = Buffer.isBuffer(failure.stderr)
+        ? failure.stderr.toString("utf-8")
+        : (failure.stderr ?? "");
+      const status = typeof failure.status === "number" ? failure.status : null;
+      const kind = classifyFailure(failure.code, failure.signal);
+      return kind === undefined
+        ? { status, stdout, stderr }
+        : { status, stdout, stderr, failure: kind };
     }
   };
 }
 
+function classifyFailure(
+  code: string | undefined,
+  signal: NodeJS.Signals | null | undefined,
+): AgyCliFailure | undefined {
+  if (code === "ETIMEDOUT") return "timeout";
+  // spawnSync reports a maxBuffer overflow as ENOBUFS; exec* report
+  // ERR_CHILD_PROCESS_STDIO_MAXBUFFER. Both mean "output bound exceeded".
+  if (code === "ENOBUFS" || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return "max_buffer";
+  }
+  if (code === "ENOENT") return "not_found";
+  if (signal !== undefined && signal !== null) return "signal";
+  return undefined;
+}
+
 function failureDetail(outcome: AgyRunOutcome): string {
-  const detail = `${outcome.stderr}\n${outcome.stdout}`.trim();
-  return detail.length > 0 ? detail.split("\n")[0] as string : `exit status ${String(outcome.status)}`;
+  if (outcome.failure !== undefined) {
+    const reason =
+      outcome.failure === "timeout"
+        ? "timed out"
+        : outcome.failure === "max_buffer"
+          ? "exceeded the maximum output size"
+          : outcome.failure === "signal"
+            ? "was terminated by an unexpected signal"
+            : "could not be found";
+    return `agy mcp CLI ${reason}`;
+  }
+  const detail = boundedDiagnostic(`${outcome.stderr}\n${outcome.stdout}`);
+  return detail.length > 0
+    ? detail
+    : `exit status ${String(outcome.status)}`;
 }
 
 /**
@@ -232,6 +361,7 @@ export function ensureAntigravityMcpRegistration(
   const run = options.run ?? execFileAgyRunner(options.agyPath);
   const env = options.env ?? {};
   const commands: string[][] = [];
+  const key = canonicalizationKey(options.agyPath, serverName, options.command, options.args);
 
   const listed = run(["mcp", "list"]);
   if (listed.status !== 0) {
@@ -243,18 +373,22 @@ export function ensureAntigravityMcpRegistration(
   const before = parseAgyMcpList(listed.stdout).filter((entry) => entry.name === serverName);
   const duplicates = Math.max(0, before.length - 1);
   const isCanonical = (entry: AgyMcpRegistration): boolean =>
+    entry.type === CANONICAL_TRANSPORT_TYPE &&
     entry.command === options.command &&
     arraysEqual(entry.args, options.args) &&
     entry.enabled &&
-    // The CLI does not print env, so a "no env" check can only be enforced by
-    // re-issuing `add`: an add without --env flags replaces the entry entirely.
+    // The desired env must be empty: the registration is secret-free. Absence of
+    // a PERSISTED env cannot be proven from `mcp list`; that is established by
+    // rewriting the entry below, not by this predicate.
     Object.keys(env).length === 0;
 
-  if (before.length === 1 && isCanonical(before[0] as AgyMcpRegistration)) {
+  const onlyBefore = before.length === 1 ? (before[0] as AgyMcpRegistration) : undefined;
+  const visibleCanonical = onlyBefore !== undefined && isCanonical(onlyBefore);
+  if (visibleCanonical && canonicalizedThisProcess.has(key)) {
     return { serverName, action: "noop", duplicates: 0, before, after: before, commands };
   }
 
-  const envFlags = Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
+  const envFlags = Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]);
   const addArgv = ["mcp", "add", ...envFlags, serverName, options.command, ...options.args];
 
   if (duplicates > 0) {
@@ -285,8 +419,15 @@ export function ensureAntigravityMcpRegistration(
     );
   }
 
+  canonicalizedThisProcess.add(key);
   const action: McpRegistrationAction =
-    duplicates > 0 ? "reconciled" : before.length === 0 ? "added" : "repaired";
+    duplicates > 0
+      ? "reconciled"
+      : before.length === 0
+        ? "added"
+        : visibleCanonical
+          ? "canonicalized"
+          : "repaired";
   return { serverName, action, duplicates, before, after, commands };
 }
 
