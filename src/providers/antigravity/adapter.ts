@@ -1391,7 +1391,16 @@ export class AntigravityAdapter implements ProviderAdapter {
     try {
       yield* this.drainAgySession(session, signal);
     } finally {
-      this.sessionsByRequest.delete(request.requestId);
+      // A session that PARKED a call stays bound to the request that parked it:
+      // the provider is still waiting for Qoder's result, so an explicit
+      // cancellation of that request must reach the exact live agy run. A
+      // normal tool_calls response is not a cancellation (the HTTP layer only
+      // cancels a reply that closed before reaching a terminal outcome), and
+      // closeToolSession removes the binding once the run terminates.
+      const bound = this.sessionsByRequest.get(request.requestId);
+      if (bound === undefined || bound.terminated || bound.parkedRequestId === undefined) {
+        this.sessionsByRequest.delete(request.requestId);
+      }
     }
   }
 
@@ -1446,8 +1455,12 @@ export class AntigravityAdapter implements ProviderAdapter {
         session.requestId = request.requestId;
         this.sessionsByRequest.set(request.requestId, session);
         if (session.parkedRequestId !== undefined) {
-          session.control.resolve(session.parkedRequestId, result.content ?? "");
+          const delivered = session.control.resolve(session.parkedRequestId, result.content ?? "");
           session.parkedRequestId = undefined;
+          // A completed round-trip reopens the SAME live agy run for the next
+          // SEQUENTIAL tool request. Parallel unresolved calls are still
+          // refused by the gate until this point.
+          if (delivered) session.gate.parked = false;
         }
         try {
           yield* this.drainAgySession(session, signal);
@@ -1460,7 +1473,13 @@ export class AntigravityAdapter implements ProviderAdapter {
                 : new RouterError("provider_protocol_error", String(error)),
           };
         } finally {
-          this.sessionsByRequest.delete(request.requestId);
+          // Keep the binding while the provider is parked waiting for Qoder's
+          // next result so this exact request can still be cancelled; a
+          // terminated session is already unbound by closeToolSession.
+          const bound = this.sessionsByRequest.get(request.requestId);
+          if (bound === undefined || bound.terminated || bound.parkedRequestId === undefined) {
+            this.sessionsByRequest.delete(request.requestId);
+          }
         }
         return;
       }
