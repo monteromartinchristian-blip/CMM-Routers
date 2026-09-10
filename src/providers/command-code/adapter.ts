@@ -72,6 +72,18 @@ function toUpstreamTools(request: RouterRequest): unknown[] | undefined {
   }));
 }
 
+/** Anthropic Messages tool declaration shape: {name, description, input_schema}. */
+function toAnthropicTools(request: RouterRequest): unknown[] | undefined {
+  if (request.tools.length === 0) return undefined;
+  return request.tools.map((tool) => ({
+    name: tool.function.name,
+    ...(tool.function.description !== undefined
+      ? { description: tool.function.description }
+      : {}),
+    input_schema: tool.function.parameters,
+  }));
+}
+
 export class CommandCodeAdapter implements ProviderAdapter {
   readonly id = "command-code" as const;
   private readonly client: CommandCodeClient;
@@ -118,14 +130,12 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // the account metadata says is plan-excluded. UNKNOWN entries stay
       // visible and fail closed at request time via upstream plan enforcement.
       if (model.goatIncluded === false) continue;
-      // Tool capability is wire-truthful: only the OpenAI chat-completions wire
-      // carries tool definitions and parses tool_calls (Qoder-owned execution).
-      // Anthropic-wire models cannot express this structured round-trip, so
-      // they stay CHAT_ONLY. The OpenAI-wire round-trip is proven
-      // deterministically (scripted /chat/completions E2E); live re-proof is
-      // deferred to the post-audit live gate.
+      // Tool capability is wire-truthful. BOTH wires express the Qoder-owned
+      // structured round-trip: OpenAI chat-completions via tools/tool_calls,
+      // Anthropic Messages via tools[]/tool_use/input_json_delta/tool_result.
+      // The bridge never executes the tool; Qoder owns execution.
       const wire = model.wire ?? this.client.wireForUpstreamId(model.id);
-      const capability = wire === "anthropic-messages" ? ("CHAT_ONLY" as const) : ("CHAT_AND_TOOLS" as const);
+      const capability = "CHAT_AND_TOOLS" as const;
       discovered.push({
         id: `command-code/${model.id}`,
         provider: "command-code",
@@ -417,20 +427,19 @@ export class CommandCodeAdapter implements ProviderAdapter {
     abortSignal: AbortSignal,
     outerSignal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
-    // Anthropic wire accepts no OpenAI-only fields (no tools passthrough here).
+    // Anthropic Messages natively supports client-defined tools: the Router
+    // declares Qoder tools, surfaces tool_use to Qoder, and feeds the result
+    // back as tool_result on the continuation request. Qoder owns execution.
     // Frames yield incrementally as they arrive; completion only on message_stop.
     try {
-      const messages = toUpstreamMessages(request).map((message) => ({
-        role: String(message.role),
-        content: message.content,
-        ...(typeof message.tool_call_id === "string" ? { tool_call_id: message.tool_call_id } : {}),
-        ...(typeof message.name === "string" ? { name: message.name } : {}),
-      })) as never;
+      const messages = toUpstreamMessages(request) as never;
+      const upstreamTools = toAnthropicTools(request);
       const generator = this.client.streamAnthropicMessages(
         request.model.upstreamModel,
         messages,
         abortSignal,
         request.maxOutputTokens,
+        upstreamTools as unknown[] | undefined,
       );
 
       let carry = "";
@@ -439,6 +448,9 @@ export class CommandCodeAdapter implements ProviderAdapter {
       let inputTokens: number | undefined;
       let outputTokens: number | undefined;
       let usageYielded = false;
+      // Streaming tool-use assembly, keyed by upstream content-block index.
+      const toolBlocks = new Map<number, { id: string; name: string; args: string }>();
+      let sawToolUse = false;
 
       const emitUsage = function* (): Generator<RouterEvent> {
         if (usageYielded) return;
@@ -481,6 +493,36 @@ export class CommandCodeAdapter implements ProviderAdapter {
         }
         if (parsed.kind === "text" && parsed.text) {
           yield { type: "text_delta", text: parsed.text };
+        }
+        if (parsed.kind === "tool_use_start" && parsed.toolUse) {
+          toolBlocks.set(parsed.toolUse.index, {
+            id: parsed.toolUse.id,
+            name: parsed.toolUse.name,
+            args: "",
+          });
+          sawToolUse = true;
+        }
+        if (parsed.kind === "tool_use_delta" && parsed.toolUse) {
+          const block = toolBlocks.get(parsed.toolUse.index);
+          if (block === undefined) {
+            // A delta before its content_block_start is a protocol violation.
+            yield {
+              type: "error",
+              error: new RouterError(
+                "provider_protocol_error",
+                "Anthropic input_json_delta without content_block_start",
+              ),
+            } as RouterEvent;
+            return;
+          }
+          block.args += parsed.partialJson ?? "";
+          yield {
+            type: "tool_call_delta",
+            index: parsed.toolUse.index,
+            id: block.id,
+            name: block.name,
+            argumentsDelta: parsed.partialJson ?? "",
+          } as RouterEvent;
         }
         if (parsed.inputTokens !== undefined) inputTokens = parsed.inputTokens;
         if (parsed.outputTokens !== undefined) outputTokens = parsed.outputTokens;
@@ -532,7 +574,9 @@ export class CommandCodeAdapter implements ProviderAdapter {
 
       if (sawStop) {
         yield* emitUsage();
-        if (stopReason === "max_tokens") {
+        if (sawToolUse || stopReason === "tool_use") {
+          yield { type: "completed", finishReason: "tool_calls" };
+        } else if (stopReason === "max_tokens") {
           yield { type: "completed", finishReason: "length" };
         } else {
           yield { type: "completed", finishReason: "stop" };

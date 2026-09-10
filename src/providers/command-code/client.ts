@@ -644,11 +644,12 @@ export class CommandCodeClient {
     messages: CommandCodeChatMessage[],
     signal: AbortSignal,
     maxOutputTokens?: number,
+    tools?: unknown[],
   ): AsyncGenerator<string, void> {
     const secret = this.readSecret();
     assertNoSpendPath(model);
     const url = this.buildUrl(ANTHROPIC_MESSAGES_PATH);
-    const body = buildAnthropicRequestBody(model, messages, maxOutputTokens);
+    const body = buildAnthropicRequestBody(model, messages, maxOutputTokens, tools);
     const composed = composeTimeoutSignal(signal, this.timeoutMs);
     let response: CommandCodeHttpResponse;
     try {
@@ -898,9 +899,14 @@ async function openStreamOrError(
   return { status: response.status, chunks: live() };
 }
 
+export interface CommandCodeAnthropicContentBlock {
+  type: string;
+  [key: string]: unknown;
+}
+
 export interface CommandCodeAnthropicMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | CommandCodeAnthropicContentBlock[];
 }
 
 export interface AnthropicStreamState {
@@ -912,41 +918,126 @@ export interface AnthropicStreamState {
   error: string | undefined;
 }
 
+function anthropicTextOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          const record = part as Record<string, unknown>;
+          if (record.type === "text" && typeof record.text === "string") return record.text;
+        }
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Anthropic Messages uses a native structured tool protocol. A complete
+ * assistant tool call must carry parseable JSON arguments; malformed complete
+ * arguments fail closed here (before any upstream request) instead of being
+ * forwarded as an opaque string.
+ */
+function anthropicToolInput(rawArguments: unknown): unknown {
+  if (typeof rawArguments !== "string") {
+    if (rawArguments === undefined || rawArguments === null) {
+      throw new RouterError(
+        "provider_protocol_error",
+        "Anthropic tool call is missing arguments",
+      );
+    }
+    return rawArguments;
+  }
+  const trimmed = rawArguments.trim();
+  if (trimmed.length === 0) {
+    throw new RouterError(
+      "provider_protocol_error",
+      "Anthropic tool call has empty arguments",
+    );
+  }
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new RouterError(
+      "provider_protocol_error",
+      "Anthropic tool call arguments are malformed JSON",
+    );
+  }
+}
+
 export function buildAnthropicRequestBody(
   model: string,
   messages: CommandCodeChatMessage[],
   maxOutputTokens?: number,
+  tools?: unknown[],
 ): Record<string, unknown> {
   const converted: CommandCodeAnthropicMessage[] = [];
   const systemParts: string[] = [];
   for (const message of messages) {
     if (message.role === "system") {
-      const text =
-        typeof message.content === "string" && message.content
-          ? message.content
-          : "";
+      const text = anthropicTextOf(message.content);
       if (text) systemParts.push(text);
       continue;
     }
-    if (message.role !== "user" && message.role !== "assistant") continue;
-    const content =
-      typeof message.content === "string"
-        ? message.content
-        : Array.isArray(message.content)
-          ? message.content
-              .map((part) => {
-                if (typeof part === "string") return part;
-                if (part && typeof part === "object") {
-                  const record = part as Record<string, unknown>;
-                  if (record.type === "text" && typeof record.text === "string") {
-                    return record.text;
-                  }
-                }
-                return "";
-              })
-              .join("")
-          : "";
-    converted.push({ role: message.role, content });
+    if (message.role === "tool") {
+      const toolUseId =
+        typeof message.tool_call_id === "string" && message.tool_call_id.length > 0
+          ? message.tool_call_id
+          : undefined;
+      if (toolUseId === undefined) {
+        throw new RouterError(
+          "provider_protocol_error",
+          "Anthropic tool result requires a tool_use_id",
+        );
+      }
+      converted.push({
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: toolUseId,
+            content: anthropicTextOf(message.content),
+          },
+        ],
+      });
+      continue;
+    }
+    if (message.role === "assistant") {
+      const blocks: CommandCodeAnthropicContentBlock[] = [];
+      const text = anthropicTextOf(message.content);
+      if (text) blocks.push({ type: "text", text });
+      const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      for (const rawCall of calls) {
+        if (!rawCall || typeof rawCall !== "object") continue;
+        const call = rawCall as Record<string, unknown>;
+        const fn = call.function as Record<string, unknown> | undefined;
+        const id = typeof call.id === "string" && call.id.length > 0 ? call.id : undefined;
+        const name =
+          typeof fn?.name === "string" && fn.name.length > 0 ? fn.name : undefined;
+        if (id === undefined || name === undefined) {
+          throw new RouterError(
+            "provider_protocol_error",
+            "Anthropic assistant tool call requires id and name",
+          );
+        }
+        blocks.push({
+          type: "tool_use",
+          id,
+          name,
+          input: anthropicToolInput(fn?.arguments),
+        });
+      }
+      converted.push({
+        role: "assistant",
+        content: blocks.length > 0 ? blocks : anthropicTextOf(message.content),
+      });
+      continue;
+    }
+    if (message.role !== "user") continue;
+    converted.push({ role: "user", content: anthropicTextOf(message.content) });
   }
   if (converted.length === 0) {
     throw new RouterError("invalid_request", "Anthropic request needs at least one message");
@@ -959,6 +1050,7 @@ export function buildAnthropicRequestBody(
     ...(systemParts.length > 0 ? { system: systemParts.join("\n") } : {}),
     messages: converted,
     stream: true,
+    ...(tools !== undefined && tools.length > 0 ? { tools } : {}),
   };
 }
 
@@ -968,12 +1060,14 @@ export function buildAnthropicRequestBody(
  * Throws provider_protocol_error on malformed JSON so callers fail closed.
  */
 export function parseAnthropicEvent(data: string): {
-  kind: "text" | "usage" | "stop" | "error" | "ignore";
+  kind: "text" | "usage" | "stop" | "error" | "ignore" | "tool_use_start" | "tool_use_delta";
   text?: string;
   inputTokens?: number;
   outputTokens?: number;
   stopReason?: string;
   error?: string;
+  toolUse?: { index: number; id: string; name: string };
+  partialJson?: string;
 } {
   let event: unknown;
   try {
@@ -995,13 +1089,35 @@ export function parseAnthropicEvent(data: string): {
       "Anthropic upstream error";
     return { kind: "error", error: String(message).slice(0, 300) };
   }
+  if (type === "content_block_start") {
+    const block = record.content_block as Record<string, unknown> | undefined;
+    const index = typeof record.index === "number" ? record.index : 0;
+    if (
+      block &&
+      block.type === "tool_use" &&
+      typeof block.id === "string" &&
+      typeof block.name === "string"
+    ) {
+      return { kind: "tool_use_start", toolUse: { index, id: block.id, name: block.name } };
+    }
+    return { kind: "ignore" };
+  }
   if (type === "content_block_delta") {
     const delta = record.delta as Record<string, unknown> | undefined;
+    const index = typeof record.index === "number" ? record.index : 0;
     if (delta && typeof delta.text_delta === "string" && delta.text_delta.length > 0) {
       return { kind: "text", text: delta.text_delta };
     }
     if (delta && typeof delta.text === "string" && delta.text.length > 0) {
       return { kind: "text", text: delta.text };
+    }
+    // Streaming tool arguments: partial JSON fragments assembled by caller.
+    if (delta && typeof delta.partial_json === "string") {
+      return {
+        kind: "tool_use_delta",
+        toolUse: { index, id: "", name: "" },
+        partialJson: delta.partial_json,
+      };
     }
     return { kind: "ignore" };
   }
