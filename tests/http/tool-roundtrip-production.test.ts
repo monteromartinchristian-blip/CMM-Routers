@@ -1,11 +1,11 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { buildServer } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
 import { ClaudeAdapter } from "../../src/providers/claude/adapter.js";
 import type { DiscoveredModel } from "../../src/core/model.js";
 import { DeferredToolBroker } from "../../src/core/deferred-tool-broker.js";
+import { createFakeClaudeSdk } from "../helpers/fake-claude-sdk.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 const REPO = join(import.meta.dirname, "../..");
@@ -30,32 +30,16 @@ class DiscoveryStubClaudeAdapter extends ClaudeAdapter {
   }
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  throw new Error("waitFor timed out");
-}
-
 /**
  * Router-level proof: HTTP -> capability boundary -> production ClaudeAdapter ->
- * production broker + external MCP bridge -> Qoder tool call -> simulated Qoder
- * result -> same-session provider continuation -> final HTTP response.
+ * production broker + SDK-owned external MCP bridge -> Qoder tool call ->
+ * simulated Qoder result -> same-session provider continuation -> final HTTP
+ * response whose content is derived from the Qoder result.
+ *
+ * The MCP client is the protocol-faithful fake SDK, which consumes the
+ * production `options.mcpServers` config. The test never touches the MCP wire.
  */
 describe("production composition: Claude Qoder tool round-trip over HTTP", () => {
-  const children: ChildProcess[] = [];
-  afterEach(() => {
-    for (const child of children.splice(0)) {
-      try {
-        child.kill();
-      } catch {
-        // already exited
-      }
-    }
-  });
-
   it("traverses the whole production path and continues the same session", async () => {
     // Sentinel values prove tool arguments and results never reach a log sink
     // anywhere on the real HTTP -> adapter -> broker -> bridge path.
@@ -77,34 +61,18 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
       process.stderr.write = originalStderr as typeof process.stderr.write;
     };
 
-    let releaseFn: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      releaseFn = resolve;
+    const fake = createFakeClaudeSdk({
+      toolName: "cmm_echo",
+      toolArguments: { text: ARG_SENTINEL },
+      finalPrefix: "answer=",
     });
-    const queryFn = () =>
-      (async function* () {
-        yield {
-          type: "stream_event",
-          event: { type: "content_block_delta", delta: { type: "text_delta", text: "thinking " } },
-        };
-        await gate;
-        yield {
-          type: "stream_event",
-          event: { type: "content_block_delta", delta: { type: "text_delta", text: "final-answer" } },
-        };
-        yield { type: "result", subtype: "success", stop_reason: "end_turn", usage: {} };
-      })();
 
     const adapter = new DiscoveryStubClaudeAdapter({
       broker: new DeferredToolBroker({ maxPending: 8, defaultTtlMs: 30000 }),
       bridgeCommand: TSX,
       bridgeEntryPath: BRIDGE_ENTRY,
-      queryFn: queryFn as never,
-      spawnFn: ((cmd: string, args: string[], opts: object) => {
-        const child = spawn(cmd, args, opts as never);
-        children.push(child);
-        return child;
-      }) as never,
+      queryFn: ((args: { prompt: unknown; options: Record<string, unknown> }) =>
+        fake.queryFn(args)) as never,
     });
 
     const registry = new ProviderRegistry();
@@ -118,102 +86,89 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
       registry,
     });
 
-    // Exchange 1 is started WITHOUT awaiting: its response cannot complete
-    // until the external MCP call arrives, which this test drives as agy does.
-    const firstPromise = server.inject({
-      method: "POST",
-      url: "/v1/chat/completions",
-      headers: { authorization: "Bearer q" },
-      payload: {
-        model: "claude/test-model",
-        messages: [{ role: "user", content: "echo canary" }],
-        tools: [CMM_ECHO_TOOL],
-      },
-    });
+    try {
+      // Exchange 1 is started WITHOUT awaiting: its response cannot complete
+      // until the SDK-owned MCP bridge receives Qoder's follow-up.
+      const firstPromise = server.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: { authorization: "Bearer q" },
+        payload: {
+          model: "claude/test-model",
+          messages: [{ role: "user", content: "echo canary" }],
+          tools: [CMM_ECHO_TOOL],
+        },
+      });
 
-    // The external bridge process is a real, separate process.
-    await waitFor(() => children.length === 1);
-    const bridge = children[0]!;
-    const seen: string[] = [];
-    bridge.stdout!.setEncoding("utf-8");
-    bridge.stdout!.on("data", (chunk: string) => seen.push(chunk));
-    bridge.stdin!.write(
-      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`,
-    );
-    bridge.stdin!.write(
-      `${JSON.stringify({
-        jsonrpc: "2.0",
-        id: 9,
-        method: "tools/call",
-        params: { name: "cmm_echo", arguments: { text: ARG_SENTINEL } },
-      })}\n`,
-    );
+      const first = await firstPromise;
+      expect(first.statusCode).toBe(200);
+      const firstBody = first.json() as {
+        choices: Array<{
+          finish_reason: string;
+          message: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
+        }>;
+      };
+      expect(firstBody.choices[0]!.finish_reason).toBe("tool_calls");
+      const call = firstBody.choices[0]!.message.tool_calls![0]!;
+      expect(call.id.startsWith("cmm_claude_")).toBe(true);
+      expect(call.function.name).toBe("cmm_echo");
+      console.log("HTTP_ROUNDTRIP_QODER_TOOL_CALL_SURFACED=PASS");
 
-    const first = await firstPromise;
-    expect(first.statusCode).toBe(200);
-    const firstBody = first.json() as {
-      choices: Array<{
-        finish_reason: string;
-        message: { tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }> };
-      }>;
-    };
-    expect(firstBody.choices[0]!.finish_reason).toBe("tool_calls");
-    const call = firstBody.choices[0]!.message.tool_calls![0]!;
-    expect(call.id.startsWith("cmm_claude_")).toBe(true);
-    expect(call.function.name).toBe("cmm_echo");
-    console.log("HTTP_ROUNDTRIP_QODER_TOOL_CALL_SURFACED=PASS");
+      // The provider-facing MCP process is the one the SDK spawned from the
+      // production config; the MCP call is still unanswered at this point.
+      expect(fake.consumedMcpConfig()).toBe(true);
+      expect(fake.sentToolsCall()).toBe(true);
+      expect(fake.mcpToolResult()).toBeUndefined();
 
-    // Exchange 2 carries Qoder's already-executed result and continues the
-    // SAME logical Claude session (no new provider run).
-    const secondPromise = server.inject({
-      method: "POST",
-      url: "/v1/chat/completions",
-      headers: { authorization: "Bearer q" },
-      payload: {
-        model: "claude/test-model",
-        messages: [
-          { role: "user", content: "echo canary" },
-          {
-            role: "assistant",
-            content: null,
-            tool_calls: [
-              {
-                id: call.id,
-                type: "function",
-                function: { name: "cmm_echo", arguments: '{"text":"canary"}' },
-              },
-            ],
-          },
-          { role: "tool", tool_call_id: call.id, content: RESULT_SENTINEL },
-        ],
-        tools: [CMM_ECHO_TOOL],
-      },
-    });
-    // The bridge handler is released with Qoder's produced result.
-    await waitFor(() => seen.join("").includes('"id":9'));
-    const responseLine = seen.join("").split("\n").find((line) => line.includes('"id":9'))!;
-    const response = JSON.parse(responseLine) as { result: { content: Array<{ text: string }> } };
-    expect(response.result.content[0]!.text).toBe(RESULT_SENTINEL);
-    releaseFn?.();
+      // Exchange 2 carries Qoder's already-executed result and continues the
+      // SAME logical Claude session (no new provider run).
+      const second = await server.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: { authorization: "Bearer q" },
+        payload: {
+          model: "claude/test-model",
+          messages: [
+            { role: "user", content: "echo canary" },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: call.id,
+                  type: "function",
+                  function: { name: "cmm_echo", arguments: JSON.stringify({ text: ARG_SENTINEL }) },
+                },
+              ],
+            },
+            { role: "tool", tool_call_id: call.id, content: RESULT_SENTINEL },
+          ],
+          tools: [CMM_ECHO_TOOL],
+        },
+      });
 
-    const second = await secondPromise;
-    expect(second.statusCode).toBe(200);
-    const secondBody = second.json() as {
-      choices: Array<{ finish_reason: string; message: { content: string } }>;
-    };
-    expect(secondBody.choices[0]!.message.content).toContain("final-answer");
-    expect(adapter.activeToolSessions()).toBe(0);
-
-    // No log sink anywhere on the path retained the sentinel content.
-    const logged = captured.join("");
-    expect(logged).not.toContain(ARG_SENTINEL);
-    expect(logged).not.toContain(RESULT_SENTINEL);
-    restore();
-    console.log("TOOL_ARGUMENT_LOGGING=NONE");
-    console.log("TOOL_RESULT_LOGGING=NONE");
-    console.log("HTTP_ROUNDTRIP_QODER_RESULT_CORRELATED=PASS");
-    console.log("HTTP_ROUNDTRIP_SAME_SESSION_CONTINUATION=PASS");
-    console.log("QODER_EXECUTION_OWNER=YES");
-    console.log("PROVIDER_NATIVE_TOOL_EXECUTION=NONE");
-  }, 40000);
+      expect(second.statusCode).toBe(200);
+      const secondBody = second.json() as {
+        choices: Array<{ finish_reason: string; message: { content: string } }>;
+      };
+      // The provider's final content is causally derived from the Qoder result
+      // that travelled over the real MCP wire.
+      expect(secondBody.choices[0]!.message.content).toContain(`answer=${RESULT_SENTINEL}`);
+      expect(fake.mcpToolResult()).toBe(RESULT_SENTINEL);
+      expect(adapter.activeToolSessions()).toBe(0);
+      console.log("HTTP_ROUNDTRIP_QODER_RESULT_CORRELATED=PASS");
+      console.log("HTTP_ROUNDTRIP_SAME_SESSION_CONTINUATION=PASS");
+      console.log("E2E_PROVIDER_CONTINUATION_CAUSALLY_DEPENDS_ON_TOOL_RESULT=PASS");
+      console.log("QODER_EXECUTION_OWNER=YES");
+      console.log("PROVIDER_NATIVE_TOOL_EXECUTION=NONE");
+    } finally {
+      // No log sink anywhere on the path retained the sentinel content.
+      const logged = captured.join("");
+      restore();
+      expect(logged).not.toContain(ARG_SENTINEL);
+      expect(logged).not.toContain(RESULT_SENTINEL);
+      console.log("TOOL_ARGUMENT_LOGGING=NONE");
+      console.log("TOOL_RESULT_LOGGING=NONE");
+    }
+  }, 60000);
 });

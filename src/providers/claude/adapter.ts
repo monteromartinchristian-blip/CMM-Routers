@@ -2,16 +2,14 @@ import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
-import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
 import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
 
-/** Injection seams: production uses the real SDK query and a real spawn. */
+/** Injection seam: production uses the real SDK query. */
 type QueryFn = typeof query;
-type SpawnFn = typeof spawn;
 
 /**
  * Finite lifetime for a parked tool session. The broker entry expires on the
@@ -53,7 +51,6 @@ interface LiveClaudeSession {
   toolCalls: AsyncQueue<BridgeToolRequest>;
   toolCallPromise: Promise<BridgeToolRequest> | undefined;
   control: BridgeControlServer;
-  bridge: ChildProcess;
   abortController: AbortController;
   sawPartialDelta: boolean;
   usageYielded: boolean;
@@ -159,7 +156,6 @@ export class ClaudeAdapter implements ProviderAdapter {
   private readonly profileDir: string | undefined;
   private readonly broker: DeferredToolBroker;
   private readonly queryFn: QueryFn;
-  private readonly spawnFn: SpawnFn;
   private readonly bridgeEntryPath: string;
   private readonly bridgeCommand: string;
 
@@ -168,7 +164,6 @@ export class ClaudeAdapter implements ProviderAdapter {
       profileDir?: string | undefined;
       broker?: DeferredToolBroker | undefined;
       queryFn?: QueryFn | undefined;
-      spawnFn?: SpawnFn | undefined;
       bridgeEntryPath?: string | undefined;
       bridgeCommand?: string | undefined;
     } = {},
@@ -176,7 +171,6 @@ export class ClaudeAdapter implements ProviderAdapter {
     this.profileDir = options.profileDir;
     this.broker = options.broker ?? new DeferredToolBroker();
     this.queryFn = options.queryFn ?? query;
-    this.spawnFn = options.spawnFn ?? spawn;
     this.bridgeEntryPath = options.bridgeEntryPath ?? defaultBridgeEntryPath();
     this.bridgeCommand = options.bridgeCommand ?? process.execPath;
   }
@@ -496,11 +490,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       this.broker.cancelScope({ provider: "claude", sessionId: session.sessionKey });
       session.publicToolCallId = undefined;
     }
-    try {
-      if (!session.bridge.killed) session.bridge.kill();
-    } catch {
-      // A bridge that already exited needs no further action.
-    }
+    // The SDK owns the provider-facing MCP process; aborting the SDK query is
+    // what tears that process down. No Router-side bridge process exists.
     await session.control.close().catch(() => undefined);
   }
 
@@ -702,11 +693,11 @@ export class ClaudeAdapter implements ProviderAdapter {
         }
       })();
 
-      // External MCP bridge: the provider-facing MCP server runs in its own
-      // process and can never call back into this process directly. It parks
-      // each tools/call over the Router-facing bridge-control IPC instead.
+      // External MCP bridge: the provider-facing MCP server is owned by the
+      // SDK, which spawns it from `options.mcpServers`. The Router creates only
+      // the Router-side control channel it connects back to. The bridge
+      // performs transport only and can never reach into this process.
       let control: BridgeControlServer | undefined;
-      let bridge: ChildProcess | undefined;
       let toolCalls: AsyncQueue<BridgeToolRequest> | undefined;
       let mcpServers: Options["mcpServers"];
       if (request.tools.length > 0) {
@@ -720,10 +711,8 @@ export class ClaudeAdapter implements ProviderAdapter {
           CMM_BRIDGE_SERVER_NAME: "cmm_qoder",
           CMM_BRIDGE_TOOLS: JSON.stringify(bridgeToolDefinitions(request.tools)),
         };
-        bridge = this.spawnFn(this.bridgeCommand, [this.bridgeEntryPath], {
-          stdio: ["pipe", "pipe", "inherit"],
-          env: { ...process.env, ...bridgeEnv },
-        });
+        // Exactly ONE provider-facing MCP config is declared; the SDK owns and
+        // spawns that single stdio process. The Router never spawns a second.
         mcpServers = {
           cmm_qoder: {
             type: "stdio",
@@ -790,7 +779,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
       // Tool-capable run: hold a live session so a parked external MCP call can
       // be resolved on the follow-up request without opening a new session.
-      if (control !== undefined && bridge !== undefined && toolCalls !== undefined) {
+      if (control !== undefined && toolCalls !== undefined) {
         const session: LiveClaudeSession = {
           sessionKey: request.requestId,
           requestId: request.requestId,
@@ -799,7 +788,6 @@ export class ClaudeAdapter implements ProviderAdapter {
           toolCalls,
           toolCallPromise: undefined,
           control,
-          bridge,
           abortController,
           sawPartialDelta: false,
           usageYielded: false,

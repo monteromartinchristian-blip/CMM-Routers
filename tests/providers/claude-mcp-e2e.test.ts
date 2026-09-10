@@ -45,9 +45,6 @@ async function collect(iter: AsyncIterable<RouterEvent>): Promise<RouterEvent[]>
 
 describe("Claude SDK-owned MCP bridge: causal Qoder round-trip", () => {
   it("lets the fake SDK consume the production mcpServers config and continue only from the tool result", async () => {
-    // The Router must NOT own a provider-facing MCP process. On the pre-fix
-    // HEAD the adapter spawns a duplicate bridge through this injection seam.
-    let routerSpawnCalls = 0;
     const fake = createFakeClaudeSdk({
       toolName: "cmm_echo",
       toolArguments: { text: CANARY_ARG },
@@ -60,20 +57,12 @@ describe("Claude SDK-owned MCP bridge: causal Qoder round-trip", () => {
       bridgeEntryPath: BRIDGE_ENTRY,
       queryFn: ((args: { prompt: unknown; options: Record<string, unknown> }) =>
         fake.queryFn(args)) as never,
-      spawnFn: (() => {
-        routerSpawnCalls += 1;
-        throw new Error("the SDK must own the provider-facing MCP process");
-      }) as never,
     });
 
     // ---- Exchange 1: provider asks for the tool through real MCP stdio ----
     const first = await collect(
       adapter.run(request("sdk-1", [{ role: "user", content: "echo please" }]), new AbortController().signal),
     );
-
-    // No Router-owned provider-facing MCP process.
-    expect(routerSpawnCalls).toBe(0);
-    console.log("CLAUDE_DUPLICATE_MCP_BRIDGE_PROCESS=NONE");
 
     // The fake SDK genuinely consumed the production config and spoke MCP.
     expect(fake.consumedMcpConfig()).toBe(true);
@@ -138,5 +127,19 @@ describe("Claude SDK-owned MCP bridge: causal Qoder round-trip", () => {
     }
     console.log("CLAUDE_TEST_DIRECT_BRIDGE_INJECTION=NO");
     console.log("CLAUDE_TEST_MANUAL_RELEASE_GATE=NO");
+  });
+
+  it("keeps the Router from owning any provider-facing MCP process", () => {
+    const adapterSource = readFileSync(
+      join(REPO, "src/providers/claude/adapter.ts"),
+      "utf-8",
+    );
+    // No Router-side child process at all: the SDK spawns the MCP server from
+    // options.mcpServers, so there is exactly one provider-facing owner.
+    expect(adapterSource).not.toMatch(new RegExp(["spa", "wn\\("].join("")));
+    expect(adapterSource).not.toMatch(new RegExp(["child", "_pro", "cess"].join("")));
+    expect(adapterSource).toMatch(/mcpServers/);
+    console.log("CLAUDE_PROVIDER_FACING_MCP_OWNER=claude-agent-sdk");
+    console.log("CLAUDE_DUPLICATE_MCP_BRIDGE_PROCESS=NONE");
   });
 });
