@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Codex experimental generated-schema provenance (Task 13 Protocol Truth)",
+  "installedCodexVersion": "codex-cli 0.153.4",
+  "generationCommand": "codex app-server generate-json-schema --experimental --out /tmp/cmm-codex-schema-experimental-0.153.4",
+  "whySeparateFromStable": "The stable surface intentionally omits experimental fields. `thread/start.dynamicTools` and `initialize.params.capabilities.experimentalApi` only appear with --experimental, per the official v0.153.4 app-server README.",
+  "extractedArtifacts": [
+    "DynamicToolCallParams.json",
+    "DynamicToolCallResponse.json",
+    "DynamicToolNamespaceTool.json",
+    "DynamicToolSpec.json",
+    "InitializeCapabilities.json",
+    "ThreadStartParams.dynamicTools.json"
+  ],
+  "notes": [
+    "These files carry ONLY the experimental shapes the Router depends on; the full experimental tree is reproducible with the generationCommand.",
+    "Field names/casing are taken from the generated artifacts, never from prose.",
+    "DynamicToolCallParams.required includes callId/threadId/tool/turnId: a missing callId is a protocol violation."
+  ],
+  "generatedOn": "2026-09-10"
+}

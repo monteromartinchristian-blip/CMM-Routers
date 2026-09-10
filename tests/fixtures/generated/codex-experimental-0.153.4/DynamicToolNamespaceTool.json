@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DynamicToolNamespaceTool",
+  "oneOf": [
+    {
+      "properties": {
+        "deferLoading": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputSchema": true,
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "function"
+          ],
+          "title": "FunctionDynamicToolNamespaceToolType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "inputSchema",
+        "name",
+        "type"
+      ],
+      "title": "FunctionDynamicToolNamespaceTool",
+      "type": "object"
+    }
+  ]
+}
