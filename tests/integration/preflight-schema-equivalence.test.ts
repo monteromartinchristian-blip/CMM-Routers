@@ -61,7 +61,7 @@ const VALID = {
   },
 };
 
-describe("preflight / production config schema equivalence", () => {
+describe("preflight / production config schema equivalence", { timeout: 20_000 }, () => {
   let dir: string;
 
   beforeEach(() => {

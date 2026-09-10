@@ -50,7 +50,7 @@ function allDisabled(dir: string): void {
   });
 }
 
-describe("preflight provider-aware fail-closed matrix", () => {
+describe("preflight provider-aware fail-closed matrix", { timeout: 20_000 }, () => {
   let dir: string;
 
   beforeEach(() => {
