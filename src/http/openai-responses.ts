@@ -3,7 +3,9 @@ import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
+import { RouterError } from "../core/errors.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy } from "./openai-chat.js";
+import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
@@ -189,7 +191,16 @@ export function registerResponsesApi(
       }
       parallelToolCalls = body.parallel_tool_calls;
     }
-    const toolChoice = body.tool_choice;
+    // The Responses API has its OWN tool_choice wire shape: a named function
+    // choice is FLAT ({type:"function", name}). Normalizing it here keeps the
+    // shared provider policy API-independent, so a canonical Responses choice
+    // is no longer misread as an invalid request.
+    const parsedToolChoice = parseResponsesToolChoice(body.tool_choice);
+    if (parsedToolChoice instanceof RouterError) {
+      const mapped = mapRouterErrorToHttp(parsedToolChoice);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    const toolChoice = parsedToolChoice;
 
     let model: DiscoveredModel;
     try {

@@ -1,3 +1,5 @@
+import type { NormalizedToolChoice } from "./tool-policy.js";
+
 export type ProviderId =
   | "chatgpt"
   | "claude"
@@ -56,6 +58,12 @@ export interface RouterRequest {
   stream: boolean;
   maxOutputTokens?: number;
   reasoningEffort?: "low" | "medium" | "high";
-  toolChoice?: unknown;
+  /**
+   * Internal, API-independent tool policy produced by the surface-specific
+   * wire parsers (parseChatToolChoice / parseResponsesToolChoice). It is NEVER
+   * the raw public wire shape, so provider adapters must not expect
+   * `{type:"function", ...}` here.
+   */
+  toolChoice?: NormalizedToolChoice;
   parallelToolCalls?: boolean;
 }

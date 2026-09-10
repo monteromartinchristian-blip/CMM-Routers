@@ -8,7 +8,8 @@ import type {
 } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
-import { enforceProviderToolPolicy } from "../core/tool-policy.js";
+import { enforceProviderToolPolicy, parseChatToolChoice } from "../core/tool-policy.js";
+import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -206,15 +207,19 @@ export function rejectChatOnlyTools(
  * One shared provider tool policy for both HTTP surfaces. Each provider either
  * maps the caller's constraint exactly or rejects it explicitly; a constraint
  * is never accepted and then silently dropped.
+ *
+ * The policy argument is the API-independent normalized form: each surface
+ * parses its OWN wire shape first, so this function never sees a raw public
+ * tool_choice object.
  */
 export function codexUnsupportedToolPolicy(
   provider: string,
-  toolChoice: unknown,
+  policy: NormalizedToolChoice | undefined,
   parallelToolCalls: boolean | undefined,
 ): RouterError | null {
   return enforceProviderToolPolicy(
     provider as ProviderId,
-    toolChoice,
+    policy,
     parallelToolCalls,
   );
 }
@@ -356,7 +361,15 @@ export function registerChatCompletions(
       }
       parallelToolCalls = body.parallel_tool_calls;
     }
-    const toolChoice = body.tool_choice;
+    // Chat Completions has its OWN tool_choice wire shape (nested
+    // {type:"function", function:{name}}); normalize it here so the shared
+    // provider policy only ever sees the API-independent internal form.
+    const parsedToolChoice = parseChatToolChoice(body.tool_choice);
+    if (parsedToolChoice instanceof RouterError) {
+      const mapped = mapRouterErrorToHttp(parsedToolChoice);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    const toolChoice = parsedToolChoice;
 
     let model: DiscoveredModel;
     try {

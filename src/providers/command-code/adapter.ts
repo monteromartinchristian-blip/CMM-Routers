@@ -6,6 +6,7 @@ import type {
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import { toChatWireToolChoice } from "../../core/tool-policy.js";
 import {
   ANTHROPIC_MESSAGES_PATH,
   CommandCodeClient,
@@ -253,7 +254,11 @@ export class CommandCodeAdapter implements ProviderAdapter {
             ? { maxOutputTokens: request.maxOutputTokens as number }
             : {}),
           ...(upstreamTools !== undefined ? { tools: upstreamTools as unknown[] } : {}),
-          ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
+          // RouterRequest.toolChoice is the internal normalized policy; the
+          // OpenAI-compatible upstream expects the Chat Completions wire shape.
+          ...(request.toolChoice !== undefined
+            ? { toolChoice: toChatWireToolChoice(request.toolChoice) }
+            : {}),
           ...(request.parallelToolCalls !== undefined
             ? { parallelToolCalls: request.parallelToolCalls }
             : {}),

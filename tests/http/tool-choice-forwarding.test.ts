@@ -57,7 +57,9 @@ describe("tool_choice / parallel_tool_calls", () => {
       },
     });
     expect(res.statusCode).toBe(200);
-    expect(seen[0]!.toolChoice).toBe("required");
+    // RouterRequest.toolChoice carries the API-independent NORMALIZED policy;
+    // each HTTP boundary parses its own wire shape into this form.
+    expect(seen[0]!.toolChoice).toEqual({ kind: "required" });
     expect(seen[0]!.parallelToolCalls).toBe(false);
     console.log("TOOL_CHOICE_PRESERVED=PASS");
   });

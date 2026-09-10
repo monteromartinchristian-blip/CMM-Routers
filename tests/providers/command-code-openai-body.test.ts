@@ -68,7 +68,9 @@ describe("Command Code OpenAI wire: exact HTTP body", () => {
       messages: [{ role: "user", content: "echo" }],
       tools: [CMM_ECHO_TOOL],
       stream: true,
-      toolChoice: "required",
+      // RouterRequest carries the API-independent normalized policy; the
+      // Command Code OpenAI wire re-serializes it to the Chat wire shape.
+      toolChoice: { kind: "required" },
       parallelToolCalls: false,
     });
 
@@ -109,7 +111,9 @@ describe("Command Code OpenAI wire: exact HTTP body", () => {
 
   it("forwards a named forced function choice verbatim", async () => {
     const adapter = adapterEmitting();
-    const named = { type: "function", function: { name: "cmm_echo" } };
+    // The normalized internal policy must reach the OpenAI wire as the exact
+    // Chat Completions named-function shape.
+    const wireShape = { type: "function", function: { name: "cmm_echo" } };
     await drain(adapter, {
       requestId: "cc-3",
       model: {
@@ -122,8 +126,8 @@ describe("Command Code OpenAI wire: exact HTTP body", () => {
       messages: [{ role: "user", content: "echo" }],
       tools: [CMM_ECHO_TOOL],
       stream: true,
-      toolChoice: named,
+      toolChoice: { kind: "named", name: "cmm_echo" },
     });
-    expect(bodies[0]!.tool_choice).toEqual(named);
+    expect(bodies[0]!.tool_choice).toEqual(wireShape);
   });
 });

@@ -106,8 +106,25 @@ describe("Codex tool-policy constraints are never silently dropped", () => {
   });
 
   it("does not constrain non-Codex providers", () => {
-    expect(codexUnsupportedToolPolicy("command-code", "required", false)).toBeNull();
-    expect(codexUnsupportedToolPolicy("chatgpt", "auto", true)).toBeNull();
-    expect(codexUnsupportedToolPolicy("chatgpt", "required", undefined)).not.toBeNull();
+    // The shared policy consumes the API-independent NORMALIZED form.
+    expect(codexUnsupportedToolPolicy("command-code", { kind: "required" }, false)).toBeNull();
+    expect(codexUnsupportedToolPolicy("chatgpt", { kind: "auto" }, true)).toBeNull();
+    expect(codexUnsupportedToolPolicy("chatgpt", { kind: "required" }, undefined)).not.toBeNull();
+    // No proven provider-side parallel control for claude/google: absence is
+    // accepted, ANY explicit boolean is refused.
+    expect(codexUnsupportedToolPolicy("claude", { kind: "auto" }, undefined)).toBeNull();
+    expect(codexUnsupportedToolPolicy("claude", undefined, false)?.code).toBe(
+      "unsupported_capability",
+    );
+    expect(codexUnsupportedToolPolicy("claude", undefined, true)?.code).toBe(
+      "unsupported_capability",
+    );
+    expect(codexUnsupportedToolPolicy("google", { kind: "named", name: "t" }, undefined)?.code).toBe(
+      "unsupported_capability",
+    );
+    expect(codexUnsupportedToolPolicy("google", undefined, false)?.code).toBe(
+      "unsupported_capability",
+    );
+    expect(codexUnsupportedToolPolicy("google", undefined, undefined)).toBeNull();
   });
 });
