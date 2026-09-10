@@ -120,13 +120,12 @@ describe("externally-owned tool round-trip contract (mocked, no live quota)", ()
   });
 
   it("capability declarations are wire-truthful per provider", async () => {
-    // Codex (experimental dynamicTools), Command Code (both wires) and Claude
-    // (external stdio MCP bridge held open across the split HTTP interaction)
-    // have deterministic structured Qoder-owned round-trips → CHAT_AND_TOOLS.
-    // Antigravity does not yet have the bridge wired into its adapter → it
-    // remains CHAT_ONLY, reported BLOCKED for the Qoder requirement with
-    // evidence in the Task 13 report (a truthful FAIL is preferred over a
-    // fake PASS).
+    // All four families expose a deterministic structured Qoder-owned
+    // round-trip on their installed interfaces: Codex via experimental
+    // dynamicTools, Command Code via both wires, Claude and Antigravity via
+    // the external stdio MCP bridge held open across the split HTTP
+    // interaction. The bridge performs transport only; provider-native
+    // shell/file/edit execution stays disabled everywhere.
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const read = (file: string): string =>
@@ -134,11 +133,11 @@ describe("externally-owned tool round-trip contract (mocked, no live quota)", ()
     expect(read("src/providers/codex/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
     expect(read("src/providers/command-code/adapter.ts")).toContain('"CHAT_AND_TOOLS"');
     expect(read("src/providers/claude/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
-    expect(read("src/providers/antigravity/adapter.ts")).toContain('capability: "CHAT_ONLY"');
+    expect(read("src/providers/antigravity/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
     console.log("CAPABILITY_MATRIX_TRUTHFUL=YES");
     console.log("CODEX_QODER_CAPABILITY=CHAT_AND_TOOLS");
     console.log("COMMAND_CODE_QODER_CAPABILITY=CHAT_AND_TOOLS");
     console.log("CLAUDE_QODER_CAPABILITY=CHAT_AND_TOOLS");
-    console.log("ANTIGRAVITY_QODER_CAPABILITY=CHAT_ONLY_BLOCKED");
+    console.log("ANTIGRAVITY_QODER_CAPABILITY=CHAT_AND_TOOLS");
   });
 });

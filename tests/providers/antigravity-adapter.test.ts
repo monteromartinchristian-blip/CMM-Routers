@@ -165,7 +165,10 @@ describe("Antigravity adapter", () => {
     const models = await adapterWithRunner.discoverModels();
     expect(models[0]!.id).toBe("google/gemini-3.8-flash-low");
     expect(models[0]!.provider).toBe("google");
-    expect(models[0]!.capability).toBe("CHAT_ONLY");
+    // Qoder-owned tools traverse the external MCP bridge (see
+    // antigravity-bridge-roundtrip.test.ts); agy's native mutation tools are
+    // never used for them.
+    expect(models[0]!.capability).toBe("CHAT_AND_TOOLS");
   });
 
   it("rejects malformed and ANSI-contaminated model IDs from discovery", async () => {

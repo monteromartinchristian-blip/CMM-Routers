@@ -3,12 +3,16 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
+import { registerBridgeSession } from "../../bridge/session-registry.js";
+import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
 import type {
   ProviderAdapter,
   ProviderHealth,
   RouterRequest,
 } from "../../core/provider.js";
-import type { DiscoveredModel } from "../../core/model.js";
+import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
@@ -532,21 +536,134 @@ export class SpawnInferenceRunner implements InferenceRunner {
   }
 }
 
+/** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
+export const ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools";
+
+export type McpRegistrar = (
+  name: string,
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+) => void;
+
+/** Absolute path to the compiled external MCP bridge entry point. */
+export function defaultAntigravityBridgeEntryPath(): string {
+  return fileURLToPath(new URL("../../bridge/mcp-bridge-process.js", import.meta.url));
+}
+
+/** Absolute path to the compiled MCP launcher registered with `agy mcp add`. */
+export function defaultAntigravityBridgeLauncherPath(): string {
+  return fileURLToPath(new URL("../../bridge/mcp-bridge-launcher.js", import.meta.url));
+}
+
+/** Qoder tool definitions as the external MCP bridge exposes them. */
+export function antigravityBridgeToolDefinitions(
+  tools: RouterTool[],
+): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    ...(tool.function.description !== undefined ? { description: tool.function.description } : {}),
+    inputSchema: tool.function.parameters ?? {},
+  }));
+}
+
+/** Minimal async hand-off queue for racing tool calls against agy events. */
+class AsyncQueue<T> {
+  private readonly items: T[] = [];
+  private readonly waiters: Array<(value: T) => void> = [];
+
+  push(value: T): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(value);
+    else this.items.push(value);
+  }
+
+  next(): Promise<T> {
+    const item = this.items.shift();
+    if (item !== undefined) return Promise.resolve(item);
+    return new Promise<T>((resolve) => this.waiters.push(resolve));
+  }
+}
+
+/**
+ * A live agy run held across the split HTTP interaction while its external MCP
+ * handler is parked waiting for Qoder's result. The Router keeps draining the
+ * SAME run on the follow-up request — no new agy process is spawned.
+ */
+interface AgyToolSession {
+  requestId: string;
+  sessionId: string;
+  cwd: string;
+  queue: StreamEventQueue;
+  queuePromise: Promise<ParsedStreamEvent | null> | undefined;
+  toolCalls: AsyncQueue<BridgeToolRequest>;
+  toolCallPromise: Promise<BridgeToolRequest> | undefined;
+  control: BridgeControlServer;
+  unregister: () => void;
+  abortController: AbortController;
+  resultPromise: Promise<AgyRunResult>;
+  result: AgyRunResult | undefined;
+  runError: unknown;
+  terminalSeen: boolean;
+  terminalFinish: StreamParseResult["finishReason"];
+  protocolError: RouterError | undefined;
+  usageYielded: boolean;
+  parkedRequestId: string | undefined;
+  publicToolCallId: string | undefined;
+}
+
 export class AntigravityAdapter implements ProviderAdapter {
   readonly id = "google" as const;
   private activeRequests = new Map<string, { abort: () => void; cwd: string }>();
   private runner: InferenceRunner;
   private modelsRunner: AgyRunner;
   private readonly agyPath: string;
+  /**
+   * Router-owned bounded pending state shared with the other adapters. The
+   * cross-request correlation is keyed by a Router-generated public tool id.
+   */
+  private readonly broker: DeferredToolBroker;
+  private readonly bridgeCommand: string;
+  private readonly bridgeEntryPath: string;
+  private readonly bridgeLauncherPath: string;
+  private readonly mcpRegistrar: McpRegistrar;
+  /** Live agy runs held open while an external MCP tool call is parked. */
+  private readonly toolSessions = new Map<string, AgyToolSession>();
+  /** The CMM-owned MCP server is registered once, never per request. */
+  private mcpRegistered = false;
 
   constructor(
     runner?: InferenceRunner,
     modelsRunner?: AgyRunner,
-    options: { agyPath?: string | undefined } = {},
+    options: {
+      agyPath?: string | undefined;
+      broker?: DeferredToolBroker | undefined;
+      bridgeCommand?: string | undefined;
+      bridgeEntryPath?: string | undefined;
+      bridgeLauncherPath?: string | undefined;
+      mcpRegistrar?: McpRegistrar | undefined;
+    } = {},
   ) {
     this.agyPath = options.agyPath ?? AGY_PATH;
     this.runner = runner ?? new SpawnInferenceRunner(this.agyPath);
     this.modelsRunner = modelsRunner ?? new RealAgyRunner(this.agyPath);
+    this.broker = options.broker ?? new DeferredToolBroker();
+    this.bridgeCommand = options.bridgeCommand ?? process.execPath;
+    this.bridgeEntryPath = options.bridgeEntryPath ?? defaultAntigravityBridgeEntryPath();
+    this.bridgeLauncherPath = options.bridgeLauncherPath ?? defaultAntigravityBridgeLauncherPath();
+    this.mcpRegistrar =
+      options.mcpRegistrar ??
+      ((name, command, args, env) => {
+        const envFlags = Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
+        execFileSync(this.agyPath, ["mcp", "add", ...envFlags, name, command, ...args], {
+          stdio: "ignore",
+        });
+      });
+  }
+
+  /** Live Antigravity tool sessions (test/diagnostic accessor). */
+  activeToolSessions(): number {
+    return this.toolSessions.size;
   }
 
   buildInferenceArgs(upstreamSlug: string, prompt: string): string[] {
@@ -606,7 +723,10 @@ export class AntigravityAdapter implements ProviderAdapter {
         provider: "google" as const,
         upstreamModel: m.slug,
         displayName: m.displayName,
-        capability: "CHAT_ONLY" as const,
+        // Qoder-owned tools traverse the external MCP bridge; agy's native
+        // mutation tools (run_command/replace_file_content/write_to_file) are
+        // never used for them and native execution stays disabled.
+        capability: "CHAT_AND_TOOLS" as const,
       }));
     } finally {
       // Discovery temp dirs must not accumulate on a long-running router.
@@ -637,6 +757,279 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
   }
 
+  /** Register the CMM-owned MCP server once per adapter (idempotent). */
+  private ensureMcpServerRegistered(): void {
+    if (this.mcpRegistered) return;
+    this.mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, [
+      this.bridgeLauncherPath,
+    ], {});
+    this.mcpRegistered = true;
+  }
+
+  private usageEventFor(
+    usage: NonNullable<StreamParseResult["usage"]>,
+    session: AgyToolSession,
+  ): RouterEvent | null {
+    if (session.usageYielded) return null;
+    session.usageYielded = true;
+    return {
+      type: "usage",
+      ...(usage.inputTokens !== undefined ? { inputTokens: usage.inputTokens } : {}),
+      ...(usage.outputTokens !== undefined ? { outputTokens: usage.outputTokens } : {}),
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+      ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+    } as RouterEvent;
+  }
+
+  /** Release a live tool session: registration, control channel, temp dir. */
+  private async closeToolSession(session: AgyToolSession): Promise<void> {
+    if (session.publicToolCallId !== undefined) {
+      this.toolSessions.delete(session.publicToolCallId);
+      this.broker.cancelScope({ provider: "google", sessionId: session.sessionId });
+      session.publicToolCallId = undefined;
+    }
+    session.unregister();
+    await session.control.close().catch(() => undefined);
+    try {
+      rmSync(session.cwd, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; the result was already delivered.
+    }
+  }
+
+  /** Verdict for a settled agy run, mirroring the non-tool path exactly. */
+  private *runVerdict(session: AgyToolSession, signal: AbortSignal): Generator<RouterEvent> {
+    if (signal.aborted || session.abortController.signal.aborted) return;
+    if (session.runError !== undefined) {
+      const error: unknown = session.runError;
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError(
+                "provider_unavailable",
+                error instanceof Error ? error.message : String(error),
+              ),
+      };
+      return;
+    }
+    if (session.protocolError) {
+      yield { type: "error", error: session.protocolError };
+      return;
+    }
+    const settled = session.result;
+    if (!settled) {
+      yield {
+        type: "error",
+        error: new RouterError("provider_unavailable", "Antigravity run settled without a result"),
+      };
+      return;
+    }
+    if (settled.error && /timed out/i.test(settled.error.message)) {
+      yield { type: "error", error: new RouterError("provider_timeout", "Antigravity print timed out") };
+      return;
+    }
+    if (settled.error && /ENOENT/.test(settled.error.message)) {
+      yield { type: "error", error: new RouterError("provider_unavailable", "agy CLI not found") };
+      return;
+    }
+    if (settled.status !== 0) {
+      yield { type: "error", error: mapAgyFailureToRouterError(settled, "agy --print") };
+      return;
+    }
+    if (!session.terminalSeen) {
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Antigravity stream ended without terminal result event",
+        ),
+      };
+      return;
+    }
+    yield { type: "completed", finishReason: session.terminalFinish };
+  }
+
+  /** Park a Qoder-owned tool call and keep the agy run alive. */
+  private async *parkAgyToolCall(
+    session: AgyToolSession,
+    request: BridgeToolRequest,
+  ): AsyncIterable<RouterEvent> {
+    if (session.parkedRequestId !== undefined) {
+      session.control.reject(request.id, "concurrent tool calls are not supported");
+      await this.closeToolSession(session);
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Concurrent Antigravity MCP tool calls are not supported",
+        ),
+      };
+      return;
+    }
+    const publicId = createPublicToolCallId("google");
+    session.parkedRequestId = request.id;
+    session.publicToolCallId = publicId;
+    try {
+      this.broker.createPendingCall<AgyToolSession>(
+        {
+          consumer: "qoder",
+          provider: "google",
+          sessionId: session.sessionId,
+          toolCallId: publicId,
+          publicToolCallId: publicId,
+        },
+        undefined,
+        undefined,
+        session,
+      );
+    } catch (error) {
+      session.parkedRequestId = undefined;
+      session.publicToolCallId = undefined;
+      session.control.reject(request.id, "router could not park the tool call");
+      await this.closeToolSession(session);
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_protocol_error", "Router could not park the tool call"),
+      };
+      return;
+    }
+    this.toolSessions.set(publicId, session);
+    yield {
+      type: "tool_call_delta",
+      index: 0,
+      id: publicId,
+      name: request.name,
+      argumentsDelta: JSON.stringify(request.input ?? {}),
+    };
+    yield { type: "completed", finishReason: "tool_calls" };
+  }
+
+  /**
+   * Drain a live tool-capable agy run, racing parsed stream events against
+   * parked bridge tool calls. On a tool call the run is left alive and the
+   * current HTTP exchange ends with finishReason "tool_calls".
+   */
+  private async *drainAgySession(
+    session: AgyToolSession,
+    signal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    try {
+      while (true) {
+        if (signal.aborted || session.abortController.signal.aborted) {
+          await this.closeToolSession(session);
+          return;
+        }
+        session.queuePromise ??= session.queue.next();
+        session.toolCallPromise ??= session.toolCalls.next();
+        const outcome = await Promise.race([
+          session.queuePromise.then((e) => ({ kind: "event" as const, e })),
+          session.toolCallPromise.then((tc) => ({ kind: "tool" as const, tc })),
+        ]);
+        if (outcome.kind === "tool") {
+          session.toolCallPromise = undefined;
+          yield* this.parkAgyToolCall(session, outcome.tc);
+          return;
+        }
+        session.queuePromise = undefined;
+        const event = outcome.e;
+        if (event === null) {
+          await session.resultPromise;
+          yield* this.runVerdict(session, signal);
+          await this.closeToolSession(session);
+          return;
+        }
+        if (event.kind === "text" && event.texts) {
+          for (const text of event.texts) {
+            if (signal.aborted || session.abortController.signal.aborted) {
+              await this.closeToolSession(session);
+              return;
+            }
+            yield { type: "text_delta", text };
+          }
+        } else if (event.kind === "usage" && event.usage) {
+          const usageEvent = this.usageEventFor(event.usage, session);
+          if (usageEvent) yield usageEvent;
+        } else if (event.kind === "completed") {
+          session.terminalSeen = true;
+          session.terminalFinish = event.finishReason ?? "stop";
+        } else if (event.kind === "protocolError" && event.error && !session.protocolError) {
+          session.protocolError = event.error;
+        }
+      }
+    } catch (error) {
+      await this.closeToolSession(session);
+      throw error;
+    }
+  }
+
+  /** Start and drain a tool-capable agy run (external MCP bridge path). */
+  private async *runToolSession(
+    request: RouterRequest,
+    signal: AbortSignal,
+    args: string[],
+    cwd: string,
+    abortController: AbortController,
+  ): AsyncIterable<RouterEvent> {
+    const sessionId = request.requestId;
+    const toolCalls = new AsyncQueue<BridgeToolRequest>();
+    const control = await BridgeControlServer.listen({
+      onToolCall: (toolRequest) => toolCalls.push(toolRequest),
+    });
+    const unregister = registerBridgeSession(sessionId, {
+      socketPath: control.socketPath,
+      token: control.token,
+      tools: antigravityBridgeToolDefinitions(request.tools),
+    });
+    this.ensureMcpServerRegistered();
+
+    const queue = new StreamEventQueue();
+    const runPromise = this.runner.streamInference(
+      args,
+      { cwd, timeoutMs: PRINT_TIMEOUT_MS, signal: abortController.signal },
+      (event: ParsedStreamEvent) => queue.push(event),
+    );
+    runPromise.then(
+      () => queue.close(),
+      () => queue.close(),
+    );
+
+    const session: AgyToolSession = {
+      requestId: request.requestId,
+      sessionId,
+      cwd,
+      queue,
+      queuePromise: undefined,
+      toolCalls,
+      toolCallPromise: undefined,
+      control,
+      unregister,
+      abortController,
+      resultPromise: runPromise,
+      result: undefined,
+      runError: undefined,
+      terminalSeen: false,
+      terminalFinish: "stop",
+      protocolError: undefined,
+      usageYielded: false,
+      parkedRequestId: undefined,
+      publicToolCallId: undefined,
+    };
+    runPromise.then(
+      (value) => {
+        session.result = value;
+      },
+      (error: unknown) => {
+        session.runError = error;
+      },
+    );
+    yield* this.drainAgySession(session, signal);
+  }
+
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
     // No temp dir exists yet: every early return below happens BEFORE any
     // filesystem allocation, so nothing can leak on validation paths.
@@ -664,6 +1057,47 @@ export class AntigravityAdapter implements ProviderAdapter {
           error instanceof RouterError
             ? error
             : new RouterError("provider_protocol_error", String(error)),
+      };
+      return;
+    }
+
+    // Follow-up carrying Qoder's executed tool result: release the parked
+    // external MCP handler and keep draining the SAME agy run. No new agy
+    // process is spawned and no history is reconstructed.
+    const toolResults = request.messages.filter(
+      (message) => message.role === "tool" && typeof message.toolCallId === "string",
+    );
+    if (toolResults.length > 0) {
+      for (const result of toolResults) {
+        const publicId = result.toolCallId as string;
+        const claim = this.broker.claimByPublicToolCallId<AgyToolSession>(publicId);
+        if (claim.outcome !== "resolved" || !claim.context) continue;
+        const session = claim.context;
+        this.toolSessions.delete(publicId);
+        session.publicToolCallId = undefined;
+        if (session.parkedRequestId !== undefined) {
+          session.control.resolve(session.parkedRequestId, result.content ?? "");
+          session.parkedRequestId = undefined;
+        }
+        try {
+          yield* this.drainAgySession(session, signal);
+        } catch (error) {
+          yield {
+            type: "error",
+            error:
+              error instanceof RouterError
+                ? error
+                : new RouterError("provider_protocol_error", String(error)),
+          };
+        }
+        return;
+      }
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Antigravity tool result does not match any pending Qoder tool call",
+        ),
       };
       return;
     }
@@ -702,6 +1136,19 @@ export class AntigravityAdapter implements ProviderAdapter {
       abort: () => abortController.abort(),
       cwd,
     });
+
+    // Tool-capable run: register the CMM-owned MCP server and hold the agy run
+    // open while an external MCP tools/call is parked for Qoder. The bridge
+    // performs transport only; agy's native mutation tools stay unused.
+    if (request.tools.length > 0) {
+      try {
+        yield* this.runToolSession(request, signal, args, cwd, abortController);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        this.activeRequests.delete(request.requestId);
+      }
+      return;
+    }
 
     try {
       // True incremental streaming: the subprocess callback pushes parsed
@@ -871,6 +1318,16 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async cancel(requestId: string): Promise<void> {
+    // Release any live tool session opened by this request: the parked bridge
+    // handler, its control socket, its session descriptor and its temp dir.
+    for (const [publicId, session] of [...this.toolSessions]) {
+      if (session.requestId === requestId) {
+        this.toolSessions.delete(publicId);
+        session.publicToolCallId = undefined;
+        await this.closeToolSession(session);
+      }
+    }
+
     const active = this.activeRequests.get(requestId);
     if (!active) return;
     try {

@@ -114,7 +114,10 @@ export async function createProductionRegistry(
     const adapter = new AntigravityAdapter(
       undefined,
       undefined,
-      agyPath ? { agyPath } : {},
+      {
+        ...(agyPath ? { agyPath } : {}),
+        broker: toolBroker,
+      },
     );
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
