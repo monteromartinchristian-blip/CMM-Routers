@@ -132,6 +132,73 @@ else
   echo "PREFLIGHT_FAIL_CLOSED=PASS"
 fi
 
+echo "== codex experimental opt-in + dynamic tool declaration =="
+if grep -q "experimentalApi: true" src/providers/codex/adapter.ts \
+  && grep -q "toDynamicToolSpecs" src/providers/codex/adapter.ts; then
+  echo "CODEX_EXPERIMENTAL_API_OPT_IN=PASS"
+  echo "CODEX_QODER_TOOL_DEFINITIONS_SENT=PASS"
+else
+  echo "FAIL: Codex experimental dynamicTools declaration missing"
+  fail=1
+fi
+
+echo "== tool-call identity fabrication ban =="
+# A synthesized provider call id would let a malformed frame masquerade as a
+# real call. The contract requires fail-closed on missing identity.
+if grep -rn 'call-\${Date.now\|`call-\$' src/providers/ --include="*.ts" | grep -q .; then
+  echo "FAIL: fabricated provider call id present"
+  fail=1
+else
+  echo "CODEX_PROVIDER_CALL_ID_FABRICATION=NONE"
+fi
+
+echo "== bounded broker is the production pending state =="
+if grep -q "class DeferredToolBroker" src/core/deferred-tool-broker.ts \
+  && grep -q "maxPending" src/core/deferred-tool-broker.ts \
+  && grep -q "defaultTtlMs" src/core/deferred-tool-broker.ts \
+  && grep -q "new DeferredToolBroker()" src/index.ts; then
+  echo "BROKER_PRODUCTION_INSTANTIATED=PASS"
+  echo "BROKER_PENDING_BOUND=PASS"
+  echo "BROKER_TTL=PASS"
+else
+  echo "FAIL: production bounded broker missing"
+  fail=1
+fi
+# The Codex adapter must not keep its own unbounded callId-keyed pending map.
+if grep -q "private readonly pendingTools = new Map" src/providers/codex/adapter.ts; then
+  echo "FAIL: adapter-local unbounded pending map present"
+  fail=1
+else
+  echo "RUNTIME_PENDING_MAP_REMOVED=PASS"
+fi
+
+echo "== bridge-control socket security =="
+if grep -q "chmodSync(dir, 0o700)" src/bridge/control-ipc.ts \
+  && grep -q "chmodSync(socketPath, 0o600)" src/bridge/control-ipc.ts \
+  && grep -q "frame.token !== this.token" src/bridge/control-ipc.ts \
+  && grep -q "rmSync(this.dir" src/bridge/control-ipc.ts; then
+  echo "BRIDGE_CONTROL_SOCKET_HARDENED=PASS"
+else
+  echo "FAIL: bridge-control socket hardening missing"
+  fail=1
+fi
+if grep -rn "createServer(" src/bridge/control-ipc.ts | grep -q "listen(" ; then
+  echo "FAIL: bridge-control may bind a network port"
+  fail=1
+else
+  echo "BRIDGE_CONTROL_UNIX_SOCKET_ONLY=PASS"
+fi
+
+echo "== tool-result size bound =="
+if grep -q "MAX_TOOL_RESULT_BYTES" src/core/tool-result-bound.ts \
+  && grep -q "assertToolResultsWithinBound" src/http/openai-chat.ts \
+  && grep -q "assertToolResultsWithinBound" src/http/openai-responses.ts; then
+  echo "TOOL_RESULT_SIZE_BOUND=PASS"
+else
+  echo "FAIL: tool-result size bound not enforced on both surfaces"
+  fail=1
+fi
+
 if [ "$fail" != "0" ]; then
   echo "SECURITY_AUDIT=FAIL"
 else

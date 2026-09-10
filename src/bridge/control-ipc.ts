@@ -17,7 +17,7 @@ import { join } from "node:path";
  *  - Unix domain socket inside a per-session directory (mode 0700).
  *  - Socket file mode 0600 (current user only).
  *  - Per-session unguessable token required on the first frame.
- *  - No TCP/Internet binding; no 0.0.0.0 listener.
+ *  - No TCP/Internet binding; Unix socket only, never a wildcard-address listener.
  *  - Directory + socket removed on close (session death).
  *  - Arguments and results are never logged.
  */
