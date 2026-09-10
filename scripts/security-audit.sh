@@ -199,6 +199,31 @@ else
   fail=1
 fi
 
+echo "== provider-native execution disabled for MCP bridge providers =="
+if grep -q "disallowedTools" src/providers/claude/adapter.ts \
+  && grep -q "mcpServers" src/providers/claude/adapter.ts \
+  && grep -qF 'args.includes("--dangerously-skip-permissions")' src/providers/antigravity/adapter.ts; then
+  echo "CLAUDE_NATIVE_TOOL_EXECUTION=NONE"
+  echo "ANTIGRAVITY_NATIVE_TOOL_EXECUTION=NONE"
+else
+  echo "FAIL: native execution guard missing for a bridge provider"
+  fail=1
+fi
+
+echo "== MCP registration carries no secret =="
+# The persistent agy MCP registration must not embed the per-session token or
+# socket; the launcher discovers them from a user-only rendezvous file instead.
+if grep -q "mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, \[" src/providers/antigravity/adapter.ts \
+  && grep -q "mode: 0o600" src/bridge/session-registry.ts \
+  && grep -q "recursive: true, mode: 0o700" src/bridge/session-registry.ts \
+  && grep -q "message: \"no unique live CMM bridge session" src/bridge/mcp-bridge-launcher.ts; then
+  echo "MCP_REGISTRATION_SECRET_FREE=PASS"
+  echo "BRIDGE_SESSION_RENDEZVOUS_HARDENED=PASS"
+else
+  echo "FAIL: MCP registration or session rendezvous hardening missing"
+  fail=1
+fi
+
 if [ "$fail" != "0" ]; then
   echo "SECURITY_AUDIT=FAIL"
 else

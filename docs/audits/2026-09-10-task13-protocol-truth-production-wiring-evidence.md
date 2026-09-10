@@ -243,32 +243,32 @@ QODER_FRESH_MAC_REPRODUCIBILITY=PASS
 
 ---
 
-## 8. P0 #3/#4 — Claude and Antigravity: FOUNDATION ONLY, NOT WIRED
+## 8. P0 #3/#4 — Claude and Antigravity are wired through the real adapters
 
-**This is the principal incomplete area of this pass.**
-
-SDK inspection (0.3.266) established:
+### 8.1 SDK/CLI facts that drove the architecture
 
 - `Options.mcpServers` accepts an explicit external stdio server
-  (`McpStdioServerConfig {type:'stdio', command, args, env, timeout?, alwaysLoad?}`),
-  so a real external MCP bridge process is configurable.
+  (`McpStdioServerConfig`), so a real external MCP bridge process is configurable.
 - `SDKResultSuccess.deferred_tool_use` and `TerminalReason 'tool_deferred'` exist,
-  but there is **no SDK API to feed a deferred tool's result back**. The CLI owns
-  the loop, so `PreToolUse: defer` → resume is not a supported round-trip in this
-  SDK version.
-- The protocol-correct architecture is therefore B: keep one SDK query alive while
-  the external MCP handler parks the `tools/call`, surface the call to Qoder, then
-  release the handler with Qoder's result and keep draining the same query.
+  but there is **no SDK API to feed a deferred tool result back**. Architecture A
+  (defer + resume) is therefore not a supported round-trip in 0.3.266.
+- Chosen architecture B: keep one provider run alive while the external MCP
+  handler parks the `tools/call`, surface the call to Qoder, then release the
+  handler with Qoder's result and keep draining the SAME run.
+- `agy 1.1.28` supports MCP servers (`agy mcp add|remove|list|enable|disable`,
+  `--env KEY=value`, `--type stdio`), so Antigravity MCP tools run CLI-side and
+  the same bridge architecture applies.
 
-Delivered (verified):
+### 8.2 Shared bridge-control IPC
 
-- `src/bridge/control-ipc.ts` — Router-facing Unix-socket control channel:
-  per-session `0700` directory, `0600` socket, 32-byte unguessable per-session
-  token required on the first frame, Unix-socket only (no network bind),
-  directory + socket removed on close, arguments/results never logged.
-- `src/bridge/mcp-bridge-process.ts` — provider-facing external stdio MCP server
-  that parks `tools/call` over the control channel and returns only the
-  Router-supplied result. It performs no filesystem, shell, or edit side effect.
+`src/bridge/control-ipc.ts` — Router-facing Unix-socket control channel:
+per-session `0700` directory, `0600` socket, 32-byte unguessable per-session
+token required on the first frame, Unix-socket only (no network bind), directory
+and socket removed on close, arguments/results never logged.
+
+`src/bridge/mcp-bridge-process.ts` — provider-facing external stdio MCP server
+that parks `tools/call` over the control channel and returns only the
+Router-supplied result. It performs no filesystem, shell, or edit side effect.
 
 ```text
 CLAUDE_BRIDGE_CONTROL_IPC=PASS
@@ -277,38 +277,77 @@ BRIDGE_CONTROL_CLEANUP=PASS
 BRIDGE_CONTROL_SOCKET_HARDENED=PASS
 BRIDGE_CONTROL_UNIX_SOCKET_ONLY=PASS
 CLAUDE_EXTERNAL_BRIDGE_PROCESS=PASS
-CLAUDE_TOOL_DECLARATION=PASS
-CLAUDE_QODER_RESULT_CORRELATED=PASS
-CLAUDE_NATIVE_TOOL_EXECUTION=NONE
 ```
 
-**Not delivered:** `ClaudeAdapter.run()` is not yet wired to configure
-`mcpServers`, to race the SDK stream against the parked bridge request, or to
-resume the same logical session on the follow-up HTTP request.
-`AntigravityAdapter` is not wired at all.
+### 8.3 Claude
 
-Consequently, truthfully:
+`ClaudeAdapter.run()` configures `mcpServers.cmm_qoder` with only the caller's
+tools (`allowedTools: mcp__cmm_qoder__*`), then races SDK messages against
+parked bridge requests through the shared broker's public id. A tool call keeps
+the SDK query alive and ends the exchange with `finishReason: "tool_calls"`; the
+follow-up request resolves the bridge over the control IPC and continues the
+SAME query. Claude's native shell/file/edit tools stay disabled.
+
+`tests/providers/claude-bridge-roundtrip.test.ts` drives the real adapter, a real
+spawned bridge process, and the real control channel:
 
 ```text
-CLAUDE_ADAPTER_MCP_WIRING=FAIL
-CLAUDE_QODER_TOOL_CALL_SURFACED=PASS (bridge level) / NOT_WIRED (adapter level)
-CLAUDE_SAME_LOGICAL_SESSION_CONTINUATION=FAIL
-CLAUDE_QODER_CAPABILITY=CHAT_ONLY_BLOCKED
-ANTIGRAVITY_ADAPTER_MCP_WIRING=FAIL
-ANTIGRAVITY_QODER_CAPABILITY=CHAT_ONLY_BLOCKED
-GOOGLE_QODER_CAPABILITY=FAIL
+CLAUDE_ADAPTER_MCP_WIRING=PASS
+CLAUDE_TOOL_DECLARATION=PASS
+CLAUDE_EXTERNAL_BRIDGE_PROCESS=PASS
+CLAUDE_BRIDGE_CONTROL_IPC=PASS
+CLAUDE_QODER_TOOL_CALL_SURFACED=PASS
+CLAUDE_QODER_RESULT_CORRELATED=PASS
+CLAUDE_SAME_LOGICAL_SESSION_CONTINUATION=PASS
+CLAUDE_NATIVE_TOOL_EXECUTION=NONE
+CLAUDE_UNMATCHED_TOOL_RESULT_FAIL_CLOSED=PASS
 ```
 
-The remaining work is bounded and specified: a per-request
-`BridgeControlServer` + spawned bridge process owned by each adapter, a
-`Map<publicToolCallId, {query iterator, control server, scope}>` with TTL/bound,
-a race between SDK messages and `onToolCall`, and cleanup on
-cancel/disconnect/provider death. This is a state-machine change to two large
-adapters (~540 and ~911 lines) and was not completed in this pass.
+### 8.4 Antigravity
+
+One CMM-owned MCP server (`cmm-qoder-tools`) is registered lazily and
+idempotently — once per adapter, never per request — pointing at
+`src/bridge/mcp-bridge-launcher.ts`. The registration carries **no secrets**:
+the per-session socket and token live in a user-only (`0600`) rendezvous file
+that the launcher discovers at startup, failing closed when zero or more than
+one live session exists. `AntigravityAdapter.run()` then races agy stream events
+against parked bridge calls; the agy process stays alive across the split HTTP
+interaction and the follow-up continues the SAME run. `--dangerously-skip-permissions`
+and agy's native `run_command`/`replace_file_content`/`write_to_file` are never
+used for Qoder-owned tools.
+
+`tests/providers/antigravity-bridge-roundtrip.test.ts` drives the real adapter
+with a fake agy that speaks the observable protocol and acts as the MCP client:
+
+```text
+ANTIGRAVITY_ADAPTER_MCP_WIRING=PASS
+ANTIGRAVITY_EXTERNAL_BRIDGE_PROCESS=PASS
+ANTIGRAVITY_MCP_TOOL_REQUEST_RECEIVED=PASS
+ANTIGRAVITY_QODER_TOOL_CALL_SURFACED=PASS
+ANTIGRAVITY_QODER_RESULT_CORRELATED=PASS
+ANTIGRAVITY_SAME_RUN_CONTINUATION=PASS
+ANTIGRAVITY_NATIVE_FILESYSTEM_EXECUTION=NONE
+ANTIGRAVITY_NATIVE_SHELL_EXECUTION=NONE
+MCP_REGISTRATION_SECRET_FREE=PASS
+BRIDGE_SESSION_RENDEZVOUS_HARDENED=PASS
+```
+
+### 8.5 Truthful residual limitation
+
+The only unverified step for Antigravity is that the **installed `agy` CLI
+actually invokes registered MCP tools during a headless `--print` run**. Every
+Router-side component is deterministic and proven above, but that single
+provider-side behaviour cannot be established without a model turn. The exact
+single probe required (NOT run in this phase, per the live-test policy):
+
+```bash
+# after: agy mcp add ... cmm-qoder-tools  (registered by the adapter)
+agy --print "use the cmm_echo tool with text=canary" --output-format stream-json \
+  --model <slug> --mode plan --sandbox
+# expected: an MCP tools/call reaches the Router control channel
+```
 
 No live provider inference was run.
-
----
 
 ## 9. Regression protection and gate
 
@@ -320,14 +359,14 @@ binding, consumer capability policy, CMMChat CHAT_ONLY, logging hygiene.
 Final gate (this pass, working tree at the commits below):
 
 ```text
-TEST_RUN_1_RC=0     (481 passed, 25 skipped)
+TEST_RUN_1_RC=0     (485 passed, 25 skipped, 98 files)
 TEST_RUN_2_RC=0
 TEST_RUN_3_RC=0
 TYPECHECK_RC=0
 BUILD_RC=0
 POST_BUILD_TEST_RC=0
-SECURITY_AUDIT_RC=0
-TASK13_NEW_SUITES=11 files / 32 tests, all passing (run explicitly by path)
+SECURITY_AUDIT_RC=0  (23 PASS markers)
+TASK13_NEW_SUITES=13 files / 36 tests, all passing (run explicitly by path)
 LIVE_TOOL_ACCEPTANCE_RUN=NO
 ```
 
@@ -355,18 +394,25 @@ b0822fd fix: forward Command Code OpenAI tool controls
 38792b6 feat: add secure external MCP bridge control transport
 4b84065 security: harden production Qoder tool ownership invariants
 23cdbd8 test: make bridge-control tests poll instead of fixed sleeps
+309f279 docs: add Task 13 protocol truth production wiring evidence
+8f7e70a feat: wire Claude Qoder tool bridge into the adapter
+e6e3384 feat: wire Antigravity Qoder tool bridge into the adapter
 ```
-
----
 
 ## 11. Known limitations
 
-1. Claude and Antigravity adapters are not wired; both remain `CHAT_ONLY_BLOCKED`
-   for the Qoder consumer. GLOBAL Task 13 is therefore **not** PASS.
-2. The cancellation matrix is proven for the Codex production path and the broker
-   core; the equivalent matrix for Claude/Antigravity is not applicable until
-   those adapters are wired.
+1. Antigravity's provider-side behaviour (that the installed `agy` invokes
+   registered MCP tools during a headless `--print` run) is unverified without a
+   model turn. The exact single probe is documented in §8.5 and was not run.
+2. The MCP bridge supports one parked call per live session. A second concurrent
+   `tools/call` on the same session is refused with a protocol error rather than
+   silently dropped; parallel tool calls within a single provider turn are not
+   modelled.
 3. Codex experimental APIs are version-pinned to 0.153.4; the tracked fixture and
    provenance record the exact command and version.
-4. No live provider inference was performed in this phase
+4. The production cancellation matrix is proven for the Codex production path and
+   the broker core, plus session release on cancel for Claude and Antigravity.
+   Exhaustive per-scenario HTTP-level matrices for the two MCP providers are not
+   separately enumerated.
+5. No live provider inference was performed in this phase
    (`LIVE_TOOL_ACCEPTANCE_RUN=NO`).
