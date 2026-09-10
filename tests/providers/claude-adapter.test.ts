@@ -25,10 +25,14 @@ describe("ClaudeAdapter", () => {
       expect(models[0]?.displayName).toBeDefined();
     });
 
-    it("all models have CHAT_ONLY capability", async () => {
+    it("all models are CHAT_AND_TOOLS via the Qoder-owned MCP bridge", async () => {
       const models = await adapter.discoverModels();
       for (const model of models) {
-        expect(model.capability).toBe("CHAT_ONLY");
+        // The external MCP bridge round-trip is wired into the production
+        // adapter (see claude-bridge-roundtrip.test.ts), so Claude is
+        // truthfully tool-capable for the Qoder consumer. Claude's native
+        // shell/file/edit tools remain disabled.
+        expect(model.capability).toBe("CHAT_AND_TOOLS");
       }
     });
   });

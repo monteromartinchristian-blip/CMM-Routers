@@ -96,9 +96,13 @@ export async function createProductionRegistry(
     // Explicit runtime injection: the adapter builds its isolated SDK env
     // from this value per request. No global process.env mutation — the
     // configured profile is effective even though sdk-client was imported
-    // long before this factory runs.
+    // long before this factory runs. The shared broker backs the
+    // cross-request Qoder tool correlation held across the HTTP split.
     const profileDir = resolveClaudeProfileDir(resolved);
-    const adapter = new ClaudeAdapter(profileDir ? { profileDir } : {});
+    const adapter = new ClaudeAdapter({
+      ...(profileDir ? { profileDir } : {}),
+      broker: toolBroker,
+    });
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {

@@ -1,9 +1,83 @@
 import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/provider.js";
-import type { DiscoveredModel } from "../../core/model.js";
+import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import { spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
+import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
+
+/** Injection seams: production uses the real SDK query and a real spawn. */
+type QueryFn = typeof query;
+type SpawnFn = typeof spawn;
+
+/** Simple async hand-off queue used to race tool calls against SDK messages. */
+class AsyncQueue<T> {
+  private readonly items: T[] = [];
+  private readonly waiters: Array<(value: T) => void> = [];
+
+  push(value: T): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(value);
+    else this.items.push(value);
+  }
+
+  next(): Promise<T> {
+    const item = this.items.shift();
+    if (item !== undefined) return Promise.resolve(item);
+    return new Promise<T>((resolve) => this.waiters.push(resolve));
+  }
+}
+
+/**
+ * A live Claude SDK query held across the split HTTP interaction while its
+ * external MCP handler is parked waiting for Qoder's result. The Router keeps
+ * consuming the SAME query on the follow-up request: no new session, no
+ * textual history reconstruction.
+ */
+interface LiveClaudeSession {
+  sessionKey: string;
+  /** Router request that opened this SDK query (for cancellation scoping). */
+  requestId: string;
+  iterator: AsyncIterator<unknown>;
+  inflight: Promise<IteratorResult<unknown>> | undefined;
+  toolCalls: AsyncQueue<BridgeToolRequest>;
+  toolCallPromise: Promise<BridgeToolRequest> | undefined;
+  control: BridgeControlServer;
+  bridge: ChildProcess;
+  abortController: AbortController;
+  sawPartialDelta: boolean;
+  usageYielded: boolean;
+  /** Bridge request id currently parked with the Router (one at a time). */
+  parkedRequestId: string | undefined;
+  /** Public id handed to Qoder for the parked call. */
+  publicToolCallId: string | undefined;
+}
+
+
+/**
+ * Absolute path to the compiled external MCP bridge entry point. Production
+ * runs from dist/, so the bridge is a sibling of the compiled adapter.
+ */
+export function defaultBridgeEntryPath(): string {
+  return fileURLToPath(new URL("../../bridge/mcp-bridge-process.js", import.meta.url));
+}
+
+/**
+ * Qoder tool definitions as the external MCP bridge exposes them. Only the
+ * caller's tools are exposed — nothing native, nothing implicit.
+ */
+export function bridgeToolDefinitions(
+  tools: RouterTool[],
+): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    ...(tool.function.description !== undefined ? { description: tool.function.description } : {}),
+    inputSchema: tool.function.parameters ?? {},
+  }));
+}
 
 /**
  * Extract incremental text from an SDKPartialAssistantMessage frame.
@@ -71,10 +145,36 @@ export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
 
   private activeRequests = new Map<string, { abortController?: AbortController }>();
+  /** Live tool-capable sessions, keyed by Router-generated public tool-call id. */
+  private readonly sessions = new Map<string, LiveClaudeSession>();
   private readonly profileDir: string | undefined;
+  private readonly broker: DeferredToolBroker;
+  private readonly queryFn: QueryFn;
+  private readonly spawnFn: SpawnFn;
+  private readonly bridgeEntryPath: string;
+  private readonly bridgeCommand: string;
 
-  constructor(options: { profileDir?: string | undefined } = {}) {
+  constructor(
+    options: {
+      profileDir?: string | undefined;
+      broker?: DeferredToolBroker | undefined;
+      queryFn?: QueryFn | undefined;
+      spawnFn?: SpawnFn | undefined;
+      bridgeEntryPath?: string | undefined;
+      bridgeCommand?: string | undefined;
+    } = {},
+  ) {
     this.profileDir = options.profileDir;
+    this.broker = options.broker ?? new DeferredToolBroker();
+    this.queryFn = options.queryFn ?? query;
+    this.spawnFn = options.spawnFn ?? spawn;
+    this.bridgeEntryPath = options.bridgeEntryPath ?? defaultBridgeEntryPath();
+    this.bridgeCommand = options.bridgeCommand ?? process.execPath;
+  }
+
+  /** Live tool sessions held across the HTTP split (test/diagnostic accessor). */
+  activeToolSessions(): number {
+    return this.sessions.size;
   }
 
   private effectiveProfileDir(): string {
@@ -165,7 +265,10 @@ export class ClaudeAdapter implements ProviderAdapter {
           provider: "claude",
           upstreamModel: modelValue,
           displayName: modelInfo.displayName || modelValue,
-          capability: "CHAT_ONLY",
+          // Qoder-owned tools traverse the external MCP bridge held open across
+          // the split HTTP interaction; the Router never executes the tool and
+          // Claude's native shell/file/edit tools stay disabled.
+          capability: "CHAT_AND_TOOLS",
         });
       }
 
@@ -256,6 +359,255 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
+  /** Map an arbitrary thrown value to a RouterError without leaking content. */
+  private toRouterError(error: unknown): RouterError {
+    if (error instanceof RouterError) return error;
+    const err = error as Error;
+    let code: "provider_protocol_error" | "provider_auth_required" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_timeout" =
+      "provider_protocol_error";
+    let message = err?.message ?? String(error);
+    if (message.includes("auth") || message.includes("login")) {
+      code = "provider_auth_required";
+      message = `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`;
+    } else if (message.includes("quota") || message.includes("usage limit")) {
+      code = "provider_quota_exhausted";
+    } else if (message.includes("rate limit")) {
+      code = "provider_rate_limited";
+    } else if (err?.name === "AbortError") {
+      code = "provider_timeout";
+      message = "Request timed out or was cancelled";
+    }
+    return new RouterError(code, message);
+  }
+
+  /**
+   * Map one SDK stream message to RouterEvents. Returns true when the message
+   * is terminal (result received) so the caller stops draining.
+   */
+  private *processSdkMessage(
+    message: unknown,
+    state: { sawPartialDelta: boolean; usageYielded: boolean },
+  ): Generator<RouterEvent, boolean, void> {
+    const typed = message as {
+      type?: string;
+      event?: unknown;
+      message?: { content?: Array<{ type: string; text?: string }>; usage?: unknown };
+      subtype?: string;
+      errors?: string[];
+      usage?: unknown;
+      stop_reason?: string;
+    };
+    if (typed.type === "stream_event") {
+      const text = extractStreamEventText(typed.event);
+      if (text) {
+        state.sawPartialDelta = true;
+        yield { type: "text_delta", text };
+      }
+      return false;
+    }
+    if (typed.type === "assistant") {
+      const contentBlocks = typed.message?.content ?? [];
+      for (const block of contentBlocks) {
+        if (block.type === "text" && !state.sawPartialDelta && block.text) {
+          yield { type: "text_delta", text: block.text };
+        }
+      }
+      const usage = typed.message?.usage as
+        | { input_tokens?: number; output_tokens?: number }
+        | undefined;
+      if (usage && !state.usageYielded) {
+        state.usageYielded = true;
+        const usageEvent: RouterEvent = { type: "usage" };
+        if (typeof usage.input_tokens === "number") {
+          (usageEvent as { inputTokens?: number }).inputTokens = usage.input_tokens;
+        }
+        if (typeof usage.output_tokens === "number") {
+          (usageEvent as { outputTokens?: number }).outputTokens = usage.output_tokens;
+        }
+        yield usageEvent;
+      }
+      return false;
+    }
+    if (typed.type === "result") {
+      if (typed.subtype === "success") {
+        let finishReason: "stop" | "tool_calls" | "length" = "stop";
+        if (typed.stop_reason === "max_tokens") finishReason = "length";
+        else if (typed.stop_reason === "tool_use") finishReason = "tool_calls";
+        const resultUsage = typed.usage as
+          | { input_tokens?: number; output_tokens?: number }
+          | undefined;
+        if (resultUsage && !state.usageYielded) {
+          state.usageYielded = true;
+          const usageEvent: RouterEvent = { type: "usage" };
+          if (typeof resultUsage.input_tokens === "number") {
+            (usageEvent as { inputTokens?: number }).inputTokens = resultUsage.input_tokens;
+          }
+          if (typeof resultUsage.output_tokens === "number") {
+            (usageEvent as { outputTokens?: number }).outputTokens = resultUsage.output_tokens;
+          }
+          yield usageEvent;
+        }
+        yield { type: "completed", finishReason };
+        return true;
+      }
+      if (typed.subtype?.startsWith("error")) {
+        const errorMessage = (typed.errors ?? []).join("; ") || "Unknown SDK error";
+        yield { type: "error", error: this.mapSdkErrorMessage(errorMessage) };
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Map one SDK stream message to RouterEvents, reusing the shared mapping. */
+  private async *drainPlain(
+    iterator: AsyncIterator<unknown>,
+    signal: AbortSignal,
+    abortController: AbortController,
+  ): AsyncIterable<RouterEvent> {
+    const state = { sawPartialDelta: false, usageYielded: false };
+    const iterable: AsyncIterable<unknown> = { [Symbol.asyncIterator]: () => iterator };
+    for await (const message of iterable) {
+      if (signal.aborted || abortController.signal.aborted) return;
+      const terminal = yield* this.processSdkMessage(message, state);
+      if (terminal) return;
+    }
+    if (signal.aborted || abortController.signal.aborted) return;
+    throw new RouterError("provider_protocol_error", "SDK stream ended without completion event");
+  }
+
+  /** Release a live session: control channel, bridge process, broker entry. */
+  private async closeSession(session: LiveClaudeSession): Promise<void> {
+    if (session.publicToolCallId !== undefined) {
+      this.sessions.delete(session.publicToolCallId);
+      this.broker.cancelScope({ provider: "claude", sessionId: session.sessionKey });
+      session.publicToolCallId = undefined;
+    }
+    try {
+      if (!session.bridge.killed) session.bridge.kill();
+    } catch {
+      // A bridge that already exited needs no further action.
+    }
+    await session.control.close().catch(() => undefined);
+  }
+
+  /**
+   * Park a Qoder-owned tool call: surface it to the consumer and keep the SDK
+   * query alive so the follow-up resolves the SAME logical session. The Router
+   * never executes the tool.
+   */
+  private async *parkToolCall(
+    session: LiveClaudeSession,
+    request: BridgeToolRequest,
+  ): AsyncIterable<RouterEvent> {
+    if (session.parkedRequestId !== undefined) {
+      // One parked call per session: a second concurrent MCP call is refused
+      // rather than silently dropped.
+      session.control.reject(request.id, "concurrent tool calls are not supported");
+      await this.closeSession(session);
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Concurrent Claude MCP tool calls are not supported",
+        ),
+      };
+      return;
+    }
+    const publicId = createPublicToolCallId("claude");
+    session.parkedRequestId = request.id;
+    session.publicToolCallId = publicId;
+    try {
+      this.broker.createPendingCall<LiveClaudeSession>(
+        {
+          consumer: "qoder",
+          provider: "claude",
+          sessionId: session.sessionKey,
+          toolCallId: publicId,
+          publicToolCallId: publicId,
+        },
+        undefined,
+        undefined,
+        session,
+      );
+    } catch (error) {
+      session.parkedRequestId = undefined;
+      session.publicToolCallId = undefined;
+      session.control.reject(request.id, "router could not park the tool call");
+      await this.closeSession(session);
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_protocol_error", "Router could not park the tool call"),
+      };
+      return;
+    }
+    this.sessions.set(publicId, session);
+    yield {
+      type: "tool_call_delta",
+      index: 0,
+      id: publicId,
+      name: request.name,
+      argumentsDelta: JSON.stringify(request.input ?? {}),
+    };
+    yield { type: "completed", finishReason: "tool_calls" };
+  }
+
+  /**
+   * Drive a live tool-capable session: race SDK messages against parked bridge
+   * tool calls. On a tool call the session is left alive (the SDK query keeps
+   * running) and the current HTTP exchange ends with finishReason "tool_calls".
+   */
+  private async *drainSession(
+    session: LiveClaudeSession,
+    signal: AbortSignal,
+  ): AsyncIterable<RouterEvent> {
+    const state = { sawPartialDelta: session.sawPartialDelta, usageYielded: session.usageYielded };
+    try {
+      while (true) {
+        if (signal.aborted || session.abortController.signal.aborted) {
+          await this.closeSession(session);
+          return;
+        }
+        session.inflight ??= session.iterator.next();
+        session.toolCallPromise ??= session.toolCalls.next();
+        const outcome = await Promise.race([
+          session.inflight.then((r) => ({ kind: "sdk" as const, r })),
+          session.toolCallPromise.then((tc) => ({ kind: "tool" as const, tc })),
+        ]);
+        if (outcome.kind === "tool") {
+          session.toolCallPromise = undefined;
+          session.sawPartialDelta = state.sawPartialDelta;
+          session.usageYielded = state.usageYielded;
+          yield* this.parkToolCall(session, outcome.tc);
+          return;
+        }
+        session.inflight = undefined;
+        const { value, done } = outcome.r;
+        if (done) {
+          await this.closeSession(session);
+          if (signal.aborted || session.abortController.signal.aborted) return;
+          throw new RouterError(
+            "provider_protocol_error",
+            "SDK stream ended without completion event",
+          );
+        }
+        const terminal = yield* this.processSdkMessage(value, state);
+        session.sawPartialDelta = state.sawPartialDelta;
+        session.usageYielded = state.usageYielded;
+        if (terminal) {
+          await this.closeSession(session);
+          return;
+        }
+      }
+    } catch (error) {
+      await this.closeSession(session);
+      throw error;
+    }
+  }
+
   /**
    * Execute a Claude request using the official SDK with isolated environment.
    * Yields RouterEvents incrementally as SDK messages arrive — deltas are
@@ -265,6 +617,41 @@ export class ClaudeAdapter implements ProviderAdapter {
     request: RouterRequest,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
+    // Follow-up carrying Qoder's executed tool result: release the parked
+    // external MCP handler and keep draining the SAME SDK query. This is the
+    // cross-request continuation; no new session is opened.
+    const toolResults = request.messages.filter(
+      (message) => message.role === "tool" && typeof message.toolCallId === "string",
+    );
+    if (toolResults.length > 0) {
+      for (const result of toolResults) {
+        const publicId = result.toolCallId as string;
+        const claim = this.broker.claimByPublicToolCallId<LiveClaudeSession>(publicId);
+        if (claim.outcome !== "resolved" || !claim.context) continue;
+        const session = claim.context;
+        this.sessions.delete(publicId);
+        session.publicToolCallId = undefined;
+        if (session.parkedRequestId !== undefined) {
+          session.control.resolve(session.parkedRequestId, result.content ?? "");
+          session.parkedRequestId = undefined;
+        }
+        try {
+          yield* this.drainSession(session, signal);
+        } catch (error) {
+          yield { type: "error", error: this.toRouterError(error) };
+        }
+        return;
+      }
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Claude tool result does not match any pending Qoder tool call",
+        ),
+      };
+      return;
+    }
+
     // Track active request for cancellation
     const abortController = new AbortController();
     this.activeRequests.set(request.requestId, { abortController });
@@ -294,6 +681,40 @@ export class ClaudeAdapter implements ProviderAdapter {
           };
         }
       })();
+
+      // External MCP bridge: the provider-facing MCP server runs in its own
+      // process and can never call back into this process directly. It parks
+      // each tools/call over the Router-facing bridge-control IPC instead.
+      let control: BridgeControlServer | undefined;
+      let bridge: ChildProcess | undefined;
+      let toolCalls: AsyncQueue<BridgeToolRequest> | undefined;
+      let mcpServers: Options["mcpServers"];
+      if (request.tools.length > 0) {
+        toolCalls = new AsyncQueue<BridgeToolRequest>();
+        const queue = toolCalls;
+        control = await BridgeControlServer.listen({ onToolCall: (r) => queue.push(r) });
+        const bridgeEnv = {
+          PATH: process.env.PATH ?? "",
+          CMM_BRIDGE_SOCKET: control.socketPath,
+          CMM_BRIDGE_TOKEN: control.token,
+          CMM_BRIDGE_SERVER_NAME: "cmm_qoder",
+          CMM_BRIDGE_TOOLS: JSON.stringify(bridgeToolDefinitions(request.tools)),
+        };
+        bridge = this.spawnFn(this.bridgeCommand, [this.bridgeEntryPath], {
+          stdio: ["pipe", "pipe", "inherit"],
+          env: { ...process.env, ...bridgeEnv },
+        });
+        mcpServers = {
+          cmm_qoder: {
+            type: "stdio",
+            command: this.bridgeCommand,
+            args: [this.bridgeEntryPath],
+            env: bridgeEnv,
+            // Tools must be present when the turn-1 prompt is built.
+            alwaysLoad: true,
+          },
+        };
+      }
 
       // Configure SDK options with tool restrictions
       const sdkOptions: Options = {
@@ -332,121 +753,44 @@ export class ClaudeAdapter implements ProviderAdapter {
         ],
         // Set permission mode to auto (tools are disabled above so no risk)
         permissionMode: "auto",
+        // Qoder-owned tools are the ONLY extra capability: the external MCP
+        // bridge exposes exactly the caller's tools and nothing else.
+        ...(mcpServers !== undefined ? { mcpServers } : {}),
+        ...(request.tools.length > 0
+          ? { allowedTools: request.tools.map((tool) => `mcp__cmm_qoder__${tool.function.name}`) }
+          : {}),
       };
 
-      // Execute query with SDK
-      const queryResult: Query = query({
+      // Execute query with SDK (injected seam; production uses the real query).
+      const queryResult: Query = this.queryFn({
         prompt,
         options: sdkOptions,
       });
+      const iterator = (queryResult as AsyncIterable<unknown>)[Symbol.asyncIterator]();
 
-      let usageYielded = false;
-      // Once a partial text delta has been emitted, the trailing complete
-      // assistant message repeats the same text and must not be re-emitted.
-      let sawPartialDelta = false;
-
-      // Stream SDK messages and map to RouterEvents incrementally.
-      for await (const message of queryResult) {
-        if (signal.aborted || abortController.signal.aborted) {
-          return;
-        }
-        if (message.type === "stream_event") {
-          const text = extractStreamEventText(
-            (message as { event?: unknown }).event,
-          );
-          if (text) {
-            sawPartialDelta = true;
-            yield { type: "text_delta", text };
-          }
-          continue;
-        }
-        if (message.type === "assistant") {
-          // Extract text content from assistant message
-          const contentBlocks = message.message?.content || [];
-          for (const block of contentBlocks) {
-            if (block.type === "text" && !sawPartialDelta) {
-              const text = block.text;
-              if (text) {
-                yield { type: "text_delta", text };
-              }
-            }
-          }
-
-          // Collect usage if present (may come before stop_reason in streaming)
-          const usage = message.message?.usage as
-            | { input_tokens?: number; output_tokens?: number }
-            | undefined;
-          if (usage && !usageYielded) {
-            usageYielded = true;
-            const usageEvent: RouterEvent = { type: "usage" };
-            if (typeof usage.input_tokens === "number") {
-              (usageEvent as { inputTokens?: number }).inputTokens = usage.input_tokens;
-            }
-            if (typeof usage.output_tokens === "number") {
-              (usageEvent as { outputTokens?: number }).outputTokens = usage.output_tokens;
-            }
-            yield usageEvent;
-          }
-        } else if (message.type === "result") {
-          const resultMessage = message as {
-            subtype?: string;
-            errors?: string[];
-            usage?: { input_tokens?: number; output_tokens?: number };
-          };
-
-          if (resultMessage.subtype === "success") {
-            // Successful completion - map stop reason to finish reason.
-            const stopReason = (resultMessage as { stop_reason?: string }).stop_reason;
-            let finishReason: "stop" | "tool_calls" | "length" = "stop";
-            if (stopReason === "max_tokens") {
-              finishReason = "length";
-            } else if (stopReason === "tool_use") {
-              finishReason = "tool_calls";
-            }
-
-            const resultUsage = resultMessage.usage as
-              | { input_tokens?: number; output_tokens?: number }
-              | undefined;
-            if (resultUsage && !usageYielded) {
-              usageYielded = true;
-              const usageEvent: RouterEvent = { type: "usage" };
-              if (typeof resultUsage.input_tokens === "number") {
-                (usageEvent as { inputTokens?: number }).inputTokens = resultUsage.input_tokens;
-              }
-              if (typeof resultUsage.output_tokens === "number") {
-                (usageEvent as { outputTokens?: number }).outputTokens = resultUsage.output_tokens;
-              }
-              yield usageEvent;
-            }
-
-            yield {
-              type: "completed",
-              finishReason,
-            };
-            return;
-          } else if (resultMessage.subtype?.startsWith("error")) {
-            // Handle result error messages
-            const errorMessages = resultMessage.errors || [];
-            const errorMessage = errorMessages.join("; ") || "Unknown SDK error";
-
-            const error = this.mapSdkErrorMessage(errorMessage);
-            yield { type: "error", error };
-            return;
-          }
-        }
-      }
-
-      // If we get here without explicit completion, check if aborted
-      if (signal.aborted || abortController.signal.aborted) {
-        // Cancellation - don't treat as error
+      // Tool-capable run: hold a live session so a parked external MCP call can
+      // be resolved on the follow-up request without opening a new session.
+      if (control !== undefined && bridge !== undefined && toolCalls !== undefined) {
+        const session: LiveClaudeSession = {
+          sessionKey: request.requestId,
+          requestId: request.requestId,
+          iterator,
+          inflight: undefined,
+          toolCalls,
+          toolCallPromise: undefined,
+          control,
+          bridge,
+          abortController,
+          sawPartialDelta: false,
+          usageYielded: false,
+          parkedRequestId: undefined,
+          publicToolCallId: undefined,
+        };
+        yield* this.drainSession(session, signal);
         return;
       }
 
-      // No completion event received - this shouldn't happen
-      throw new RouterError(
-        "provider_protocol_error",
-        "SDK stream ended without completion event",
-      );
+      yield* this.drainPlain(iterator, signal, abortController);
     } catch (error) {
       if (signal.aborted || abortController.signal.aborted) {
         // Cancellation - don't treat as error
@@ -488,6 +832,16 @@ export class ClaudeAdapter implements ProviderAdapter {
    * Cancel an active request using AbortController.
    */
   async cancel(requestId: string): Promise<void> {
+    // Release any live tool session opened by this request: the parked bridge
+    // handler, its control socket, and its bridge process are all torn down.
+    for (const [publicId, session] of [...this.sessions]) {
+      if (session.requestId === requestId) {
+        this.sessions.delete(publicId);
+        session.publicToolCallId = undefined;
+        await this.closeSession(session);
+      }
+    }
+
     const activeRequest = this.activeRequests.get(requestId);
     if (!activeRequest) {
       return;

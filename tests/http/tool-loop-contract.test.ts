@@ -120,24 +120,25 @@ describe("externally-owned tool round-trip contract (mocked, no live quota)", ()
   });
 
   it("capability declarations are wire-truthful per provider", async () => {
-    // Codex and Command Code (OpenAI wire) have deterministic structured
-    // Qoder-owned round-trips (mocked E2E) → CHAT_AND_TOOLS. Claude and
-    // Antigravity do not expose a host-owned external-tool channel on the
-    // installed interfaces → they remain CHAT_ONLY, reported BLOCKED for the
-    // Qoder CHAT_AND_TOOLS requirement with evidence in the Task 13 report
-    // (a truthful FAIL is preferred over a fake PASS).
+    // Codex (experimental dynamicTools), Command Code (both wires) and Claude
+    // (external stdio MCP bridge held open across the split HTTP interaction)
+    // have deterministic structured Qoder-owned round-trips → CHAT_AND_TOOLS.
+    // Antigravity does not yet have the bridge wired into its adapter → it
+    // remains CHAT_ONLY, reported BLOCKED for the Qoder requirement with
+    // evidence in the Task 13 report (a truthful FAIL is preferred over a
+    // fake PASS).
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const read = (file: string): string =>
       readFileSync(join(import.meta.dirname, "../../", file), "utf-8");
     expect(read("src/providers/codex/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
     expect(read("src/providers/command-code/adapter.ts")).toContain('"CHAT_AND_TOOLS"');
-    expect(read("src/providers/claude/adapter.ts")).toContain('capability: "CHAT_ONLY"');
+    expect(read("src/providers/claude/adapter.ts")).toContain('capability: "CHAT_AND_TOOLS"');
     expect(read("src/providers/antigravity/adapter.ts")).toContain('capability: "CHAT_ONLY"');
     console.log("CAPABILITY_MATRIX_TRUTHFUL=YES");
     console.log("CODEX_QODER_CAPABILITY=CHAT_AND_TOOLS");
     console.log("COMMAND_CODE_QODER_CAPABILITY=CHAT_AND_TOOLS");
-    console.log("CLAUDE_QODER_CAPABILITY=CHAT_ONLY_BLOCKED");
+    console.log("CLAUDE_QODER_CAPABILITY=CHAT_AND_TOOLS");
     console.log("ANTIGRAVITY_QODER_CAPABILITY=CHAT_ONLY_BLOCKED");
   });
 });
