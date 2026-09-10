@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -129,6 +129,47 @@ describe("preflight provider-aware fail-closed matrix", () => {
       expect(output).toContain("CHATGPT_PROVIDER=ENABLED");
       expect(output).toContain("CODEX_BINARY=UNAVAILABLE");
       expect(rc).not.toBe(0);
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts ChatGPT auth status emitted by Codex on stderr", () => {
+    writeShared(dir, {
+      chatgpt: { enabled: true },
+      claude: { enabled: false },
+      google: { enabled: false },
+      "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
+    });
+
+    const fakeBin = mkdtempSync(join(tmpdir(), "cmm-fakebin-codex-stderr-"));
+    try {
+      symlinkSync(process.execPath, join(fakeBin, "node"));
+
+      const fakeCodex = join(fakeBin, "codex");
+      writeFileSync(
+        fakeCodex,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "login" ] && [ "$2" = "status" ]; then',
+          '  echo "Logged in using ChatGPT" >&2',
+          "  exit 0",
+          "fi",
+          "exit 2",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(fakeCodex, 0o755);
+
+      const { rc, output } = runPreflight({
+        CMM_CONFIG_DIR: dir,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+      });
+
+      expect(output).toContain("CODEX_CHATGPT_AUTH=READY");
+      expect(output).toContain("PREFLIGHT=PASS");
+      expect(rc).toBe(0);
+      console.log("CODEX_CHATGPT_AUTH_STDERR_STATUS=PASS");
     } finally {
       rmSync(fakeBin, { recursive: true, force: true });
     }

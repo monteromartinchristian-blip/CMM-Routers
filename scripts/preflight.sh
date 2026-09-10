@@ -99,7 +99,7 @@ echo "CHATGPT_PROVIDER=$(enabled_label "$CHATGPT_ENABLED")"
 if [ "$CHATGPT_ENABLED" = "1" ]; then
   if command -v codex >/dev/null 2>&1; then
     echo "CODEX_BINARY=PASS"
-    if codex login status 2>/dev/null | grep -qi "logged in"; then
+    if codex login status 2>&1 | grep -qi "logged in"; then
       echo "CODEX_CHATGPT_AUTH=READY"
     else
       echo "CODEX_CHATGPT_AUTH=AUTH_REQUIRED"
