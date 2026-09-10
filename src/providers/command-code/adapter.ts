@@ -243,9 +243,9 @@ export class CommandCodeAdapter implements ProviderAdapter {
             ? { maxOutputTokens: request.maxOutputTokens as number }
             : {}),
           ...(upstreamTools !== undefined ? { tools: upstreamTools as unknown[] } : {}),
-          ...(request.toolChoice !== undefined ? { tool_choice: request.toolChoice } : {}),
+          ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
           ...(request.parallelToolCalls !== undefined
-            ? { parallel_tool_calls: request.parallelToolCalls }
+            ? { parallelToolCalls: request.parallelToolCalls }
             : {}),
         },
       );

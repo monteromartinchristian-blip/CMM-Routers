@@ -614,22 +614,28 @@ export class CommandCodeClient {
     model: string,
     messages: CommandCodeChatMessage[],
     signal: AbortSignal,
-    options: { maxOutputTokens?: number | undefined; tools?: unknown[] | undefined } = {},
+    options: {
+      maxOutputTokens?: number | undefined;
+      tools?: unknown[] | undefined;
+      toolChoice?: unknown;
+      parallelToolCalls?: boolean | undefined;
+    } = {},
   ): AsyncGenerator<string, void> {
+    const extra: Record<string, unknown> = {};
+    if (options.maxOutputTokens !== undefined) extra.max_tokens = options.maxOutputTokens;
+    if (options.tools !== undefined) extra.tools = options.tools;
+    // Provider control semantics must reach the wire, never be silently dropped.
+    if (options.toolChoice !== undefined) extra.tool_choice = options.toolChoice;
+    if (options.parallelToolCalls !== undefined) {
+      extra.parallel_tool_calls = options.parallelToolCalls;
+    }
     yield* this.streamPath(
       OPENAI_CHAT_COMPLETIONS_PATH,
       "POST /chat/completions",
       model,
       messages,
       signal,
-      options.tools !== undefined || options.maxOutputTokens !== undefined
-        ? {
-            ...(options.maxOutputTokens !== undefined
-              ? { max_tokens: options.maxOutputTokens }
-              : {}),
-            ...(options.tools !== undefined ? { tools: options.tools } : {}),
-          }
-        : undefined,
+      Object.keys(extra).length > 0 ? extra : undefined,
     );
   }
 
