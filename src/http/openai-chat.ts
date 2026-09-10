@@ -11,6 +11,7 @@ import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
+import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
@@ -306,6 +307,12 @@ export function registerChatCompletions(
       return reply
         .code(400)
         .send({ error: { type: "invalid_request", message: "messages must be a non-empty array" } });
+    }
+    try {
+      assertToolResultsWithinBound(messages);
+    } catch (error) {
+      const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
     const tools = parseTools(body.tools);

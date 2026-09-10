@@ -44,6 +44,10 @@ export function resolveConsumerId(
 export function buildServer(options: ServerOptions): FastifyInstance {
   const fastify = Fastify({
     logger: false,
+    // Headroom over the 1 MiB tool-result policy so an at-bound result plus
+    // its JSON envelope is not rejected by the framework first; the explicit
+    // tool-result bound (core/tool-result-bound.ts) is the binding policy.
+    bodyLimit: 2 * 1024 * 1024,
   });
 
   // Bearer auth pre-handler for /v1/* routes. Two configured server-side

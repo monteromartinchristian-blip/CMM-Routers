@@ -5,6 +5,7 @@ import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools } from "./openai-chat.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
+import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -219,6 +220,12 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
     }
+    try {
+      assertToolResultsWithinBound(messages);
+    } catch (error) {
+      const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
 
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
@@ -321,7 +328,12 @@ export function registerResponsesApi(
               : []),
             ...functionCalls.map((call) => ({
               type: "function_call",
-              id: call.id,
+              // Responses distinguishes the output item id from the call id used
+              // to submit function_call_output. Both are emitted; the item id is
+              // the canonical `fc_`-prefixed form and the call id is preserved
+              // verbatim so the continuation round-trips exactly.
+              id: `fc_${call.id}`,
+              call_id: call.id,
               name: call.name,
               arguments: call.arguments,
             })),
@@ -343,7 +355,13 @@ export function registerResponsesApi(
 
     try {
       send("response.created", { id: responseId, object: "response", model: model.id, status: "in_progress" });
-      let itemIndex = 0;
+      let nextOutputIndex = 0;
+      let textItemIndex: number | undefined;
+      // Canonical function-call item lifecycle, keyed by upstream tool index.
+      const pendingCalls = new Map<
+        number,
+        { itemId: string; callId: string; name: string; args: string; outputIndex: number }
+      >();
       const tracked = trackProviderStream(
         usageStore,
         requestId,
@@ -359,15 +377,64 @@ export function registerResponsesApi(
           break;
         }
         if (typed.type === "text_delta") {
-          send("response.output_text.delta", { item_id: `msg-${itemIndex}`, delta: typed.text });
+          if (textItemIndex === undefined) textItemIndex = nextOutputIndex++;
+          send("response.output_text.delta", { item_id: `msg-${textItemIndex}`, delta: typed.text });
         } else if (typed.type === "tool_call_delta") {
+          const index = typed.index ?? 0;
+          let call = pendingCalls.get(index);
+          if (call === undefined) {
+            call = {
+              itemId: `fc_${typed.id}`,
+              callId: typed.id,
+              name: typed.name ?? "",
+              args: "",
+              outputIndex: nextOutputIndex++,
+            };
+            pendingCalls.set(index, call);
+            send("response.output_item.added", {
+              output_index: call.outputIndex,
+              item: {
+                type: "function_call",
+                id: call.itemId,
+                call_id: call.callId,
+                name: call.name,
+                arguments: "",
+              },
+            });
+          }
+          const delta = typed.argumentsDelta ?? "";
+          if (delta.length > 0) call.args += delta;
           send("response.function_call_arguments.delta", {
-            item_id: typed.id,
-            delta: typed.argumentsDelta ?? "",
-            name: typed.name,
+            item_id: call.itemId,
+            output_index: call.outputIndex,
+            delta,
+            name: call.name,
           });
-          itemIndex += 1;
         } else if (typed.type === "completed") {
+          // Close every open function-call item with its fully assembled
+          // arguments before the terminal event.
+          const ordered = [...pendingCalls.values()].sort(
+            (a, b) => a.outputIndex - b.outputIndex,
+          );
+          for (const call of ordered) {
+            send("response.function_call_arguments.done", {
+              item_id: call.itemId,
+              output_index: call.outputIndex,
+              arguments: call.args,
+              name: call.name,
+            });
+            send("response.output_item.done", {
+              output_index: call.outputIndex,
+              item: {
+                type: "function_call",
+                id: call.itemId,
+                call_id: call.callId,
+                name: call.name,
+                arguments: call.args,
+                status: "completed",
+              },
+            });
+          }
           send("response.completed", { id: responseId, status: "completed" });
           break;
         } else if (typed.type === "error") {

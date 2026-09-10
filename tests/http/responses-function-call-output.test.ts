@@ -66,9 +66,16 @@ describe("Responses canonical function-call I/O", () => {
       output: Array<{ type: string; call_id?: string; id?: string; name?: string; arguments?: string }>;
     };
     const call = body.output.find((o) => o.type === "function_call");
-    expect(call?.call_id ?? call?.id).toBe("call-resp-1");
+    // Exact keys: the call id used for function_call_output is distinct from
+    // the output item id. `call_id ?? id` would mask a missing call_id.
+    expect(call?.call_id).toBe("call-resp-1");
+    expect(typeof call?.id).toBe("string");
+    expect(call?.id).not.toBe(call?.call_id);
     expect(call?.name).toBe("cmm_echo");
     console.log("RESPONSES_FUNCTION_CALL_OUTPUT_PARSE=PASS");
+    console.log("RESPONSES_FUNCTION_CALL_CALL_ID=PASS");
+    console.log("RESPONSES_FUNCTION_CALL_ITEM_ID=PASS");
+    console.log("RESPONSES_CALL_ID_DISTINCT_FROM_ITEM_ID=PASS");
     console.log("RESPONSES_FUNCTION_CALL_ID_ROUNDTRIP=PASS");
   });
 });
