@@ -19,6 +19,10 @@ const FIXTURE = join(here, "..", "helpers", "fake-agy-cli.js");
 const NODE = process.execPath;
 const LAUNCHER = "/repo/dist/bridge/mcp-bridge-launcher.js";
 const SHORT_TIMEOUT_MS = 500;
+// Only the intentional hang case uses SHORT_TIMEOUT_MS. All other real-child
+// assertions get a longer finite test deadline so suite load cannot turn
+// a functional/maxBuffer assertion into a timeout race.
+const NON_HANG_TIMEOUT_MS = 5_000;
 const SMALL_MAX_BUFFER_BYTES = 64 * 1024;
 
 chmodSync(FIXTURE, 0o755);
@@ -67,7 +71,7 @@ describe("agy mcp CLI operations are bounded and fail closed", () => {
   it("bounds oversized stdout by maxBuffer", () => {
     setMode("oversize-stdout");
     const runner = execFileAgyRunner(FIXTURE, {
-      timeoutMs: SHORT_TIMEOUT_MS,
+      timeoutMs: NON_HANG_TIMEOUT_MS,
       maxBufferBytes: SMALL_MAX_BUFFER_BYTES,
     });
     const outcome = runner(["mcp", "list"]);
@@ -79,7 +83,7 @@ describe("agy mcp CLI operations are bounded and fail closed", () => {
   it("bounds oversized stderr by maxBuffer", () => {
     setMode("oversize-stderr");
     const runner = execFileAgyRunner(FIXTURE, {
-      timeoutMs: SHORT_TIMEOUT_MS,
+      timeoutMs: NON_HANG_TIMEOUT_MS,
       maxBufferBytes: SMALL_MAX_BUFFER_BYTES,
     });
     const outcome = runner(["mcp", "list"]);
@@ -89,7 +93,7 @@ describe("agy mcp CLI operations are bounded and fail closed", () => {
   it("fails closed on a nonzero exit and never leaks the raw output", () => {
     setMode("exit-nonzero");
     const runner = execFileAgyRunner(FIXTURE, {
-      timeoutMs: SHORT_TIMEOUT_MS,
+      timeoutMs: NON_HANG_TIMEOUT_MS,
       maxBufferBytes: SMALL_MAX_BUFFER_BYTES,
     });
     const outcome = runner(["mcp", "list"]);
@@ -113,7 +117,7 @@ describe("agy mcp CLI operations are bounded and fail closed", () => {
   it("runs a normal list and a normal add through the real CLI runner", () => {
     setMode("normal-list");
     const runner = execFileAgyRunner(FIXTURE, {
-      timeoutMs: SHORT_TIMEOUT_MS,
+      timeoutMs: NON_HANG_TIMEOUT_MS,
       maxBufferBytes: SMALL_MAX_BUFFER_BYTES,
     });
     const listed = runner(["mcp", "list"]);
@@ -129,7 +133,7 @@ describe("agy mcp CLI operations are bounded and fail closed", () => {
   it("passes argv literally and never invokes a shell", () => {
     setMode("argv-echo");
     const runner = execFileAgyRunner(FIXTURE, {
-      timeoutMs: SHORT_TIMEOUT_MS,
+      timeoutMs: NON_HANG_TIMEOUT_MS,
       maxBufferBytes: SMALL_MAX_BUFFER_BYTES,
     });
     const dangerous = "; touch /tmp/cmm-canary-pwned ; $(whoami) `id`";
