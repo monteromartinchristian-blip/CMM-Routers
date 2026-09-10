@@ -1,12 +1,35 @@
-import { describe, expect, it } from "vitest";
-import { readdirSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AntigravityAdapter,
   feedStreamLine,
   type ParsedStreamEvent,
 } from "../../src/providers/antigravity/adapter.js";
 import type { RouterRequest } from "../../src/core/model.js";
+
+/**
+ * The adapter creates its run directories under `os.tmpdir()`, so this suite
+ * must observe a PRIVATE temp root: scanning the shared system temp dir races
+ * with the other Antigravity suites that run in parallel workers and create
+ * `cmm-antigravity-run-*` directories of their own. `os.tmpdir()` re-reads
+ * TMPDIR on every call, so pointing it here makes the observation hermetic.
+ */
+let privateTmpRoot: string;
+let savedTmpdir: string | undefined;
+
+beforeAll(() => {
+  savedTmpdir = process.env.TMPDIR;
+  privateTmpRoot = mkdtempSync(join(tmpdir(), "cmm-allpath-isolated-"));
+  process.env.TMPDIR = privateTmpRoot;
+});
+
+afterAll(() => {
+  if (savedTmpdir === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = savedTmpdir;
+  rmSync(privateTmpRoot, { recursive: true, force: true });
+});
 
 function runDirs(): string[] {
   return readdirSync(tmpdir()).filter((e) => e.startsWith("cmm-antigravity-run-"));
