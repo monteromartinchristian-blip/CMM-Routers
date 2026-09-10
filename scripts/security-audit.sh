@@ -216,11 +216,123 @@ echo "== MCP registration carries no secret =="
 if grep -q "mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, \[" src/providers/antigravity/adapter.ts \
   && grep -q "mode: 0o600" src/bridge/session-registry.ts \
   && grep -q "recursive: true, mode: 0o700" src/bridge/session-registry.ts \
-  && grep -q "message: \"no unique live CMM bridge session" src/bridge/mcp-bridge-launcher.ts; then
+  && grep -q "no exact CMM bridge session for this provider run" src/bridge/mcp-bridge-launcher.ts; then
   echo "MCP_REGISTRATION_SECRET_FREE=PASS"
   echo "BRIDGE_SESSION_RENDEZVOUS_HARDENED=PASS"
 else
   echo "FAIL: MCP registration or session rendezvous hardening missing"
+  fail=1
+fi
+
+echo "== no global ambiguous rendezvous scan =="
+# The launcher must correlate through an exact per-run selector. A global
+# "there must be exactly one live session" inference is a concurrency failure.
+if grep -q "live.length !== 1" src/bridge/session-registry.ts \
+  || grep -q "discoverBridgeSession" src/bridge/session-registry.ts src/bridge/mcp-bridge-launcher.ts; then
+  echo "FAIL: global ambiguous rendezvous scan present"
+  fail=1
+else
+  echo "ANTIGRAVITY_GLOBAL_SINGLE_SESSION_SCAN=REMOVED"
+fi
+
+echo "== explicit session registry bound =="
+if grep -q "SESSION_REGISTRY_MAX_LIVE" src/bridge/session-registry.ts \
+  && grep -q "provider_rate_limited" src/bridge/session-registry.ts; then
+  echo "SESSION_REGISTRY_BOUND=PASS"
+  echo "SESSION_REGISTRY_OVERFLOW_FAIL_CLOSED=PASS"
+else
+  echo "FAIL: session registry bound missing"
+  fail=1
+fi
+
+echo "== explicit bridge control pending bound =="
+if grep -q "BRIDGE_CONTROL_MAX_PENDING" src/bridge/control-ipc.ts \
+  && grep -q "BRIDGE_CONTROL_PENDING_TTL_MS" src/bridge/control-ipc.ts \
+  && grep -q "bridge control pending state bounded" src/bridge/control-ipc.ts; then
+  echo "BRIDGE_CONTROL_PENDING_BOUND=PASS"
+  echo "BRIDGE_CONTROL_PENDING_TTL=PASS"
+else
+  echo "FAIL: bridge control pending bound missing"
+  fail=1
+fi
+
+echo "== bounded provider tool queues =="
+if grep -q "BoundedQueue" src/core/bounded-queue.ts \
+  && grep -q "BoundedQueue" src/providers/claude/adapter.ts \
+  && grep -q "BoundedQueue" src/providers/antigravity/adapter.ts \
+  && grep -q "MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION" src/providers/claude/adapter.ts \
+  && grep -q "MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION" src/providers/antigravity/adapter.ts; then
+  echo "CLAUDE_TOOL_QUEUE_BOUND=PASS"
+  echo "ANTIGRAVITY_TOOL_QUEUE_BOUND=PASS"
+  echo "MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION=1"
+else
+  echo "FAIL: provider tool queue bound missing"
+  fail=1
+fi
+
+echo "== declared tool ACL at the MCP bridge boundary =="
+if grep -q "declaredTools.has(name)" src/bridge/mcp-bridge-process.ts \
+  && grep -q "MCP_INVALID_PARAMS" src/bridge/mcp-bridge-process.ts; then
+  echo "MCP_UNDECLARED_TOOL_CALL_FAIL_CLOSED=PASS"
+else
+  echo "FAIL: MCP bridge declared-tool ACL missing"
+  fail=1
+fi
+
+echo "== declared tool ACL at every provider boundary =="
+acl_ok=1
+grep -q "declaredToolNames" src/providers/codex/adapter.ts || acl_ok=0
+grep -q "declaredToolNames" src/providers/command-code/adapter.ts || acl_ok=0
+if [ "$acl_ok" = "1" ]; then
+  echo "CODEX_UNDECLARED_DYNAMIC_TOOL_FAIL_CLOSED=PASS"
+  echo "COMMAND_CODE_OPENAI_UNDECLARED_TOOL_FAIL_CLOSED=PASS"
+  echo "COMMAND_CODE_ANTHROPIC_UNDECLARED_TOOL_FAIL_CLOSED=PASS"
+  echo "DECLARED_TOOL_ACL_AT_PROVIDER_BOUNDARY=PASS"
+else
+  echo "FAIL: declared-tool ACL missing at a provider boundary"
+  fail=1
+fi
+
+echo "== shared provider tool policy (no silent drop) =="
+if grep -q "enforceProviderToolPolicy" src/core/tool-policy.ts \
+  && grep -q "enforceProviderToolPolicy" src/http/openai-chat.ts \
+  && grep -q "codexUnsupportedToolPolicy" src/http/openai-responses.ts \
+  && grep -q "toAnthropicToolChoice" src/providers/command-code/client.ts; then
+  echo "SILENT_TOOL_CHOICE_DROP=NONE"
+  echo "SILENT_PARALLEL_TOOL_POLICY_DROP=NONE"
+  echo "CHAT_RESPONSES_TOOL_POLICY_CONSISTENCY=PASS"
+else
+  echo "FAIL: shared provider tool policy not wired on both surfaces"
+  fail=1
+fi
+
+echo "== provider abort cleanup path =="
+if grep -q "session.abortController.abort()" src/providers/claude/adapter.ts \
+  && grep -q "session.abortController.abort()" src/providers/antigravity/adapter.ts \
+  && grep -q "iterator.return?.()" src/providers/claude/adapter.ts; then
+  echo "CLAUDE_TTL_ABORTS_PROVIDER_RUN=PASS"
+  echo "ANTIGRAVITY_TTL_ABORTS_PROVIDER_RUN=PASS"
+  echo "PROVIDER_ABORT_CONTROLLER_CLEANUP=PASS"
+else
+  echo "FAIL: provider abort cleanup path missing"
+  fail=1
+fi
+
+echo "== no test-only direct bridge hook in production =="
+if grep -rn "spawnFn\|forTest\|__testOnly" src/ --include="*.ts" | grep -q .; then
+  echo "FAIL: test-only hook exposed in production source"
+  fail=1
+else
+  echo "PRODUCTION_TEST_HOOKS=NONE"
+fi
+
+echo "== Claude SDK owns the single provider-facing MCP process =="
+if grep -q "mcpServers" src/providers/claude/adapter.ts \
+  && ! grep -q "spawn(" src/providers/claude/adapter.ts; then
+  echo "CLAUDE_PROVIDER_FACING_MCP_OWNER=claude-agent-sdk"
+  echo "CLAUDE_DUPLICATE_MCP_BRIDGE_PROCESS=NONE"
+else
+  echo "FAIL: Claude adapter owns a provider-facing MCP process itself"
   fail=1
 fi
 
