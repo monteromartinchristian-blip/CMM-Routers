@@ -54,6 +54,10 @@ interface FakeConfig {
    */
   ignoreToolResult?: boolean;
   fabricatedFinal?: string;
+  /** Append a second tool call to the final (supposedly terminal) response. */
+  finalToolCall?: boolean;
+  /** Override the final response finish_reason (e.g. a non-terminal value). */
+  finalFinishReason?: string;
 }
 
 function completion(model: string, message: Record<string, unknown>, finishReason = "stop"): unknown {
@@ -176,7 +180,24 @@ function fakeRouter(config: FakeConfig = {}): { fetchImpl: FetchLike; requests: 
         return { status: 200, json: completion(String(record.model), { content: config.fabricatedFinal ?? "" }) };
       }
       const content = config.finalOverride ?? `FINAL ${String(toolMessage.content)}`;
-      return { status: 200, json: completion(String(record.model), { content }) };
+      const extraCalls =
+        config.finalToolCall === true
+          ? [
+              {
+                id: "cmm_call_3",
+                type: "function",
+                function: { name: CANARY_ECHO_NAME, arguments: JSON.stringify({ text: "again" }) },
+              },
+            ]
+          : undefined;
+      return {
+        status: 200,
+        json: completion(
+          String(record.model),
+          { content, ...(extraCalls !== undefined ? { tool_calls: extraCalls } : {}) },
+          config.finalFinishReason ?? "stop",
+        ),
+      };
     }
     return { status: 404, json: errorBody("not_found", "no route") };
   };
@@ -216,6 +237,7 @@ describe("canary driver — deterministic fake Router", () => {
       "LIVE_CANARY_SAME_PROVIDER_CONTINUATION=YES",
       "LIVE_CANARY_RESULT_NONCE_ONLY_AFTER_TOOL_CALL=YES",
       "LIVE_CANARY_TOOL_RESULT_IS_UNIQUE_INFORMATION=YES",
+      "LIVE_CANARY_SECOND_RESPONSE_TERMINAL=YES",
       "LIVE_CANARY_FINAL_DERIVED_FROM_TOOL_RESULT=YES",
       "LIVE_CANARY_FULL_ROUNDTRIP=PASS",
       "LIVE_CANARY_PASS_EXIT=0",
@@ -378,6 +400,21 @@ describe("canary driver — deterministic fake Router", () => {
     const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: SENTINEL });
     expect(outcome.exitCode).toBe(1);
     expect(text(outcome)).toContain("reason=result-nonce-not-independent");
+  });
+
+  it("rejects a final response that also requests another tool call", async () => {
+    const { fetchImpl } = fakeRouter({ finalToolCall: true });
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: NONCE });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=continuation-extra-tool-call");
+    console.log("LIVE_CANARY_SECOND_RESPONSE_REJECTS_EXTRA_TOOL_CALLS=YES");
+  });
+
+  it("rejects a final response whose finish_reason is not terminal", async () => {
+    const { fetchImpl } = fakeRouter({ finalFinishReason: "length" });
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL, nonce: NONCE });
+    expect(outcome.exitCode).toBe(1);
+    expect(text(outcome)).toContain("reason=continuation-non-terminal-finish:length");
   });
 
   it("maps Router 401 to BLOCKED, 429 to BLOCKED and 500 to FAIL", async () => {

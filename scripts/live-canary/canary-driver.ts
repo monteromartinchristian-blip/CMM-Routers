@@ -225,14 +225,26 @@ export function expectedFinalToken(resultNonce: string): string {
   return `RESULT_NONCE=${resultNonce}`;
 }
 
-function finalContentOf(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) return null;
+/**
+ * The continuation turn must be a TRUE terminal response: final text, no further
+ * tool request, and a terminal finish_reason. Anything else means the round trip
+ * did not complete and must not be reported as a PASS.
+ */
+function continuationShape(body: unknown): { content: string } | { fail: string } {
+  if (typeof body !== "object" || body === null) return { fail: "continuation-no-content" };
   const choices = (body as { choices?: unknown }).choices;
-  if (!Array.isArray(choices) || choices.length === 0) return null;
-  const message = (choices[0] as { message?: unknown }).message;
-  if (typeof message !== "object" || message === null) return null;
+  if (!Array.isArray(choices) || choices.length === 0) return { fail: "continuation-no-content" };
+  const choice = choices[0] as { message?: unknown; finish_reason?: unknown };
+  const message = choice.message;
+  if (typeof message !== "object" || message === null) return { fail: "continuation-no-content" };
+  const calls = (message as { tool_calls?: unknown }).tool_calls;
+  if (Array.isArray(calls) && calls.length > 0) return { fail: "continuation-extra-tool-call" };
+  if (choice.finish_reason !== "stop") {
+    return { fail: `continuation-non-terminal-finish:${String(choice.finish_reason)}` };
+  }
   const content = (message as { content?: unknown }).content;
-  return typeof content === "string" ? content : null;
+  if (typeof content !== "string" || content.length === 0) return { fail: "continuation-no-content" };
+  return { content };
 }
 
 function modelList(body: unknown): Array<{ id: string; ownedBy: string }> {
@@ -445,9 +457,10 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
   lines.push("LIVE_CANARY_TOOL_RESULT_SUBMITTED=YES");
   lines.push("LIVE_CANARY_SAME_PROVIDER_CONTINUATION=YES");
 
-  const content = finalContentOf(second.json);
-  if (content === null) return fail("continuation-no-content");
-  if (!content.includes(expectedFinalToken(resultNonce))) {
+  const shape = continuationShape(second.json);
+  if ("fail" in shape) return fail(shape.fail);
+  lines.push("LIVE_CANARY_SECOND_RESPONSE_TERMINAL=YES");
+  if (!shape.content.includes(expectedFinalToken(resultNonce))) {
     return fail("final-not-derived-from-tool-result");
   }
   lines.push("LIVE_CANARY_FINAL_DERIVED_FROM_TOOL_RESULT=YES");
