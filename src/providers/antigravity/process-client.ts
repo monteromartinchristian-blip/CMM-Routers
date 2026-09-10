@@ -59,10 +59,57 @@ export function terminateChild(
 }
 
 /**
+ * Longest prefix of `text` whose UTF-8 encoding is at most `maxBytes` bytes.
+ * Iterates by code point, so a multibyte sequence is never split; a code point
+ * that would exceed the remaining room is dropped entirely (no partial code
+ * point, no U+FFFD substitution is ever introduced).
+ */
+export function truncateUtf8Head(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  let used = 0;
+  let kept = "";
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch, "utf8");
+    if (used + size > maxBytes) break;
+    used += size;
+    kept += ch;
+  }
+  return kept;
+}
+
+/**
+ * Longest suffix of `text` whose UTF-8 encoding is at most `maxBytes` bytes,
+ * aligned to code-point boundaries. A code point that would exceed the
+ * remaining room is dropped entirely, so the result is always valid UTF-8 and
+ * never contains a U+FFFD substitution.
+ */
+export function truncateUtf8Tail(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const chars = Array.from(text);
+  let used = 0;
+  const kept: string[] = [];
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const ch = chars[i] as string;
+    const size = Buffer.byteLength(ch, "utf8");
+    if (used + size > maxBytes) break;
+    used += size;
+    kept.push(ch);
+  }
+  kept.reverse();
+  return kept.join("");
+}
+
+/**
  * Capped diagnostic accumulator for provider-controlled output. Retains a
  * bounded head window plus a bounded tail window so error mapping still has
- * both the beginning and the most recent output, while total retained bytes
- * never exceed `cap` regardless of provider lifetime.
+ * both the beginning and the most recent output, while total retained UTF-8
+ * bytes never exceed `cap` regardless of provider lifetime.
+ *
+ * The cap is a real UTF-8 BYTE budget, not a UTF-16 character count: for any
+ * sequence of pushes, `Buffer.byteLength(value(), "utf8") <= cap`. Truncation
+ * iterates by code point, so a multibyte character is never split across the
+ * window boundary and its bytes are never replaced by U+FFFD; a code point
+ * that cannot fit in the remaining room is dropped entirely.
  */
 export class CappedTextBuffer {
   private head = "";
@@ -76,15 +123,16 @@ export class CappedTextBuffer {
     const headCap = Math.floor(this.cap / 2);
     const tailCap = this.cap - headCap;
     let rest = chunk;
-    if (this.head.length < headCap) {
-      const room = headCap - this.head.length;
-      this.head += rest.slice(0, room);
-      rest = rest.slice(room);
+    const headBytes = Buffer.byteLength(this.head, "utf8");
+    if (headBytes < headCap) {
+      const added = truncateUtf8Head(rest, headCap - headBytes);
+      this.head += added;
+      rest = rest.slice(added.length);
     }
     if (rest.length > 0) {
       const combined = this.tail + rest;
-      if (combined.length > tailCap) this.overflowed = true;
-      this.tail = combined.slice(-tailCap);
+      if (Buffer.byteLength(combined, "utf8") > tailCap) this.overflowed = true;
+      this.tail = truncateUtf8Tail(combined, tailCap);
     }
   }
 

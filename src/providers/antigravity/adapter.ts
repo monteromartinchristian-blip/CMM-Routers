@@ -645,14 +645,16 @@ export class SpawnInferenceRunner implements InferenceRunner {
         const parts = lineBuffer.split("\n");
         lineBuffer = parts.pop() ?? "";
         for (const part of parts) {
-          if (part.length > this.maxNdjsonLineBytes) {
+          if (Buffer.byteLength(part, "utf8") > this.maxNdjsonLineBytes) {
             failClosedOversizeLine();
             return;
           }
           if (options.signal.aborted) return;
           feedStreamLine(part, onEvent);
         }
-        if (lineBuffer.length > this.maxNdjsonLineBytes) failClosedOversizeLine();
+        if (Buffer.byteLength(lineBuffer, "utf8") > this.maxNdjsonLineBytes) {
+          failClosedOversizeLine();
+        }
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         stderrBuf.push(chunk.toString("utf-8"));
@@ -662,7 +664,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       });
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         if (!lineOverflowed && lineBuffer.trim()) {
-          if (lineBuffer.length <= this.maxNdjsonLineBytes) {
+          if (Buffer.byteLength(lineBuffer, "utf8") <= this.maxNdjsonLineBytes) {
             feedStreamLine(lineBuffer, onEvent);
           }
           lineBuffer = "";
