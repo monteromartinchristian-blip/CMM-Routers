@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { Duplex } from "node:stream";
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } from "../../core/provider.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
@@ -10,7 +11,31 @@ import {
   parseTokenUsageParams,
   parseTurnCompletedParams,
   parseTurnStartResponse,
+  toDynamicToolSpecs,
 } from "./schema-translator.js";
+import type { InitializeParams } from "./protocol.js";
+import {
+  DeferredToolBroker,
+  createPublicToolCallId,
+  type PendingToolContext,
+} from "../../core/deferred-tool-broker.js";
+
+/**
+ * Codex 0.153.4 app-server requires an explicit experimental-API opt-in before
+ * it will accept experimental fields such as `thread/start.dynamicTools`.
+ * Exact wire shape verified against the generated experimental schema
+ * (InitializeCapabilities.experimentalApi: boolean, default false).
+ */
+export function buildCodexInitializeParams(): InitializeParams {
+  return {
+    clientInfo: {
+      name: "cmm-subscription-router",
+      title: "CMM Subscription Router",
+      version: "0.1.0",
+    },
+    capabilities: { experimentalApi: true },
+  };
+}
 
 /**
  * Normalize Codex turn status into the neutral Router finish vocabulary.
@@ -109,20 +134,32 @@ export class CodexAdapter implements ProviderAdapter {
   private process: ReturnType<typeof spawn> | null = null;
   private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
   /**
-   * Pending Qoder-owned tool calls parked across the HTTP boundary, keyed by
-   * provider call id. Each entry holds the ORIGINAL wire request id plus the
-   * thread/turn that must continue once Qoder's result arrives. Bounded by
-   * the broker; entries die on resolve/expire/cancel, never by tool name.
+   * Router-owned bounded pending state. Production injects the shared broker
+   * from the composition root so every adapter shares one bounded map; the
+   * default keeps the adapter self-contained for direct construction.
    */
-  private readonly pendingTools = new Map<
-    string,
-    { wireId: number | string; threadId: string; turnId: string; tool: string; argsJson: string }
-  >();
+  private readonly broker: DeferredToolBroker;
   private readonly codexHome: string | undefined;
   private readonly codexBinary: string;
+  /**
+   * Explicit transport seam. Production leaves this unset and spawns the real
+   * app-server; tests inject a deterministic Duplex that speaks the same
+   * observable JSON-RPC protocol. The adapter's production methods
+   * (ensureStarted/initialize/run/drainTurn/cancel) are unchanged.
+   */
+  private readonly transportFactory: (() => Duplex) | undefined;
 
-  constructor(options: { codexHome?: string | undefined; codexBinary?: string | undefined } = {}) {
+  constructor(
+    options: {
+      codexHome?: string | undefined;
+      codexBinary?: string | undefined;
+      transportFactory?: (() => Duplex) | undefined;
+      broker?: DeferredToolBroker | undefined;
+    } = {},
+  ) {
     this.codexHome = options.codexHome;
+    this.transportFactory = options.transportFactory;
+    this.broker = options.broker ?? new DeferredToolBroker();
     // LaunchAgent-safe resolution: installer bakes CMM_ROUTER_CODEX_BIN;
     // explicit constructor option wins, then env, then PATH lookup.
     this.codexBinary =
@@ -193,26 +230,53 @@ export class CodexAdapter implements ProviderAdapter {
     try {
       // Follow-up turn carrying Qoder's executed tool results: resolve the
       // ORIGINAL pending wire requests (same thread/turn) BEFORE opening any
-      // new thread. Each role:"tool" message must match a parked entry by
-      // exact call id; the wire answer carries success:true + Qoder's result.
+      // new thread. Qoder returns only the PUBLIC tool_call_id it was given;
+      // the broker maps that back to the exact provider-internal call.
       const toolResults = request.messages.filter(
         (m) => m.role === "tool" && typeof m.toolCallId === "string",
       );
       if (toolResults.length > 0 && this.client) {
         for (const result of toolResults) {
-          const pending = this.pendingTools.get(result.toolCallId as string);
-          if (!pending) continue;
-          this.pendingTools.delete(result.toolCallId as string);
-          this.client.respondToServerRequest(pending.wireId, {
+          const claim = this.broker.claimByPublicToolCallId<PendingToolContext>(
+            result.toolCallId as string,
+          );
+          if (claim.outcome !== "resolved" || !claim.context) continue;
+          const ctx = claim.context;
+          if (ctx.wireRequestId === undefined) continue;
+          this.client.respondToServerRequest(ctx.wireRequestId, {
             success: true,
             contentItems: [{ type: "inputText", text: result.content ?? "" }],
           });
-          yield* this.drainTurn(request.requestId, pending.threadId, pending.turnId, signal);
+          if (ctx.providerSession && ctx.providerTurn) {
+            yield* this.drainTurn(
+              request.requestId,
+              ctx.providerSession,
+              ctx.providerTurn,
+              signal,
+            );
+          }
           return;
         }
+        // A tool result that matches no parked call is a correlation failure
+        // (guessed id, wrong consumer, expired entry). Fail closed instead of
+        // silently opening a fresh thread, which would leak a new provider run.
+        yield {
+          type: "error",
+          error: new RouterError(
+            "provider_protocol_error",
+            "Codex tool result does not match any pending Qoder tool call",
+          ),
+        };
+        return;
       }
 
       const seeds = buildCodexThreadSeeds(request.messages);
+      // Qoder tool definitions are declared on the SAME thread/start that
+      // creates the tool-capable thread. Experimental API was opted into during
+      // initialize (buildCodexInitializeParams). Text-only turns send no
+      // dynamicTools field at all so wire bytes are unchanged.
+      const dynamicTools =
+        request.tools.length > 0 ? toDynamicToolSpecs(request.tools) : undefined;
       // Ephemeral per-request thread: explicitly requested per the plan's
       // privacy/lifecycle requirement (never rely on a server default).
       const threadParams = buildThreadStartParams({
@@ -222,6 +286,7 @@ export class CodexAdapter implements ProviderAdapter {
           ? { developerInstructions: seeds.developerInstructions }
           : {}),
         ephemeral: true,
+        ...(dynamicTools !== undefined ? { dynamicTools } : {}),
       });
       const threadResponse = await this.client.startThread(threadParams as unknown as Record<string, unknown> as never);
       const threadId = threadResponse.thread.id;
@@ -318,31 +383,72 @@ export class CodexAdapter implements ProviderAdapter {
 
           if (outcome.kind === "toolCall") {
             const { id: wireRequestId, params } = outcome.toolCall;
+            // Fail closed on missing protocol identity. The 0.153.4 schema
+            // requires arguments/callId/threadId/tool/turnId; a fabricated id
+            // would let a malformed frame masquerade as a real call, so never
+            // synthesize one.
             const callId =
               typeof params.callId === "string" && params.callId.length > 0
                 ? params.callId
-                : `call-${Date.now().toString(36)}`;
-            const toolName = typeof params.tool === "string" ? params.tool : "unknown";
+                : undefined;
+            const toolName =
+              typeof params.tool === "string" && params.tool.length > 0
+                ? params.tool
+                : undefined;
+            const hasThreadId =
+              typeof params.threadId === "string" && params.threadId.length > 0;
+            const hasTurnId =
+              typeof params.turnId === "string" && params.turnId.length > 0;
+            const hasArguments = params.arguments !== undefined;
+            if (!callId || !toolName || !hasThreadId || !hasTurnId || !hasArguments) {
+              // Answer the original request so the provider turn terminates
+              // instead of hanging, then fail the run closed.
+              this.client.respondToServerRequest(wireRequestId, {
+                success: false,
+                contentItems: [],
+              });
+              yield {
+                type: "error",
+                error: new RouterError(
+                  "provider_protocol_error",
+                  "Codex item/tool/call missing required protocol identity",
+                ),
+              };
+              break;
+            }
             const args =
               typeof params.arguments === "string"
                 ? params.arguments
-                : JSON.stringify(params.arguments ?? {});
-            // Park the ORIGINAL wire request: hold it pending across the Qoder
-            // boundary. The follow-up request carrying the matching role:"tool"
-            // result resolves THIS request with success:true (see run() head).
-            // success:false is reserved for unmatched calls (fail-closed).
-            this.pendingTools.set(callId, {
-              wireId: wireRequestId,
-              threadId,
-              turnId,
-              tool: toolName,
-              argsJson: args,
-            });
+                : JSON.stringify(params.arguments);
+            // Park the ORIGINAL wire request in the shared bounded broker. The
+            // consumer-visible id is a Router-generated globally unique PUBLIC
+            // id; the provider's own callId stays internal. A follow-up request
+            // carrying the public id resolves THIS request with success:true.
+            const publicToolCallId = createPublicToolCallId("chatgpt");
+            this.broker.createPendingCall<PendingToolContext>(
+              {
+                consumer: "qoder",
+                provider: "chatgpt",
+                sessionId: threadId,
+                turnId,
+                toolCallId: publicToolCallId,
+                publicToolCallId,
+              },
+              undefined,
+              signal,
+              {
+                provider: "chatgpt",
+                providerSession: threadId,
+                providerTurn: turnId,
+                providerCallId: callId,
+                wireRequestId,
+              },
+            );
             // Surface the structured tool call to Qoder (never execute it).
             yield {
               type: "tool_call_delta",
               index: 0,
-              id: callId,
+              id: publicToolCallId,
               name: toolName,
               argumentsDelta: args,
             };
@@ -541,6 +647,11 @@ export class CodexAdapter implements ProviderAdapter {
       // Interrupt failures still release tracking below.
     } finally {
       this.activeTurns.delete(requestId);
+      // Explicit Qoder/provider cancellation releases the parked correlation
+      // for this thread so it does not linger until TTL. (A tool call parked
+      // for the cross-request round-trip is not "active" — the run already
+      // returned — so this cannot cancel a live round-trip.)
+      this.broker.cancelScope({ provider: "chatgpt", sessionId: activeTurn.threadId });
       if (activeTurn.threadId || activeTurn.turnId) {
         this.client.discardScope({
           ...(activeTurn.threadId ? { threadId: activeTurn.threadId } : {}),
@@ -555,11 +666,27 @@ export class CodexAdapter implements ProviderAdapter {
   private async ensureStarted(): Promise<void> {
     if (this.client) return;
 
+    if (this.transportFactory) {
+      this.client = new CodexAppServerClient(this.transportFactory());
+      await this.client.initialize(buildCodexInitializeParams());
+      await this.client.sendInitializedNotification();
+      return;
+    }
+
     // Spawn codex app-server (configurable binary; CODEX_HOME scopes the
     // subscription profile without touching the user's default checkout).
     this.process = spawn(this.codexBinary, ["app-server", "--stdio"], {
       stdio: ["pipe", "pipe", "inherit"],
       ...(this.codexHome ? { env: { ...process.env, CODEX_HOME: this.codexHome } } : {}),
+    });
+
+    // Provider subprocess death releases every pending correlation for this
+    // provider: a parked tool call can never be answered by a dead app-server,
+    // so it must not linger until TTL.
+    this.process.on("exit", () => {
+      this.process = null;
+      this.client = null;
+      this.broker.cancelScope({ provider: "chatgpt" });
     });
 
     if (!this.process.stdin || !this.process.stdout) {
@@ -589,14 +716,9 @@ export class CodexAdapter implements ProviderAdapter {
 
     this.client = new CodexAppServerClient(duplex);
 
-    // Initialize handshake
-    await this.client.initialize({
-      clientInfo: {
-        name: "cmm-subscription-router",
-        title: "CMM Subscription Router",
-        version: "0.1.0",
-      },
-    });
+    // Initialize handshake, including the experimental-API opt-in required to
+    // declare Qoder tools via thread/start.dynamicTools.
+    await this.client.initialize(buildCodexInitializeParams());
 
     await this.client.sendInitializedNotification();
   }

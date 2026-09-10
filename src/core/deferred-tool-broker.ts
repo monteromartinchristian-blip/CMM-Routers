@@ -1,22 +1,62 @@
+import { randomUUID } from "node:crypto";
 import { RouterError } from "./errors.js";
 import type { ProviderId } from "./model.js";
 
+/**
+ * Consumer-visible tool-call identity.
+ *
+ * `toolCallId` is the Qoder-visible PUBLIC id. It must be globally unique and
+ * unguessable because Qoder's standard OpenAI follow-up only round-trips
+ * `tool_call_id` plus ordinary message history — there is no proven way to make
+ * Qoder echo a Router-private correlation field. Provider-internal identity is
+ * carried separately in the entry context (see PendingToolContext).
+ */
 export interface BrokerKey {
   consumer: "qoder";
   provider: ProviderId;
   sessionId: string;
   turnId?: string;
   toolCallId: string;
+  /**
+   * Optional public id index. When set, the entry becomes resolvable by public
+   * id alone (safe because Router-generated public ids are globally unique).
+   * Omitted by unit tests that key purely by composite identity.
+   */
+  publicToolCallId?: string;
+}
+
+/**
+ * Provider-internal identity retained alongside a pending public id. This is
+ * never exposed to the consumer; it is what lets the Router answer the exact
+ * provider wire request after Qoder returns the public id.
+ */
+export interface PendingToolContext {
+  provider: ProviderId;
+  providerSession?: string;
+  providerTurn?: string;
+  providerCallId?: string;
+  wireRequestId?: number | string;
 }
 
 export type ResolveOutcome = "resolved" | "duplicate" | "stale" | "unknown";
+
+export interface ClaimResult<TContext = unknown> {
+  outcome: ResolveOutcome;
+  context?: TContext;
+}
 
 interface Entry {
   id: string;
   provider: ProviderId;
   sessionId: string;
+  context?: unknown;
   waiters: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }>;
   timer: ReturnType<typeof setTimeout>;
+}
+
+/** Router-generated globally unique public tool call id. */
+export function createPublicToolCallId(provider: ProviderId): string {
+  return `cmm_${provider.replace(/-/g, "_")}_${randomUUID()}`;
 }
 
 function keyOf(key: BrokerKey): string {
@@ -42,6 +82,10 @@ function splitScope(id: string): { provider: string; sessionId: string } {
 export class DeferredToolBroker {
   private readonly entries = new Map<string, Entry>();
   private readonly terminal = new Map<string, "resolved" | "expired" | "cancelled">();
+  /** publicToolCallId → composite entry key. */
+  private readonly publicIndex = new Map<string, string>();
+  /** publicToolCallId → terminal state, for duplicate/late detection. */
+  private readonly publicTerminal = new Map<string, "resolved" | "expired" | "cancelled">();
   private readonly maxPending: number;
   private readonly defaultTtlMs: number;
 
@@ -50,13 +94,25 @@ export class DeferredToolBroker {
     this.defaultTtlMs = options.defaultTtlMs ?? 120_000;
   }
 
-  createPendingCall(key: BrokerKey, ttlMs?: number, signal?: AbortSignal): void {
+  createPendingCall<TContext = PendingToolContext>(
+    key: BrokerKey,
+    ttlMs?: number,
+    signal?: AbortSignal,
+    context?: TContext,
+  ): void {
     if (key.consumer !== "qoder") {
       throw new RouterError("provider_protocol_error", "Broker accepts Qoder entries only");
     }
     const id = keyOf(key);
     if (this.entries.has(id)) {
       throw new RouterError("provider_protocol_error", "Duplicate pending tool call");
+    }
+    if (
+      key.publicToolCallId !== undefined &&
+      (this.publicIndex.has(key.publicToolCallId) ||
+        this.publicTerminal.has(key.publicToolCallId))
+    ) {
+      throw new RouterError("provider_protocol_error", "Duplicate public tool call id");
     }
     this.terminal.delete(id);
     if (this.entries.size >= this.maxPending) {
@@ -72,9 +128,13 @@ export class DeferredToolBroker {
       id,
       provider: key.provider,
       sessionId: key.sessionId,
+      ...(context !== undefined ? { context } : {}),
       waiters: [],
       timer,
     });
+    if (key.publicToolCallId !== undefined) {
+      this.publicIndex.set(key.publicToolCallId, id);
+    }
     if (signal !== undefined) {
       if (signal.aborted) {
         this.failEntry(id, "cancelled");
@@ -95,6 +155,25 @@ export class DeferredToolBroker {
     return new Promise<unknown>((resolve, reject) => {
       entry.waiters.push({ resolve, reject });
     });
+  }
+
+  /** Resolve by public id only. Safe because public ids are globally unique. */
+  claimByPublicToolCallId<TContext = PendingToolContext>(
+    publicToolCallId: string,
+  ): ClaimResult<TContext> {
+    const id = this.publicIndex.get(publicToolCallId);
+    if (id === undefined) {
+      const state = this.publicTerminal.get(publicToolCallId);
+      if (state === "resolved") return { outcome: "duplicate" };
+      if (state === "expired" || state === "cancelled") return { outcome: "stale" };
+      return { outcome: "unknown" };
+    }
+    return this.take<TContext>(id) as ClaimResult<TContext>;
+  }
+
+  /** Resolve by full composite identity. Returns the retained provider context. */
+  claimCall<TContext = PendingToolContext>(key: BrokerKey): ClaimResult<TContext> {
+    return this.take<TContext>(keyOf(key)) as ClaimResult<TContext>;
   }
 
   resolveCall(key: BrokerKey, result: unknown): ResolveOutcome {
@@ -126,6 +205,27 @@ export class DeferredToolBroker {
     return this.entries.size;
   }
 
+  /** Terminal entries retained for duplicate/late detection. Bounded. */
+  terminalCount(): number {
+    return this.terminal.size + this.publicTerminal.size;
+  }
+
+  private take<TContext>(id: string): ClaimResult<TContext> {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      const state = this.terminal.get(id);
+      if (state === "resolved") return { outcome: "duplicate" };
+      if (state === "expired" || state === "cancelled") return { outcome: "stale" };
+      return { outcome: "unknown" };
+    }
+    clearTimeout(entry.timer);
+    this.entries.delete(id);
+    this.rememberTerminal(id, "resolved");
+    const context = entry.context as TContext | undefined;
+    for (const waiter of entry.waiters) waiter.resolve(context);
+    return context !== undefined ? { outcome: "resolved", context } : { outcome: "resolved" };
+  }
+
   private failEntry(id: string, state: "expired" | "cancelled"): void {
     const entry = this.entries.get(id);
     if (!entry) return;
@@ -140,6 +240,20 @@ export class DeferredToolBroker {
   }
 
   private rememberTerminal(id: string, state: "resolved" | "expired" | "cancelled"): void {
+    // Move the public index entry into terminal state so a late/duplicate
+    // public result is classified instead of resolving a fresh call.
+    for (const [publicId, mappedId] of this.publicIndex) {
+      if (mappedId === id) {
+        this.publicIndex.delete(publicId);
+        this.publicTerminal.set(publicId, state);
+        while (this.publicTerminal.size > this.maxPending) {
+          const oldest = this.publicTerminal.keys().next().value as string | undefined;
+          if (oldest === undefined) break;
+          this.publicTerminal.delete(oldest);
+        }
+        break;
+      }
+    }
     this.terminal.set(id, state);
     while (this.terminal.size > this.maxPending) {
       const oldest = this.terminal.keys().next().value as string | undefined;

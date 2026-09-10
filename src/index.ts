@@ -7,6 +7,7 @@ import { CodexAdapter } from "./providers/codex/adapter.js";
 import { ClaudeAdapter } from "./providers/claude/adapter.js";
 import { AntigravityAdapter } from "./providers/antigravity/adapter.js";
 import { CommandCodeAdapter } from "./providers/command-code/adapter.js";
+import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -14,6 +15,12 @@ export interface ProductionComposition {
   usageStore: UsageStore;
   registeredProviders: string[];
   skippedProviders: Array<{ id: string; reason: string }>;
+  /**
+   * Single Router-owned bounded pending-tool broker shared by every provider
+   * adapter that needs cross-request Qoder tool correlation. Injected
+   * explicitly; never a per-adapter instance in production.
+   */
+  toolBroker: DeferredToolBroker;
 }
 
 function isCommandCodeAckValid(): boolean {
@@ -60,6 +67,7 @@ export async function createProductionRegistry(
   const resolved = config ?? loadConfig(configDir);
   const registry = new ProviderRegistry();
   const usageStore = new UsageStore();
+  const toolBroker = new DeferredToolBroker();
   const registeredProviders: string[] = [];
   const skippedProviders: Array<{ id: string; reason: string }> = [];
 
@@ -69,12 +77,15 @@ export async function createProductionRegistry(
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
     await registry.refresh();
-    return { config: resolved, registry, usageStore, registeredProviders, skippedProviders };
+    return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
   }
 
   if (resolved.providers.chatgpt.enabled) {
     const codexHome = resolveChatgptCodexHome(resolved);
-    const adapter = new CodexAdapter(codexHome ? { codexHome } : {});
+    const adapter = new CodexAdapter({
+      ...(codexHome ? { codexHome } : {}),
+      broker: toolBroker,
+    });
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -130,7 +141,7 @@ export async function createProductionRegistry(
 
   await registry.refresh();
 
-  return { config: resolved, registry, usageStore, registeredProviders, skippedProviders };
+  return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
 }
 
 export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {

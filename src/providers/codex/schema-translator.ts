@@ -1,6 +1,9 @@
 import { RouterError } from "../../core/errors.js";
+import type { RouterTool } from "../../core/model.js";
 import type {
   SchemaAgentMessageDeltaParams,
+  SchemaDynamicFunctionToolSpec,
+  SchemaDynamicToolSpec,
   SchemaThreadStartParams,
   SchemaTokenUsageUpdatedParams,
   SchemaTurn,
@@ -122,12 +125,42 @@ export function parseTurnCompletedParams(params: unknown): {
   return { threadId, turnId, status, ...(errorMessage ? { errorMessage } : {}) };
 }
 
+/**
+ * Map Qoder/OpenAI function tools onto the Codex 0.153.4 experimental
+ * `DynamicToolSpec` function variant. Field names/shape come from the tracked
+ * experimental fixture (see tests/fixtures/generated/codex-experimental-0.153.4).
+ *
+ * A tool with an empty name is a protocol violation: refuse rather than emit an
+ * undeclarable spec.
+ */
+export function toDynamicToolSpecs(
+  tools: RouterTool[],
+): SchemaDynamicFunctionToolSpec[] {
+  return tools.map((tool) => {
+    const name = tool.function?.name;
+    if (typeof name !== "string" || name.length === 0) {
+      throw new RouterError(
+        "provider_protocol_error",
+        "Codex dynamic tool declaration requires a non-empty function name",
+      );
+    }
+    return {
+      type: "function" as const,
+      name,
+      description: tool.function.description ?? "",
+      inputSchema: tool.function.parameters ?? {},
+      deferLoading: false,
+    };
+  });
+}
+
 /** Build thread/start params with explicit ephemeral + developer instructions. */
 export function buildThreadStartParams(input: {
   model?: string;
   sandbox?: string;
   developerInstructions?: string;
   ephemeral?: boolean;
+  dynamicTools?: SchemaDynamicToolSpec[];
 }): SchemaThreadStartParams {
   return {
     ...(input.model !== undefined ? { model: input.model } : {}),
@@ -136,6 +169,7 @@ export function buildThreadStartParams(input: {
       ? { developerInstructions: input.developerInstructions }
       : {}),
     ...(input.ephemeral !== undefined ? { ephemeral: input.ephemeral } : {}),
+    ...(input.dynamicTools !== undefined ? { dynamicTools: input.dynamicTools } : {}),
   };
 }
 

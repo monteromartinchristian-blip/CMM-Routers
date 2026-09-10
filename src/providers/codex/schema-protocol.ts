@@ -66,6 +66,35 @@ export interface SchemaTurnInterruptParams {
   turnId: string;
 }
 
+/**
+ * Experimental Codex 0.153.4 dynamic tool declaration, mirroring the generated
+ * `DynamicToolSpec` oneOf (only the `function` variant is used by the Router;
+ * the `namespace` variant is declared for completeness).
+ *
+ *   codex app-server generate-json-schema --experimental --out DIR
+ *
+ * `thread/start.dynamicTools` is experimental and requires
+ * `initialize.params.capabilities.experimentalApi = true`.
+ */
+export interface SchemaDynamicFunctionToolSpec {
+  type: "function";
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  deferLoading?: boolean;
+}
+
+export interface SchemaDynamicNamespaceToolSpec {
+  type: "namespace";
+  name: string;
+  description: string;
+  tools: unknown[];
+}
+
+export type SchemaDynamicToolSpec =
+  | SchemaDynamicFunctionToolSpec
+  | SchemaDynamicNamespaceToolSpec;
+
 export interface SchemaThreadStartParams {
   model?: string | null;
   sandbox?: string | null;
@@ -73,6 +102,8 @@ export interface SchemaThreadStartParams {
   baseInstructions?: string | null;
   ephemeral?: boolean | null;
   cwd?: string | null;
+  /** Experimental (0.153.4): requires capabilities.experimentalApi at initialize. */
+  dynamicTools?: SchemaDynamicToolSpec[] | null;
 }
 
 export interface SchemaThreadInjectItemsParams {
