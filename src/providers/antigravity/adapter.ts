@@ -23,15 +23,26 @@ import { RouterError } from "../../core/errors.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
 import {
   AGY_PATH,
+  CHILD_TERMINATION_GRACE_MS,
+  CappedTextBuffer,
   FORBIDDEN_PAYG_VARS,
   GLOBAL_SETTINGS_PATH,
+  MAX_AGY_NDJSON_LINE_BYTES,
+  MAX_AGY_STDERR_DIAGNOSTIC_BYTES,
+  MAX_AGY_STDOUT_DIAGNOSTIC_BYTES,
   RealAgyRunner,
   assertAccountOnlySettings,
   buildAgyChildEnv,
   readGlobalSettingsState,
+  terminateChild,
   type AgyRunner,
   type AgyRunResult,
 } from "./process-client.js";
+import {
+  ensureAntigravityMcpRegistration,
+  execFileAgyRunner,
+  type AgyRunner as AgyCliRunner,
+} from "./mcp-registration.js";
 
 export {
   AGY_PATH,
@@ -343,29 +354,68 @@ export interface InferenceRunner {
  * async-iterator flow. Parsed NDJSON events are consumable the moment they
  * arrive — never held until process exit. Bounded so a misbehaving provider
  * cannot grow the queue without limit.
+ *
+ * Overflow is a TERMINAL protocol condition, not a silent drop: a bounded
+ * queue that discards protocol state would be a correctness hole. On overflow
+ * the queue atomically discards buffered events, refuses all further provider
+ * events, records one bounded protocol error, wakes the consumer and invokes
+ * `onOverflow` so the adapter can abort the exact provider run.
  */
 class StreamEventQueue {
   private events: ParsedStreamEvent[] = [];
   private waiters: Array<() => void> = [];
   private closed = false;
   private overflowed = false;
+  private overflowError: RouterError | undefined;
 
-  constructor(private readonly maxSize = MAX_STREAM_EVENTS) {}
+  constructor(
+    private readonly maxSize = MAX_STREAM_EVENTS,
+    private readonly onOverflow?: (() => void) | undefined,
+  ) {}
 
-  push(event: ParsedStreamEvent): void {
-    if (this.closed) return;
+  push(event: ParsedStreamEvent): boolean {
+    if (this.closed) return false;
     if (this.events.length >= this.maxSize) {
-      this.overflowed = true;
-      return;
+      this.enterOverflow();
+      return false;
     }
     this.events.push(event);
     const waiter = this.waiters.shift();
     waiter?.();
+    return true;
   }
 
-  /** True once the bounded event queue refused an event. */
+  private enterOverflow(): void {
+    if (this.overflowed) return;
+    this.overflowed = true;
+    this.overflowError = new RouterError(
+      "provider_protocol_error",
+      "Antigravity stream event queue overflowed; refusing to silently drop protocol state",
+    );
+    this.events.length = 0;
+    this.closed = true;
+    try {
+      this.onOverflow?.();
+    } catch {
+      // The overflow verdict is delivered through the queue regardless.
+    }
+    for (const waiter of this.waiters.splice(0)) waiter();
+  }
+
+  /** True once the bounded queue refused an event and entered overflow. */
   didOverflow(): boolean {
     return this.overflowed;
+  }
+
+  /** The single bounded overflow protocol error (valid once overflowed). */
+  overflowProtocolError(): RouterError {
+    return (
+      this.overflowError ??
+      new RouterError(
+        "provider_protocol_error",
+        "Antigravity stream event queue overflowed; refusing to silently drop protocol state",
+      )
+    );
   }
 
   close(): void {
@@ -480,8 +530,34 @@ export function feedStreamLine(
   return { terminal: false };
 }
 
+export interface SpawnInferenceRunnerOptions {
+  /** Maximum bytes of one unterminated NDJSON line before failing closed. */
+  maxNdjsonLineBytes?: number | undefined;
+  /** Bounded stdout diagnostic retention (error mapping only). */
+  maxStdoutDiagnosticBytes?: number | undefined;
+  /** Bounded stderr diagnostic retention (error mapping only). */
+  maxStderrDiagnosticBytes?: number | undefined;
+  /** Bounded grace period between SIGINT and SIGKILL for the provider child. */
+  terminationGraceMs?: number | undefined;
+}
+
 export class SpawnInferenceRunner implements InferenceRunner {
-  constructor(private readonly agyPath: string = AGY_PATH) {}
+  private readonly maxNdjsonLineBytes: number;
+  private readonly maxStdoutDiagnosticBytes: number;
+  private readonly maxStderrDiagnosticBytes: number;
+  private readonly terminationGraceMs: number;
+
+  constructor(
+    private readonly agyPath: string = AGY_PATH,
+    options: SpawnInferenceRunnerOptions = {},
+  ) {
+    this.maxNdjsonLineBytes = options.maxNdjsonLineBytes ?? MAX_AGY_NDJSON_LINE_BYTES;
+    this.maxStdoutDiagnosticBytes =
+      options.maxStdoutDiagnosticBytes ?? MAX_AGY_STDOUT_DIAGNOSTIC_BYTES;
+    this.maxStderrDiagnosticBytes =
+      options.maxStderrDiagnosticBytes ?? MAX_AGY_STDERR_DIAGNOSTIC_BYTES;
+    this.terminationGraceMs = options.terminationGraceMs ?? CHILD_TERMINATION_GRACE_MS;
+  }
 
   async runInference(
     args: string[],
@@ -504,66 +580,107 @@ export class SpawnInferenceRunner implements InferenceRunner {
       // Report the exact provider process synchronously so the Router can
       // publish its per-run rendezvous descriptor before the MCP handshake.
       if (child.pid !== undefined) options.onSpawn?.(child.pid);
-      let stdout = "";
-      let stderr = "";
+      let timedOut = false;
+      // Provider-controlled byte accumulation is capped: diagnostics never
+      // grow with provider lifetime and a single oversize NDJSON line fails
+      // the run closed instead of being buffered without bound.
+      const stdoutBuf = new CappedTextBuffer(this.maxStdoutDiagnosticBytes);
+      const stderrBuf = new CappedTextBuffer(this.maxStderrDiagnosticBytes);
       let lineBuffer = "";
       let settled = false;
-      const finish = (partial: Partial<AgyRunResult>) => {
+      let lineOverflowed = false;
+      let terminationPromise: Promise<"exited" | "killed"> | undefined;
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const cleanup = (): void => {
+        if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+        options.signal.removeEventListener("abort", onAbort);
+      };
+      const finish = (partial: Partial<AgyRunResult>): void => {
         if (settled) return;
         settled = true;
-        resolve({ status: null, signal: null, stdout, stderr, ...partial });
+        cleanup();
+        resolve({
+          status: null,
+          signal: null,
+          stdout: stdoutBuf.value(),
+          stderr: stderrBuf.value(),
+          ...partial,
+        });
       };
-      const timer = setTimeout(() => {
-        try {
-          child.kill("SIGINT");
-        } catch {
-          // ignore
-        }
-        setTimeout(() => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // ignore
-          }
-        }, 2000);
-        finish({ error: new Error(`agy print timed out after ${options.timeoutMs}ms`) });
-      }, options.timeoutMs);
-      const onAbort = () => {
-        try {
-          child.kill("SIGINT");
-        } catch {
-          // ignore
-        }
+      // One shared termination path for timeout, AbortSignal, oversize-line
+      // fail-closed and any caller-driven abort. Every edge therefore gets the
+      // same SIGINT -> bounded grace -> SIGKILL escalation.
+      const requestTermination = (): Promise<"exited" | "killed"> => {
+        terminationPromise ??= terminateChild(child, this.terminationGraceMs);
+        return terminationPromise;
+      };
+      const failClosedOversizeLine = (): void => {
+        if (lineOverflowed) return;
+        lineOverflowed = true;
+        lineBuffer = "";
+        onEvent({
+          kind: "protocolError",
+          error: new RouterError(
+            "provider_protocol_error",
+            `Antigravity stream-json line exceeded ${this.maxNdjsonLineBytes} bytes`,
+          ),
+        });
+        void requestTermination();
+      };
+      const onAbort = (): void => {
+        // Bounded fallback: even if the provider never reports close, the run
+        // settles after the termination verdict so cleanup cannot hang.
+        void requestTermination().then(() => {
+          finish({ signal: "SIGKILL" });
+        });
       };
       options.signal.addEventListener("abort", onAbort, { once: true });
+
       child.stdout?.on("data", (chunk: Buffer) => {
         const text = chunk.toString("utf-8");
-        stdout += text;
+        stdoutBuf.push(text);
+        if (lineOverflowed) return;
         lineBuffer += text;
         const parts = lineBuffer.split("\n");
         lineBuffer = parts.pop() ?? "";
         for (const part of parts) {
+          if (part.length > this.maxNdjsonLineBytes) {
+            failClosedOversizeLine();
+            return;
+          }
           if (options.signal.aborted) return;
           feedStreamLine(part, onEvent);
         }
+        if (lineBuffer.length > this.maxNdjsonLineBytes) failClosedOversizeLine();
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf-8");
+        stderrBuf.push(chunk.toString("utf-8"));
       });
       child.on("error", (error: Error) => {
-        clearTimeout(timer);
-        options.signal.removeEventListener("abort", onAbort);
         finish({ error });
       });
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        clearTimeout(timer);
-        options.signal.removeEventListener("abort", onAbort);
-        if (lineBuffer.trim()) {
-          feedStreamLine(lineBuffer, onEvent);
+        if (!lineOverflowed && lineBuffer.trim()) {
+          if (lineBuffer.length <= this.maxNdjsonLineBytes) {
+            feedStreamLine(lineBuffer, onEvent);
+          }
           lineBuffer = "";
         }
-        finish({ status: code, signal });
+        finish({
+          status: code,
+          signal,
+          // A timeout keeps the same bounded termination path but must still be
+          // reported as a timeout once the child has actually exited.
+          ...(timedOut
+            ? { error: new Error(`agy print timed out after ${options.timeoutMs}ms`) }
+            : {}),
+        });
       });
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        void requestTermination();
+      }, options.timeoutMs);
     });
   }
 }
@@ -666,13 +783,18 @@ export class AntigravityAdapter implements ProviderAdapter {
   private readonly bridgeCommand: string;
   private readonly bridgeEntryPath: string;
   private readonly bridgeLauncherPath: string;
-  private readonly mcpRegistrar: McpRegistrar;
+  /** Test override for MCP registration; production uses the reconciler. */
+  private readonly mcpRegistrar: McpRegistrar | undefined;
+  /** Injectable `agy` CLI runner for MCP registration reconciliation. */
+  private readonly mcpRunner: AgyCliRunner;
   /** Live agy runs held open while an external MCP tool call is parked. */
   private readonly toolSessions = new Map<string, AgyToolSession>();
   /** Bounded per-run rendezvous registry (selector = owning agy pid). */
   private readonly registry: BridgeSessionRegistry;
   private readonly sessionTtlMs: number;
   private readonly maxLiveSessions: number;
+  /** Bounded parsed-event queue size for one agy run (overflow is terminal). */
+  private readonly maxStreamEvents: number;
   /** Live tool sessions keyed by the Router request that currently drives them. */
   private readonly sessionsByRequest = new Map<string, AgyToolSession>();
   /** The CMM-owned MCP server is registered once, never per request. */
@@ -688,9 +810,11 @@ export class AntigravityAdapter implements ProviderAdapter {
       bridgeEntryPath?: string | undefined;
       bridgeLauncherPath?: string | undefined;
       mcpRegistrar?: McpRegistrar | undefined;
+      mcpRunner?: AgyCliRunner | undefined;
       registry?: BridgeSessionRegistry | undefined;
       sessionTtlMs?: number | undefined;
       maxLiveSessions?: number | undefined;
+      maxStreamEvents?: number | undefined;
     } = {},
   ) {
     this.agyPath = options.agyPath ?? AGY_PATH;
@@ -700,17 +824,12 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.registry = options.registry ?? new BridgeSessionRegistry();
     this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_AGY_SESSION_TTL_MS;
     this.maxLiveSessions = options.maxLiveSessions ?? DEFAULT_MAX_LIVE_TOOL_SESSIONS;
+    this.maxStreamEvents = options.maxStreamEvents ?? MAX_STREAM_EVENTS;
     this.bridgeCommand = options.bridgeCommand ?? process.execPath;
     this.bridgeEntryPath = options.bridgeEntryPath ?? defaultAntigravityBridgeEntryPath();
     this.bridgeLauncherPath = options.bridgeLauncherPath ?? defaultAntigravityBridgeLauncherPath();
-    this.mcpRegistrar =
-      options.mcpRegistrar ??
-      ((name, command, args, env) => {
-        const envFlags = Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
-        execFileSync(this.agyPath, ["mcp", "add", ...envFlags, name, command, ...args], {
-          stdio: "ignore",
-        });
-      });
+    this.mcpRegistrar = options.mcpRegistrar;
+    this.mcpRunner = options.mcpRunner ?? execFileAgyRunner(this.agyPath);
   }
 
   /** Live Antigravity tool sessions (test/diagnostic accessor). */
@@ -818,12 +937,28 @@ export class AntigravityAdapter implements ProviderAdapter {
     }
   }
 
-  /** Register the CMM-owned MCP server once per adapter (idempotent). */
+  /**
+   * Register the CMM-owned MCP server, reconciling against the durable `agy`
+   * state rather than trusting an in-memory flag: after a Router restart, or
+   * after an external edit, the persisted entry is read back and converged onto
+   * exactly one canonical, secret-free `cmm-qoder-tools` registration.
+   */
   private ensureMcpServerRegistered(): void {
     if (this.mcpRegistered) return;
-    this.mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, [
-      this.bridgeLauncherPath,
-    ], {});
+    if (this.mcpRegistrar !== undefined) {
+      this.mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, [
+        this.bridgeLauncherPath,
+      ], {});
+      this.mcpRegistered = true;
+      return;
+    }
+    ensureAntigravityMcpRegistration({
+      agyPath: this.agyPath,
+      command: this.bridgeCommand,
+      args: [this.bridgeLauncherPath],
+      serverName: ANTIGRAVITY_MCP_SERVER_NAME,
+      run: this.mcpRunner,
+    });
     this.mcpRegistered = true;
   }
 
@@ -942,6 +1077,18 @@ export class AntigravityAdapter implements ProviderAdapter {
     yield { type: "completed", finishReason: session.terminalFinish };
   }
 
+  /**
+   * Terminal stream-overflow verdict: abort the exact provider run, release
+   * every Router-side resource, and surface the bounded protocol error exactly
+   * once. A successful completion is never emitted after overflow.
+   */
+  private async *failOverflow(session: AgyToolSession): AsyncGenerator<RouterEvent> {
+    const error = session.protocolError ?? session.queue.overflowProtocolError();
+    session.protocolError = error;
+    await this.closeToolSession(session);
+    yield { type: "error", error };
+  }
+
   /** Park a Qoder-owned tool call and keep the agy run alive. */
   private async *parkAgyToolCall(
     session: AgyToolSession,
@@ -1033,6 +1180,13 @@ export class AntigravityAdapter implements ProviderAdapter {
     let parkedHere = false;
     try {
       while (true) {
+        // Terminal overflow takes precedence over the abort it caused: the
+        // provider run is terminated and one bounded protocol error surfaced.
+        // No successful completion is emitted after overflow.
+        if (session.queue.didOverflow()) {
+          yield* this.failOverflow(session);
+          return;
+        }
         if (signal.aborted || session.abortController.signal.aborted) {
           return;
         }
@@ -1052,6 +1206,10 @@ export class AntigravityAdapter implements ProviderAdapter {
         const event = outcome.e;
         if (event === null) {
           await session.resultPromise;
+          if (session.queue.didOverflow()) {
+            yield* this.failOverflow(session);
+            return;
+          }
           yield* this.runVerdict(session, signal);
           return;
         }
@@ -1103,9 +1261,29 @@ export class AntigravityAdapter implements ProviderAdapter {
         if (sessionRef !== undefined) void this.closeToolSession(sessionRef);
       },
     });
-    this.ensureMcpServerRegistered();
+    try {
+      this.ensureMcpServerRegistered();
+    } catch (error) {
+      await control.close().catch(() => undefined);
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_unavailable", String(error)),
+      };
+      return;
+    }
 
-    const queue = new StreamEventQueue();
+    // Terminal overflow aborts the exact provider run; the drain loop then
+    // surfaces the bounded protocol error exactly once.
+    const queue = new StreamEventQueue(this.maxStreamEvents, () => {
+      try {
+        abortController.abort();
+      } catch {
+        // An already-aborted controller needs no further action.
+      }
+    });
     // The agy pid is the per-run selector. It is reported synchronously by the
     // runner during spawn, so the Router can publish the descriptor for THIS
     // run only — never a global "find whichever session is live".
@@ -1350,7 +1528,13 @@ export class AntigravityAdapter implements ProviderAdapter {
       // is still running. Deltas yield before process exit; completion is
       // only emitted for an observed terminal result event — never
       // synthesized from process close.
-      const queue = new StreamEventQueue();
+      const queue = new StreamEventQueue(this.maxStreamEvents, () => {
+        try {
+          abortController.abort();
+        } catch {
+          // An already-aborted controller needs no further action.
+        }
+      });
       let terminalSeen = false;
       let terminalFinish: StreamParseResult["finishReason"] = "stop";
       let protocolError: RouterError | undefined;
@@ -1410,6 +1594,9 @@ export class AntigravityAdapter implements ProviderAdapter {
       // evaluated after the runner settles.
       let drainDone = false;
       while (!drainDone) {
+        // Overflow outranks the abort it caused so the protocol error is still
+        // surfaced instead of being mistaken for an ordinary cancellation.
+        if (queue.didOverflow()) break;
         if (signal.aborted || abortController.signal.aborted) return;
         const event = await queue.next();
         if (event === null) {
@@ -1433,6 +1620,18 @@ export class AntigravityAdapter implements ProviderAdapter {
       }
 
       await resultPromise;
+
+      // Terminal overflow outranks the abort it caused: surface exactly one
+      // bounded protocol error and never emit a successful completion after.
+      if (queue.didOverflow() && protocolError === undefined) {
+        protocolError = queue.overflowProtocolError();
+      }
+
+      if (protocolError !== undefined) {
+        yield { type: "error", error: protocolError };
+        return;
+      }
+
       if (runError !== undefined) {
         if (signal.aborted || abortController.signal.aborted) return;
         const error: unknown = runError;
@@ -1451,11 +1650,6 @@ export class AntigravityAdapter implements ProviderAdapter {
       }
 
       if (signal.aborted || abortController.signal.aborted) {
-        return;
-      }
-
-      if (protocolError) {
-        yield { type: "error", error: protocolError };
         return;
       }
 

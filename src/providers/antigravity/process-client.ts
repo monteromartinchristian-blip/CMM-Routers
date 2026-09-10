@@ -1,8 +1,113 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+/**
+ * Bounded provider-process termination.
+ *
+ * Request graceful termination -> SIGINT -> bounded grace period -> if the
+ * process is still alive SIGKILL -> bounded terminal verdict. One primitive is
+ * used for every termination edge (timeout, AbortSignal, TTL cleanup,
+ * post-result cancellation, fatal protocol failure, bridge failure, teardown)
+ * so no path can leave a live provider process behind and no duplicate signal
+ * race or lingering timer is possible.
+ */
+export const CHILD_TERMINATION_GRACE_MS = 2000;
+export const CHILD_TERMINATION_VERDICT_MS = 2000;
+
+export function terminateChild(
+  child: ChildProcess,
+  graceMs: number = CHILD_TERMINATION_GRACE_MS,
+  verdictMs: number = CHILD_TERMINATION_VERDICT_MS,
+): Promise<"exited" | "killed"> {
+  return new Promise<"exited" | "killed">((resolve) => {
+    let done = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let verdictTimer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (verdict: "exited" | "killed"): void => {
+      if (done) return;
+      done = true;
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
+      if (verdictTimer !== undefined) clearTimeout(verdictTimer);
+      child.removeListener("exit", onExit);
+      child.removeListener("close", onExit);
+      resolve(verdict);
+    };
+    // Settle on "close" (stdio fully drained), never on the earlier "exit":
+    // the final provider output must still be observable to diagnostics.
+    const onExit = (): void => settle("exited");
+    child.once("close", onExit);
+    try {
+      child.kill("SIGINT");
+    } catch {
+      // Already dead: the exit/close listener settles immediately.
+    }
+    graceTimer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        settle("killed");
+        return;
+      }
+      // Bounded terminal verdict: never wait on a provider that ignores even
+      // SIGKILL (e.g. an uninterruptible child); cleanup must still settle.
+      verdictTimer = setTimeout(() => settle("killed"), verdictMs);
+    }, graceMs);
+  });
+}
+
+/**
+ * Capped diagnostic accumulator for provider-controlled output. Retains a
+ * bounded head window plus a bounded tail window so error mapping still has
+ * both the beginning and the most recent output, while total retained bytes
+ * never exceed `cap` regardless of provider lifetime.
+ */
+export class CappedTextBuffer {
+  private head = "";
+  private tail = "";
+  private overflowed = false;
+
+  constructor(private readonly cap: number) {}
+
+  push(chunk: string): void {
+    if (chunk.length === 0) return;
+    const headCap = Math.floor(this.cap / 2);
+    const tailCap = this.cap - headCap;
+    let rest = chunk;
+    if (this.head.length < headCap) {
+      const room = headCap - this.head.length;
+      this.head += rest.slice(0, room);
+      rest = rest.slice(room);
+    }
+    if (rest.length > 0) {
+      const combined = this.tail + rest;
+      if (combined.length > tailCap) this.overflowed = true;
+      this.tail = combined.slice(-tailCap);
+    }
+  }
+
+  didOverflow(): boolean {
+    return this.overflowed;
+  }
+
+  value(): string {
+    return this.head + this.tail;
+  }
+}
+
+/** Bounded retention for agy stdout used only for diagnostic error mapping. */
+export const MAX_AGY_STDOUT_DIAGNOSTIC_BYTES = 64 * 1024;
+/** Bounded retention for agy stderr used only for diagnostic error mapping. */
+export const MAX_AGY_STDERR_DIAGNOSTIC_BYTES = 64 * 1024;
+/**
+ * Maximum bytes of a single unterminated agy stream-json NDJSON line. A line
+ * beyond this bound is a protocol violation, not valid output: the run fails
+ * closed instead of accumulating provider-controlled memory. Matches the
+ * Router-side control-frame bound and the 1 MiB tool-result bound.
+ */
+export const MAX_AGY_NDJSON_LINE_BYTES = 1024 * 1024;
 
 export const AGY_PATH = join(homedir(), ".local", "bin", "agy");
 
