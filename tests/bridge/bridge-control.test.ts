@@ -31,7 +31,7 @@ describe("bridge-control IPC", () => {
 
     const client = new BridgeControlClient(server.socketPath, server.token);
     const promise = client.request("req-1", "cmm_echo", { text: "canary" });
-    await new Promise((r) => setTimeout(r, 30));
+    await waitFor(() => parked.length === 1, 4000);
     expect(parked).toMatchObject([{ id: "req-1", name: "cmm_echo", input: { text: "canary" } }]);
     expect(server.pendingCount()).toBe(1);
 
@@ -63,6 +63,16 @@ interface BridgeHarness {
   server: BridgeControlServer;
   send: (msg: object) => void;
   lines: () => string[];
+}
+
+/** Poll until `predicate` holds; avoids fixed sleeps that flake under load. */
+async function waitFor(predicate: () => boolean, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("waitFor timed out");
 }
 
 async function withBridge(
@@ -103,7 +113,7 @@ describe("external stdio MCP bridge process", () => {
       async ({ send, lines }) => {
         send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
         send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-        await new Promise((r) => setTimeout(r, 300));
+        await waitFor(() => lines().length >= 2);
         const init = JSON.parse(lines()[0]!) as { result: { serverInfo: { name: string } } };
         expect(init.result.serverInfo.name).toBe("cmm_qoder");
         const list = JSON.parse(lines()[1]!) as {
@@ -131,13 +141,12 @@ describe("external stdio MCP bridge process", () => {
         });
         // The bridge must NOT answer before the Router supplies a result: the
         // request is parked with the Router, nothing is executed locally.
-        await new Promise((r) => setTimeout(r, 300));
+        await waitFor(() => parked.length === 1);
         expect(lines().some((line) => line.includes('"id":7'))).toBe(false);
-        expect(parked.length).toBe(1);
         expect(parked[0]).toMatchObject({ name: "cmm_echo", input: { text: "canary" } });
 
         expect(server.resolve(parked[0]!.id, "canary-from-qoder")).toBe(true);
-        await new Promise((r) => setTimeout(r, 300));
+        await waitFor(() => lines().some((line) => line.includes('"id":7')));
         const response = lines().find((line) => line.includes('"id":7'));
         expect(response).toBeDefined();
         const parsed = JSON.parse(response!) as {
