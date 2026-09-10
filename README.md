@@ -94,10 +94,17 @@ auth and secrets, offline-capable.
 - Codex app-server: subscription auth, read-only sandbox per turn.
 - Claude SDK 0.3.266: completion signaled by `result/success`, not
   `stop_reason`; models are aliases (`sonnet`, `opus`, `haiku`, `default`).
-- agy 1.1.16: `--print-timeout` needs a duration unit (`120s`);
+- agy 1.2.0: `--print-timeout` needs a duration unit (`120s`);
   stream-json envelope is `{"event": type, type: {...}}`;
   `agy models` has no JSON flag; settings file gains `trustedWorkspaces`
-  entries owned by the CLI itself.
+  entries owned by the CLI itself. `agy mcp add` requires flags BEFORE
+  `<name>`; the persistent MCP registration is a single global
+  `~/.gemini/config/mcp_config.json`, so the Router correlates each MCP child
+  with its own agy run through a per-run rendezvous descriptor instead of a
+  global "find the only live session" scan. `agy --help` exposes no
+  tool-selection or parallel-execution control, so an explicit `tool_choice`
+  other than `auto` (and `parallel_tool_calls=true`) is rejected rather than
+  silently dropped.
 - Command Code Provider API: live use blocked until spend ack + secret
   preconditions are human-confirmed (`BLOCKED_EXTERNAL_PRECONDITION`).
 - All routes: `CHAT_ONLY` — external tool ownership unproven per route;

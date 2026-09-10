@@ -67,49 +67,77 @@ describe("Antigravity adapter: Qoder-owned tool round-trip through the MCP bridg
     const registrations: Array<{ name: string; command: string; args: string[]; env: Record<string, string> }> = [];
     const inferenceArgs: string[][] = [];
     let mcpResponseText: string | undefined;
-    let releaseCompletion: (() => void) | undefined;
-    const completionGate = new Promise<void>((resolve) => {
-      releaseCompletion = resolve;
-    });
 
-    // Fake agy: emits stream-json frames AND acts as the MCP client that agy
-    // would be, driving the registered launcher exactly as agy does.
+    // Fake agy: emits stream-json frames AND spawns the registered launcher as
+    // its own child (the production topology), acting as the MCP client that
+    // agy would be. Its pid is reported as the per-run selector so the launcher
+    // resolves exactly this run's descriptor.
     const runner = {
       async runInference() {
         return { status: 0, signal: null, stdout: "", stderr: "" };
       },
       async streamInference(
         args: string[],
-        _options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+        options: {
+          cwd: string;
+          timeoutMs: number;
+          signal: AbortSignal;
+          onSpawn?: (pid: number) => void;
+          extraEnv?: Record<string, string>;
+        },
         onEvent: (event: ParsedStreamEvent) => void,
       ) {
         inferenceArgs.push(args);
-        feedStreamLine(JSON.stringify({ step_update: { text_delta: "thinking " } }), onEvent);
+        feedStreamLine(
+          JSON.stringify({ event: "step_update", step_update: { text_delta: "thinking " } }),
+          onEvent,
+        );
 
         const child = spawn(TSX, [LAUNCHER_TS], {
           stdio: ["pipe", "pipe", "pipe"],
         });
         children.push(child);
+        // This fake runner plays the agy process, so the launcher's parent is
+        // this process. That pid is the per-run selector.
+        options.onSpawn?.(process.pid);
+
         const seen: string[] = [];
         child.stdout!.setEncoding("utf-8");
         child.stdout!.on("data", (chunk: string) => seen.push(chunk));
-        child.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
-        child.stdin!.write(
-          `${JSON.stringify({
-            jsonrpc: "2.0",
-            id: 5,
-            method: "tools/call",
-            params: { name: "cmm_echo", arguments: { text: "canary" } },
-          })}\n`,
-        );
-        // The MCP handler blocks until Qoder's result arrives over the
-        // Router control channel; only then does agy continue.
+        const send = (msg: object): void => {
+          child.stdin!.write(`${JSON.stringify(msg)}\n`);
+        };
+        send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+        await waitFor(() => seen.join("").includes('"id":1'));
+        send({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} });
+        await waitFor(() => seen.join("").includes('"id":3'));
+        send({
+          jsonrpc: "2.0",
+          id: 5,
+          method: "tools/call",
+          params: { name: "cmm_echo", arguments: { text: "canary" } },
+        });
+        // The MCP handler blocks until Qoder's result arrives over the Router
+        // control channel; only then does the provider continue.
         await waitFor(() => seen.join("").includes('"id":5'));
         const response = JSON.parse(
           seen.join("").split("\n").find((line) => line.includes('"id":5'))!,
         ) as { result: { content: Array<{ text: string }> } };
         mcpResponseText = response.result.content[0]!.text;
-        releaseCompletion?.();
+        // The final text is derived ONLY from the tool-result wire value.
+        feedStreamLine(
+          JSON.stringify({
+            event: "step_update",
+            step_update: { text_delta: `final:${mcpResponseText}` },
+          }),
+          onEvent,
+        );
+        feedStreamLine(JSON.stringify({ event: "result", result: { status: "ok" } }), onEvent);
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already exited
+        }
         return { status: 0, signal: null, stdout: "", stderr: "" };
       },
     };
@@ -163,12 +191,17 @@ describe("Antigravity adapter: Qoder-owned tool round-trip through the MCP bridg
     expect(mcpResponseText).toBe("canary-from-qoder");
     console.log("ANTIGRAVITY_QODER_RESULT_CORRELATED=PASS");
 
-    // The SAME run continues and produces its final output.
-    await completionGate;
+    // The SAME run continues and its final text is causally derived from the
+    // Qoder tool result that travelled over the real MCP wire.
     const follow = await followPromise;
+    const text = follow
+      .filter((e) => e.type === "text_delta")
+      .map((e) => (e as { text: string }).text)
+      .join("");
+    expect(text).toContain("final:canary-from-qoder");
     expect(adapter.activeToolSessions()).toBe(0);
     console.log("ANTIGRAVITY_SAME_RUN_CONTINUATION=PASS");
-    expect(follow.find((e) => e.type === "completed" || e.type === "error")).toBeDefined();
+    console.log("E2E_PROVIDER_CONTINUATION_CAUSALLY_DEPENDS_ON_TOOL_RESULT=PASS");
   }, 40000);
 
   it("fails closed on an unmatched tool result without spawning agy", async () => {

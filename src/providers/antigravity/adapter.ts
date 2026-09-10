@@ -5,8 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
-import { registerBridgeSession } from "../../bridge/session-registry.js";
+import {
+  BridgeSessionRegistry,
+  SESSION_SELECTOR_ENV,
+  type BridgeSessionDescriptor,
+} from "../../bridge/session-registry.js";
 import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
+import { BoundedQueue } from "../../core/bounded-queue.js";
 import type {
   ProviderAdapter,
   ProviderHealth,
@@ -310,33 +315,57 @@ export function serializeConversationForHeadlessPrompt(
   return sections.join("\n\n");
 }
 
+export interface InferenceRunOptions {
+  cwd: string;
+  timeoutMs: number;
+  signal: AbortSignal;
+  /**
+   * Reports the pid of the spawned agy process. The Router uses it as the
+   * per-run selector that correlates exactly one MCP launcher with one Router
+   * session. Must be called synchronously during spawn.
+   */
+  onSpawn?: ((pid: number) => void) | undefined;
+  /** Extra environment for the agy child (never PAYG variables). */
+  extraEnv?: Record<string, string> | undefined;
+}
+
 export interface InferenceRunner {
-  runInference(
-    args: string[],
-    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
-  ): Promise<AgyRunResult>;
+  runInference(args: string[], options: InferenceRunOptions): Promise<AgyRunResult>;
   streamInference(
     args: string[],
-    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    options: InferenceRunOptions,
     onEvent: (event: ParsedStreamEvent) => void,
   ): Promise<AgyRunResult>;
 }
 
 /**
- * Unbounded async queue bridging the subprocess callback into the adapter's
+ * Bounded async queue bridging the subprocess callback into the adapter's
  * async-iterator flow. Parsed NDJSON events are consumable the moment they
- * arrive — never held until process exit.
+ * arrive — never held until process exit. Bounded so a misbehaving provider
+ * cannot grow the queue without limit.
  */
 class StreamEventQueue {
   private events: ParsedStreamEvent[] = [];
   private waiters: Array<() => void> = [];
   private closed = false;
+  private overflowed = false;
+
+  constructor(private readonly maxSize = MAX_STREAM_EVENTS) {}
 
   push(event: ParsedStreamEvent): void {
     if (this.closed) return;
+    if (this.events.length >= this.maxSize) {
+      this.overflowed = true;
+      return;
+    }
     this.events.push(event);
     const waiter = this.waiters.shift();
     waiter?.();
+  }
+
+  /** True once the bounded event queue refused an event. */
+  didOverflow(): boolean {
+    return this.overflowed;
   }
 
   close(): void {
@@ -456,22 +485,25 @@ export class SpawnInferenceRunner implements InferenceRunner {
 
   async runInference(
     args: string[],
-    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    options: InferenceRunOptions,
   ): Promise<AgyRunResult> {
     return await this.streamInference(args, options, () => undefined);
   }
 
   async streamInference(
     args: string[],
-    options: { cwd: string; timeoutMs: number; signal: AbortSignal },
+    options: InferenceRunOptions,
     onEvent: (event: ParsedStreamEvent) => void,
   ): Promise<AgyRunResult> {
     return await new Promise<AgyRunResult>((resolve) => {
       const child = spawn(this.agyPath, args, {
         cwd: options.cwd,
-        env: buildAgyChildEnv(),
+        env: buildAgyChildEnv(options.extraEnv),
         stdio: ["ignore", "pipe", "pipe"],
       });
+      // Report the exact provider process synchronously so the Router can
+      // publish its per-run rendezvous descriptor before the MCP handshake.
+      if (child.pid !== undefined) options.onSpawn?.(child.pid);
       let stdout = "";
       let stderr = "";
       let lineBuffer = "";
@@ -541,7 +573,17 @@ export class SpawnInferenceRunner implements InferenceRunner {
  * same bound so a session whose continuation never arrives cannot leak its agy
  * process, control socket, or session descriptor.
  */
-const AGY_SESSION_TTL_MS = 120_000;
+const DEFAULT_AGY_SESSION_TTL_MS = 120_000;
+
+/**
+ * Maximum simultaneously parked provider tool sessions. A second concurrent
+ * MCP tools/call on one session is refused: the split HTTP round-trip supports
+ * exactly one parked call per provider session.
+ */
+const DEFAULT_MAX_LIVE_TOOL_SESSIONS = 64;
+const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
+/** Bounded size of the parsed-event hand-off queue for one agy run. */
+const MAX_STREAM_EVENTS = 4096;
 
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
 export const ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools";
@@ -574,23 +616,8 @@ export function antigravityBridgeToolDefinitions(
   }));
 }
 
-/** Minimal async hand-off queue for racing tool calls against agy events. */
-class AsyncQueue<T> {
-  private readonly items: T[] = [];
-  private readonly waiters: Array<(value: T) => void> = [];
-
-  push(value: T): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter(value);
-    else this.items.push(value);
-  }
-
-  next(): Promise<T> {
-    const item = this.items.shift();
-    if (item !== undefined) return Promise.resolve(item);
-    return new Promise<T>((resolve) => this.waiters.push(resolve));
-  }
-}
+/** Bounded hand-off queue for racing tool calls against agy events. */
+type AsyncQueue<T> = BoundedQueue<T>;
 
 /**
  * A live agy run held across the split HTTP interaction while its external MCP
@@ -603,7 +630,7 @@ interface AgyToolSession {
   cwd: string;
   queue: StreamEventQueue;
   queuePromise: Promise<ParsedStreamEvent | null> | undefined;
-  toolCalls: AsyncQueue<BridgeToolRequest>;
+  toolCalls: BoundedQueue<BridgeToolRequest>;
   toolCallPromise: Promise<BridgeToolRequest> | undefined;
   control: BridgeControlServer;
   unregister: () => void;
@@ -617,8 +644,12 @@ interface AgyToolSession {
   usageYielded: boolean;
   parkedRequestId: string | undefined;
   publicToolCallId: string | undefined;
+  /** True once this session has parked a call: no second call is accepted. */
+  gate: { parked: boolean };
   /** Bounded lifetime for a parked session whose continuation never arrives. */
   ttlTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Set once the session has reached a terminal state (cleanup ran). */
+  terminated: boolean;
 }
 
 export class AntigravityAdapter implements ProviderAdapter {
@@ -638,6 +669,12 @@ export class AntigravityAdapter implements ProviderAdapter {
   private readonly mcpRegistrar: McpRegistrar;
   /** Live agy runs held open while an external MCP tool call is parked. */
   private readonly toolSessions = new Map<string, AgyToolSession>();
+  /** Bounded per-run rendezvous registry (selector = owning agy pid). */
+  private readonly registry: BridgeSessionRegistry;
+  private readonly sessionTtlMs: number;
+  private readonly maxLiveSessions: number;
+  /** Live tool sessions keyed by the Router request that currently drives them. */
+  private readonly sessionsByRequest = new Map<string, AgyToolSession>();
   /** The CMM-owned MCP server is registered once, never per request. */
   private mcpRegistered = false;
 
@@ -651,12 +688,18 @@ export class AntigravityAdapter implements ProviderAdapter {
       bridgeEntryPath?: string | undefined;
       bridgeLauncherPath?: string | undefined;
       mcpRegistrar?: McpRegistrar | undefined;
+      registry?: BridgeSessionRegistry | undefined;
+      sessionTtlMs?: number | undefined;
+      maxLiveSessions?: number | undefined;
     } = {},
   ) {
     this.agyPath = options.agyPath ?? AGY_PATH;
     this.runner = runner ?? new SpawnInferenceRunner(this.agyPath);
     this.modelsRunner = modelsRunner ?? new RealAgyRunner(this.agyPath);
     this.broker = options.broker ?? new DeferredToolBroker();
+    this.registry = options.registry ?? new BridgeSessionRegistry();
+    this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_AGY_SESSION_TTL_MS;
+    this.maxLiveSessions = options.maxLiveSessions ?? DEFAULT_MAX_LIVE_TOOL_SESSIONS;
     this.bridgeCommand = options.bridgeCommand ?? process.execPath;
     this.bridgeEntryPath = options.bridgeEntryPath ?? defaultAntigravityBridgeEntryPath();
     this.bridgeLauncherPath = options.bridgeLauncherPath ?? defaultAntigravityBridgeLauncherPath();
@@ -673,6 +716,15 @@ export class AntigravityAdapter implements ProviderAdapter {
   /** Live Antigravity tool sessions (test/diagnostic accessor). */
   activeToolSessions(): number {
     return this.toolSessions.size;
+  }
+
+  /** Bounded per-run rendezvous state (test/diagnostic accessor). */
+  liveRendezvousSessions(): number {
+    return this.registry.liveCount();
+  }
+
+  maxRendezvousSessions(): number {
+    return this.registry.maxLiveSessions();
   }
 
   buildInferenceArgs(upstreamSlug: string, prompt: string): string[] {
@@ -790,17 +842,43 @@ export class AntigravityAdapter implements ProviderAdapter {
     } as RouterEvent;
   }
 
-  /** Release a live tool session: registration, control channel, temp dir. */
+  /**
+   * Terminate a live agy run and release every Router-side resource.
+   *
+   * Order is deliberate and race-free:
+   *   1. stop the TTL timer
+   *   2. abort the live agy process (SIGINT with SIGKILL escalation)
+   *   3. reject/close the pending bridge request
+   *   4. broker scope cleanup
+   *   5. remove the per-run rendezvous descriptor
+   *   6. close the control channel
+   *   7. remove the per-run temp cwd
+   *   8. session map cleanup
+   */
   private async closeToolSession(session: AgyToolSession): Promise<void> {
+    if (session.terminated) return;
+    session.terminated = true;
     if (session.ttlTimer !== undefined) {
       clearTimeout(session.ttlTimer);
       session.ttlTimer = undefined;
     }
+    // Terminate the exact live provider process; Router cleanup alone must not
+    // leave an in-flight agy run behind.
+    try {
+      session.abortController.abort();
+    } catch {
+      // An already-aborted controller needs no further action.
+    }
+    if (session.parkedRequestId !== undefined) {
+      session.control.reject(session.parkedRequestId, "provider run terminated");
+      session.parkedRequestId = undefined;
+    }
     if (session.publicToolCallId !== undefined) {
       this.toolSessions.delete(session.publicToolCallId);
-      this.broker.cancelScope({ provider: "google", sessionId: session.sessionId });
       session.publicToolCallId = undefined;
     }
+    this.sessionsByRequest.delete(session.requestId);
+    this.broker.cancelScope({ provider: "google", sessionId: session.sessionId });
     session.unregister();
     await session.control.close().catch(() => undefined);
     try {
@@ -869,7 +947,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     session: AgyToolSession,
     request: BridgeToolRequest,
   ): AsyncIterable<RouterEvent> {
-    if (session.parkedRequestId !== undefined) {
+    if (session.gate.parked) {
       session.control.reject(request.id, "concurrent tool calls are not supported");
       await this.closeToolSession(session);
       yield {
@@ -881,7 +959,20 @@ export class AntigravityAdapter implements ProviderAdapter {
       };
       return;
     }
+    if (this.toolSessions.size >= this.maxLiveSessions) {
+      session.control.reject(request.id, "too many live provider tool sessions");
+      await this.closeToolSession(session);
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_rate_limited",
+          "Live provider tool sessions are at capacity; refusing another parked call",
+        ),
+      };
+      return;
+    }
     const publicId = createPublicToolCallId("google");
+    session.gate.parked = true;
     session.parkedRequestId = request.id;
     session.publicToolCallId = publicId;
     try {
@@ -893,11 +984,12 @@ export class AntigravityAdapter implements ProviderAdapter {
           toolCallId: publicId,
           publicToolCallId: publicId,
         },
-        AGY_SESSION_TTL_MS,
+        this.sessionTtlMs,
         undefined,
         session,
       );
     } catch (error) {
+      session.gate.parked = false;
       session.parkedRequestId = undefined;
       session.publicToolCallId = undefined;
       session.control.reject(request.id, "router could not park the tool call");
@@ -914,7 +1006,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     this.toolSessions.set(publicId, session);
     const timer = setTimeout(() => {
       void this.closeToolSession(session);
-    }, AGY_SESSION_TTL_MS);
+    }, this.sessionTtlMs);
     if (typeof timer.unref === "function") timer.unref();
     session.ttlTimer = timer;
     yield {
@@ -936,10 +1028,12 @@ export class AntigravityAdapter implements ProviderAdapter {
     session: AgyToolSession,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
+    // A session that parked a call must survive this drain (the continuation
+    // arrives on a later request); every other exit terminates the provider run.
+    let parkedHere = false;
     try {
       while (true) {
         if (signal.aborted || session.abortController.signal.aborted) {
-          await this.closeToolSession(session);
           return;
         }
         session.queuePromise ??= session.queue.next();
@@ -950,6 +1044,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         ]);
         if (outcome.kind === "tool") {
           session.toolCallPromise = undefined;
+          parkedHere = true;
           yield* this.parkAgyToolCall(session, outcome.tc);
           return;
         }
@@ -958,15 +1053,11 @@ export class AntigravityAdapter implements ProviderAdapter {
         if (event === null) {
           await session.resultPromise;
           yield* this.runVerdict(session, signal);
-          await this.closeToolSession(session);
           return;
         }
         if (event.kind === "text" && event.texts) {
           for (const text of event.texts) {
-            if (signal.aborted || session.abortController.signal.aborted) {
-              await this.closeToolSession(session);
-              return;
-            }
+            if (signal.aborted || session.abortController.signal.aborted) return;
             yield { type: "text_delta", text };
           }
         } else if (event.kind === "usage" && event.usage) {
@@ -979,9 +1070,10 @@ export class AntigravityAdapter implements ProviderAdapter {
           session.protocolError = event.error;
         }
       }
-    } catch (error) {
-      await this.closeToolSession(session);
-      throw error;
+    } finally {
+      // Guaranteed cleanup even when the consumer stops iterating at the
+      // terminal event instead of draining the generator to completion.
+      if (!parkedHere) await this.closeToolSession(session);
     }
   }
 
@@ -994,23 +1086,91 @@ export class AntigravityAdapter implements ProviderAdapter {
     abortController: AbortController,
   ): AsyncIterable<RouterEvent> {
     const sessionId = request.requestId;
-    const toolCalls = new AsyncQueue<BridgeToolRequest>();
+    const toolCalls = new BoundedQueue<BridgeToolRequest>(MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION);
+    // The gate closes as soon as this session parks a call, so a second
+    // concurrent tools/call is refused instead of sitting unanswered.
+    const gate = { parked: false };
+    let sessionRef: AgyToolSession | undefined;
     const control = await BridgeControlServer.listen({
-      onToolCall: (toolRequest) => toolCalls.push(toolRequest),
-    });
-    const unregister = registerBridgeSession(sessionId, {
-      socketPath: control.socketPath,
-      token: control.token,
-      tools: antigravityBridgeToolDefinitions(request.tools),
+      onToolCall: (toolRequest) => {
+        if (gate.parked || !toolCalls.tryPush(toolRequest)) {
+          control.reject(toolRequest.id, "concurrent tool calls are not supported");
+        }
+      },
+      // A dead MCP bridge while the provider waits must fail the parked session
+      // closed immediately rather than at TTL.
+      onDisconnect: () => {
+        if (sessionRef !== undefined) void this.closeToolSession(sessionRef);
+      },
     });
     this.ensureMcpServerRegistered();
 
     const queue = new StreamEventQueue();
-    const runPromise = this.runner.streamInference(
-      args,
-      { cwd, timeoutMs: PRINT_TIMEOUT_MS, signal: abortController.signal },
-      (event: ParsedStreamEvent) => queue.push(event),
-    );
+    // The agy pid is the per-run selector. It is reported synchronously by the
+    // runner during spawn, so the Router can publish the descriptor for THIS
+    // run only — never a global "find whichever session is live".
+    let agyPid: number | undefined;
+    const extraEnv: Record<string, string> = { [SESSION_SELECTOR_ENV]: sessionId };
+    // The merged child environment must still contain no PAYG variable.
+    verifyNoPaygInChildEnv(buildAgyChildEnv(extraEnv));
+    let runPromise: Promise<AgyRunResult>;
+    try {
+      runPromise = this.runner.streamInference(
+        args,
+        {
+          cwd,
+          timeoutMs: PRINT_TIMEOUT_MS,
+          signal: abortController.signal,
+          extraEnv,
+          onSpawn: (pid) => {
+            agyPid = pid;
+          },
+        },
+        (event: ParsedStreamEvent) => queue.push(event),
+      );
+    } catch (error) {
+      await control.close().catch(() => undefined);
+      throw error;
+    }
+    if (agyPid === undefined) {
+      // Without the exact provider pid there is no deterministic correlation;
+      // refuse rather than fall back to an ambiguous selection.
+      abortController.abort();
+      await control.close().catch(() => undefined);
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Antigravity runner did not report the provider process id",
+        ),
+      };
+      return;
+    }
+
+    let unregister: () => void;
+    try {
+      const descriptor: BridgeSessionDescriptor = {
+        sessionId,
+        agyPid,
+        socketPath: control.socketPath,
+        token: control.token,
+        tools: antigravityBridgeToolDefinitions(request.tools),
+      };
+      unregister = this.registry.register(descriptor);
+    } catch (error) {
+      abortController.abort();
+      await runPromise.catch(() => undefined);
+      await control.close().catch(() => undefined);
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_protocol_error", "Router could not publish the bridge session"),
+      };
+      return;
+    }
+
     runPromise.then(
       () => queue.close(),
       () => queue.close(),
@@ -1036,8 +1196,12 @@ export class AntigravityAdapter implements ProviderAdapter {
       usageYielded: false,
       parkedRequestId: undefined,
       publicToolCallId: undefined,
+      gate,
       ttlTimer: undefined,
+      terminated: false,
     };
+    sessionRef = session;
+    this.sessionsByRequest.set(request.requestId, session);
     runPromise.then(
       (value) => {
         session.result = value;
@@ -1046,7 +1210,11 @@ export class AntigravityAdapter implements ProviderAdapter {
         session.runError = error;
       },
     );
-    yield* this.drainAgySession(session, signal);
+    try {
+      yield* this.drainAgySession(session, signal);
+    } finally {
+      this.sessionsByRequest.delete(request.requestId);
+    }
   }
 
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
@@ -1094,6 +1262,11 @@ export class AntigravityAdapter implements ProviderAdapter {
         const session = claim.context;
         this.toolSessions.delete(publicId);
         session.publicToolCallId = undefined;
+        // Rebind the session to THIS request so a cancellation of the
+        // continuation reaches the exact same live agy run.
+        this.sessionsByRequest.delete(session.requestId);
+        session.requestId = request.requestId;
+        this.sessionsByRequest.set(request.requestId, session);
         if (session.parkedRequestId !== undefined) {
           session.control.resolve(session.parkedRequestId, result.content ?? "");
           session.parkedRequestId = undefined;
@@ -1108,6 +1281,8 @@ export class AntigravityAdapter implements ProviderAdapter {
                 ? error
                 : new RouterError("provider_protocol_error", String(error)),
           };
+        } finally {
+          this.sessionsByRequest.delete(request.requestId);
         }
         return;
       }
@@ -1337,10 +1512,17 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async cancel(requestId: string): Promise<void> {
-    // A session parked awaiting Qoder's continuation is intentionally NOT torn
-    // down here: the HTTP layer closes the reply socket after the tool_calls
-    // response, which is indistinguishable from a cancel at this layer. Parked
-    // sessions are bounded by AGY_SESSION_TTL_MS and released on resolution.
+    // A request that currently drives a live tool session (parked awaiting
+    // Qoder, or resuming after a result) is terminated through the SAME agy
+    // AbortController, so post-result cancellation reaches the exact provider
+    // process. A parked session with no request bound to it is left to its TTL:
+    // the HTTP layer closes the reply socket after the normal tool_calls
+    // response, which is not a cancellation.
+    const session = this.sessionsByRequest.get(requestId);
+    if (session !== undefined) {
+      await this.closeToolSession(session);
+      return;
+    }
     const active = this.activeRequests.get(requestId);
     if (!active) return;
     try {

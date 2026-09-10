@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const AGY_PATH = join(homedir(), ".local", "bin", "agy");
-export const AGY_VERSION = "1.1.16";
 
 export const GLOBAL_SETTINGS_PATH = join(
   homedir(),
@@ -73,7 +72,9 @@ export const FORBIDDEN_PAYG_VARS = [
   "GOOGLE_API_KEY",
 ] as const;
 
-export function buildAgyChildEnv(): Record<string, string> {
+export function buildAgyChildEnv(
+  extraEnv?: Record<string, string>,
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
@@ -83,6 +84,11 @@ export function buildAgyChildEnv(): Record<string, string> {
       continue;
     }
     env[key] = value;
+  }
+  if (extraEnv) {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      env[key] = value;
+    }
   }
   return env;
 }
