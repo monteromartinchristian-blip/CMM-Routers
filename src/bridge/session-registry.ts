@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -36,6 +38,13 @@ export const MAX_ANCESTOR_DEPTH = 4;
 
 /** Descriptor file naming contract: `agy-<pid>.json`, nothing else. */
 const DESCRIPTOR_FILE = /^agy-(\d+)\.json$/;
+/**
+ * Temp publication names. Deliberately outside the descriptor contract and
+ * without the `agy-` prefix, so a partially written temp file can neither be
+ * mistaken for a descriptor nor counted as one by `descriptorsOnDisk()`.
+ */
+const TEMP_DESCRIPTOR_FILE = /^\.tmp-agy-\d+-[0-9a-z]+-\d+$/;
+const TEMP_DESCRIPTOR_PREFIX = ".tmp-agy-";
 /** Exclusive lock file guarding the registry directory critical section. */
 const LOCK_FILE_NAME = ".lock";
 /** Bound on how long a registration waits for the directory lock. */
@@ -72,8 +81,26 @@ export function registryDir(): string {
     : join(tmpdir(), "cmm-bridge-registry");
 }
 
+function descriptorPath(dir: string, agyPid: number): string {
+  return join(dir, `agy-${agyPid}.json`);
+}
+
 function selectorFile(agyPid: number): string {
-  return join(registryDir(), `agy-${agyPid}.json`);
+  return descriptorPath(registryDir(), agyPid);
+}
+
+let tempSerial = 0;
+
+/**
+ * Unique temp path in the SAME directory as the final descriptor, so the
+ * publishing rename can never cross a filesystem boundary. Uniqueness covers
+ * concurrent writers in this process (serial counter) and other processes
+ * (pid + random suffix).
+ */
+function nextTempDescriptorPath(dir: string): string {
+  tempSerial += 1;
+  const random = Math.random().toString(36).slice(2, 10) || "0";
+  return join(dir, `${TEMP_DESCRIPTOR_PREFIX}${process.pid}-${random}-${tempSerial}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -248,22 +275,71 @@ export class BridgeSessionRegistry {
           );
         }
       }
-      writeFileSync(selectorFile(descriptor.agyPid), JSON.stringify(descriptor), {
-        mode: 0o600,
-      });
+      this.removeAbandonedTempFiles(dir);
+      this.publishDescriptor(dir, descriptor);
       this.live.set(descriptor.agyPid, descriptor.sessionId);
       let released = false;
       return () => {
         if (released) return;
         released = true;
         try {
-          rmSync(selectorFile(descriptor.agyPid), { force: true });
+          rmSync(descriptorPath(dir, descriptor.agyPid), { force: true });
         } catch {
           // Best effort: a stale descriptor is rejected by the launcher anyway.
         }
         this.live.delete(descriptor.agyPid);
       };
     });
+  }
+
+  /**
+   * Publish the descriptor atomically. The launcher polls the FINAL path
+   * directly (`agy-<pid>.json`), and reconciliation treats malformed JSON as
+   * stale and deletes it, so a truncated or empty file must never be visible
+   * there: the complete payload is written to a unique temp file in the same
+   * directory, flushed to stable storage, and only then renamed onto the final
+   * path. `rename` is atomic, so a concurrent reader observes either the
+   * previous descriptor or the new one, never a partial one.
+   */
+  private publishDescriptor(dir: string, descriptor: BridgeSessionDescriptor): void {
+    const payload = JSON.stringify(descriptor);
+    const tempPath = nextTempDescriptorPath(dir);
+    let fd: number | undefined;
+    try {
+      fd = openSync(tempPath, "wx", 0o600);
+      writeFileSync(fd, payload);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(tempPath, descriptorPath(dir, descriptor.agyPid));
+    } catch (error) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          // Already closed; the original error is the one that matters.
+        }
+      }
+      removeFileQuietly(tempPath);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove temp files abandoned by crashed writers. Only ever called while
+   * holding the directory lock, which serializes every writer, so a matching
+   * file is guaranteed to be orphaned. Final descriptors are never touched.
+   */
+  private removeAbandonedTempFiles(dir: string): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (TEMP_DESCRIPTOR_FILE.test(entry)) removeFileQuietly(join(dir, entry));
+    }
   }
 
   /**
