@@ -13,6 +13,13 @@ import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-
 type QueryFn = typeof query;
 type SpawnFn = typeof spawn;
 
+/**
+ * Finite lifetime for a parked tool session. The broker entry expires on the
+ * same bound, so a session whose continuation never arrives cannot leak its
+ * SDK query, bridge process, or control socket.
+ */
+const SESSION_TTL_MS = 120_000;
+
 /** Simple async hand-off queue used to race tool calls against SDK messages. */
 class AsyncQueue<T> {
   private readonly items: T[] = [];
@@ -54,6 +61,8 @@ interface LiveClaudeSession {
   parkedRequestId: string | undefined;
   /** Public id handed to Qoder for the parked call. */
   publicToolCallId: string | undefined;
+  /** Bounded lifetime for a parked session whose continuation never arrives. */
+  ttlTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 
@@ -478,6 +487,10 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   /** Release a live session: control channel, bridge process, broker entry. */
   private async closeSession(session: LiveClaudeSession): Promise<void> {
+    if (session.ttlTimer !== undefined) {
+      clearTimeout(session.ttlTimer);
+      session.ttlTimer = undefined;
+    }
     if (session.publicToolCallId !== undefined) {
       this.sessions.delete(session.publicToolCallId);
       this.broker.cancelScope({ provider: "claude", sessionId: session.sessionKey });
@@ -526,7 +539,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           toolCallId: publicId,
           publicToolCallId: publicId,
         },
-        undefined,
+        SESSION_TTL_MS,
         undefined,
         session,
       );
@@ -545,6 +558,13 @@ export class ClaudeAdapter implements ProviderAdapter {
       return;
     }
     this.sessions.set(publicId, session);
+    // Bounded lifetime: a continuation that never arrives must not leak the
+    // live SDK query, the bridge process, or the control socket.
+    const timer = setTimeout(() => {
+      void this.closeSession(session);
+    }, SESSION_TTL_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    session.ttlTimer = timer;
     yield {
       type: "tool_call_delta",
       index: 0,
@@ -785,6 +805,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           usageYielded: false,
           parkedRequestId: undefined,
           publicToolCallId: undefined,
+          ttlTimer: undefined,
         };
         yield* this.drainSession(session, signal);
         return;
@@ -832,16 +853,12 @@ export class ClaudeAdapter implements ProviderAdapter {
    * Cancel an active request using AbortController.
    */
   async cancel(requestId: string): Promise<void> {
-    // Release any live tool session opened by this request: the parked bridge
-    // handler, its control socket, and its bridge process are all torn down.
-    for (const [publicId, session] of [...this.sessions]) {
-      if (session.requestId === requestId) {
-        this.sessions.delete(publicId);
-        session.publicToolCallId = undefined;
-        await this.closeSession(session);
-      }
-    }
-
+    // NOTE: a session parked awaiting Qoder's continuation is intentionally NOT
+    // torn down here. The HTTP layer closes the reply socket after the
+    // tool_calls response, which is indistinguishable from a cancel at this
+    // layer; killing the parked session would break the legitimate
+    // cross-request round-trip. Parked sessions are bounded by SESSION_TTL_MS,
+    // released on resolution, and released when the bridge process dies.
     const activeRequest = this.activeRequests.get(requestId);
     if (!activeRequest) {
       return;

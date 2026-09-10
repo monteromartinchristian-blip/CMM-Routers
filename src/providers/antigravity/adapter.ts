@@ -536,6 +536,13 @@ export class SpawnInferenceRunner implements InferenceRunner {
   }
 }
 
+/**
+ * Finite lifetime for a parked tool session; the broker entry expires on the
+ * same bound so a session whose continuation never arrives cannot leak its agy
+ * process, control socket, or session descriptor.
+ */
+const AGY_SESSION_TTL_MS = 120_000;
+
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
 export const ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools";
 
@@ -610,6 +617,8 @@ interface AgyToolSession {
   usageYielded: boolean;
   parkedRequestId: string | undefined;
   publicToolCallId: string | undefined;
+  /** Bounded lifetime for a parked session whose continuation never arrives. */
+  ttlTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 export class AntigravityAdapter implements ProviderAdapter {
@@ -783,6 +792,10 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   /** Release a live tool session: registration, control channel, temp dir. */
   private async closeToolSession(session: AgyToolSession): Promise<void> {
+    if (session.ttlTimer !== undefined) {
+      clearTimeout(session.ttlTimer);
+      session.ttlTimer = undefined;
+    }
     if (session.publicToolCallId !== undefined) {
       this.toolSessions.delete(session.publicToolCallId);
       this.broker.cancelScope({ provider: "google", sessionId: session.sessionId });
@@ -880,7 +893,7 @@ export class AntigravityAdapter implements ProviderAdapter {
           toolCallId: publicId,
           publicToolCallId: publicId,
         },
-        undefined,
+        AGY_SESSION_TTL_MS,
         undefined,
         session,
       );
@@ -899,6 +912,11 @@ export class AntigravityAdapter implements ProviderAdapter {
       return;
     }
     this.toolSessions.set(publicId, session);
+    const timer = setTimeout(() => {
+      void this.closeToolSession(session);
+    }, AGY_SESSION_TTL_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    session.ttlTimer = timer;
     yield {
       type: "tool_call_delta",
       index: 0,
@@ -1018,6 +1036,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       usageYielded: false,
       parkedRequestId: undefined,
       publicToolCallId: undefined,
+      ttlTimer: undefined,
     };
     runPromise.then(
       (value) => {
@@ -1318,16 +1337,10 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async cancel(requestId: string): Promise<void> {
-    // Release any live tool session opened by this request: the parked bridge
-    // handler, its control socket, its session descriptor and its temp dir.
-    for (const [publicId, session] of [...this.toolSessions]) {
-      if (session.requestId === requestId) {
-        this.toolSessions.delete(publicId);
-        session.publicToolCallId = undefined;
-        await this.closeToolSession(session);
-      }
-    }
-
+    // A session parked awaiting Qoder's continuation is intentionally NOT torn
+    // down here: the HTTP layer closes the reply socket after the tool_calls
+    // response, which is indistinguishable from a cancel at this layer. Parked
+    // sessions are bounded by AGY_SESSION_TTL_MS and released on resolution.
     const active = this.activeRequests.get(requestId);
     if (!active) return;
     try {

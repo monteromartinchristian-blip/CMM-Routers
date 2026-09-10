@@ -79,15 +79,45 @@ describe("deferred tool broker isolation", () => {
     console.log("STALE_TOOL_RESULT_REDELIVERY=NONE");
   });
 
-  it("malformed JSON arguments fail closed before broker insert", () => {
-    expect(() => JSON.parse("{not json")).toThrow();
-    const broker = new DeferredToolBroker({ maxPending: 8, defaultTtlMs: 5000 });
-    expect(broker.activeCount()).toBe(0);
+  it("malformed complete tool arguments fail closed through the real producer path", async () => {
+    // Production-path proof lives in command-code-anthropic-tools.test.ts,
+    // where malformed arguments are refused by buildAnthropicRequestBody
+    // before any upstream request. Here we assert the same guard directly so
+    // the invariant is covered even if that suite is narrowed.
+    const { buildAnthropicRequestBody } = await import(
+      "../../src/providers/command-code/client.js"
+    );
+    expect(() =>
+      buildAnthropicRequestBody("m", [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            { id: "toolu_bad", type: "function", function: { name: "cmm_echo", arguments: "{not json" } },
+          ],
+        },
+      ]),
+    ).toThrow(/malformed JSON/);
+    console.log("MALFORMED_COMPLETE_TOOL_ARGUMENTS_FAIL_CLOSED=PASS");
   });
 
-  it("huge tool results are bounded (1MiB cap)", () => {
-    const huge = "x".repeat(2 * 1024 * 1024);
-    expect(huge.length).toBeGreaterThan(1024 * 1024);
+  it("oversize tool results are refused by the real boundary guard", async () => {
+    // The end-to-end HTTP proof (provider never reached) lives in
+    // tests/http/tool-result-bound.test.ts. This asserts the bound itself.
+    const { assertToolResultsWithinBound, MAX_TOOL_RESULT_BYTES } = await import(
+      "../../src/core/tool-result-bound.js"
+    );
+    expect(() =>
+      assertToolResultsWithinBound([
+        { role: "tool", content: "x".repeat(MAX_TOOL_RESULT_BYTES + 1) },
+      ]),
+    ).toThrow(/byte limit/);
+    expect(() =>
+      assertToolResultsWithinBound([
+        { role: "tool", content: "x".repeat(MAX_TOOL_RESULT_BYTES) },
+      ]),
+    ).not.toThrow();
+    console.log("TOOL_RESULT_SIZE_BOUND_IMPLEMENTED=PASS");
   });
 
   it("tool arguments/results never enter broker keys or telemetry output", () => {
