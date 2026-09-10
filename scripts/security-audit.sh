@@ -213,8 +213,11 @@ fi
 echo "== MCP registration carries no secret =="
 # The persistent agy MCP registration must not embed the per-session token or
 # socket; the launcher discovers them from a user-only rendezvous file instead.
+# The descriptor is created 0600 and published by an atomic rename, so it is
+# never observable as a partial file and never readable by other users.
 if grep -q "mcpRegistrar(ANTIGRAVITY_MCP_SERVER_NAME, this.bridgeCommand, \[" src/providers/antigravity/adapter.ts \
-  && grep -q "mode: 0o600" src/bridge/session-registry.ts \
+  && grep -q 'openSync(tempPath, "wx", 0o600)' src/bridge/session-registry.ts \
+  && grep -q "renameSync" src/bridge/session-registry.ts \
   && grep -q "recursive: true, mode: 0o700" src/bridge/session-registry.ts \
   && grep -q "no exact CMM bridge session for this provider run" src/bridge/mcp-bridge-launcher.ts; then
   echo "MCP_REGISTRATION_SECRET_FREE=PASS"
