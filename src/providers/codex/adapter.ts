@@ -128,11 +128,39 @@ export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
   };
 }
 
+/**
+ * Explicit bound for Router-owned per-thread bookkeeping. A parked
+ * cross-request tool session and its declared-tool ACL live only as long as
+ * the Codex turn does; the bound guarantees an abandoned thread can never grow
+ * these maps without limit.
+ */
+const MAX_TRACKED_THREADS = 64;
+
+/**
+ * Explicit bounded timeout per notification/tool-call wait. The pump never
+ * waits indefinitely, so a stalled provider always produces provider_timeout
+ * on deadline expiry instead of hanging the turn.
+ */
+const NOTIFICATION_TIMEOUT_MS = 60000;
+
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
   private client: CodexAppServerClient | null = null;
   private process: ReturnType<typeof spawn> | null = null;
   private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
+  /**
+   * Dynamic-tool ACL declared on each live thread's thread/start. A
+   * continuation on the SAME thread reuses the ORIGINAL declaration, so a
+   * follow-up request can never widen the set of callable dynamic tools.
+   */
+  private readonly threadToolAcl = new Map<string, Set<string>>();
+  /**
+   * Cross-request parked tool sessions, keyed by the requestId that surfaced
+   * the call. The provider turn stays alive awaiting Qoder's result, so the
+   * session is still a live provider run: cancel() on that request releases
+   * the parked correlation AND interrupts the turn. Bounded.
+   */
+  private readonly parkedTurns = new Map<string, { threadId: string; turnId: string }>();
   /**
    * Router-owned bounded pending state. Production injects the shared broker
    * from the composition root so every adapter shares one bounded map; the
@@ -248,10 +276,19 @@ export class CodexAdapter implements ProviderAdapter {
             contentItems: [{ type: "inputText", text: result.content ?? "" }],
           });
           if (ctx.providerSession && ctx.providerTurn) {
+            // A result just arrived: this thread is no longer "parked
+            // awaiting Qoder". The continuation re-enters the SAME reusable
+            // per-turn tool loop, so the provider may request the NEXT tool on
+            // the SAME thread/turn and it will be handled identically.
+            this.releaseParkedForThread(ctx.providerSession);
+            const threadAcl =
+              this.threadToolAcl.get(ctx.providerSession) ??
+              new Set(request.tools.map((tool) => tool.function.name));
             yield* this.drainTurn(
               request.requestId,
               ctx.providerSession,
               ctx.providerTurn,
+              threadAcl,
               signal,
             );
           }
@@ -312,222 +349,28 @@ export class CodexAdapter implements ProviderAdapter {
       // Listen for events scoped to OUR thread+turn only — concurrent runs
       // can never consume each other's deltas/usage/completion.
       const scope = { threadId, turnId };
-      let completed = false;
 
-      // Explicit bounded timeout per notification wait (60 seconds)
-      // This ensures we never wait indefinitely and always produce provider_timeout on deadline expiry
-      const NOTIFICATION_TIMEOUT_MS = 60000;
-
-      // Externally-owned tools: Codex requests dynamic tool calls as a server
-      // request `item/tool/call` (params {arguments, callId, namespace, tool,
-      // threadId, turnId}). The Router NEVER executes the tool. When Qoder
-      // supplied tool definitions we surface the call to Qoder
-      // (tool_call_delta + completed:tool_calls) and end this HTTP request;
-      // Qoder executes and returns the result as a role:"tool" message on a
-      // follow-up request, which the router injects back into Codex as thread
-      // history via thread/inject_items (see buildCodexThreadSeeds). A tool
-      // call that arrives without tool definitions is declined so the turn
-      // fails closed instead of hanging.
-      const toolDefinitionsRequested = request.tools.length > 0;
       // Immutable per-thread declared-tool ACL: only the dynamicTools sent on
       // THIS thread's thread/start may be requested. Authentication of the
-      // transport is not authorization to call an undeclared function.
+      // transport is not authorization to call an undeclared function. The
+      // declaration is retained for the thread so a later continuation on the
+      // SAME thread cannot widen it by re-sending a different `tools` array.
       const declaredToolNames = new Set(request.tools.map((tool) => tool.function.name));
-      // Single tool-call waiter for the whole run, created once and raced
-      // against notifications each iteration so a late-arriving call is never
-      // lost to a stale per-iteration waiter. The waiter is released by
-      // discardScope in finally (turn completed/cancelled) or expires on its
-      // own timeout; both produce undefined ("no tool call"), never an
-      // unhandled rejection and never a spurious failure of a healthy text
-      // turn that simply ran past the waiter deadline.
-      const toolCallFuture = toolDefinitionsRequested
-        ? this.client
-            .waitForToolCall(NOTIFICATION_TIMEOUT_MS, scope)
-            .then(
-              (toolCall) => ({ kind: "toolCall" as const, toolCall }),
-              () => undefined,
-            )
-        : undefined;
+      if (declaredToolNames.size > 0) {
+        this.rememberThreadAcl(threadId, declaredToolNames);
+      }
 
       try {
-        while (!completed && !signal.aborted) {
-          const notificationPromise = this.client
-            .waitForAnyNotification(
-              ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
-              NOTIFICATION_TIMEOUT_MS,
-              scope,
-            )
-            .then(
-              (notification) => ({ kind: "notification" as const, notification }),
-              (error: unknown) => ({ kind: "error" as const, error }),
-            );
-          const raced = toolCallFuture
-            ? Promise.race([notificationPromise, toolCallFuture])
-            : notificationPromise;
-          const outcome = await raced;
-          if (outcome === undefined) continue; // tool waiter released: no tool call
-
-          if (outcome.kind === "error") {
-            const error = outcome.error;
-            // A cancelled/disconnected run terminates silently: the caller
-            // aborted and cancel() released our waiter.
-            if (signal.aborted) break;
-            yield {
-              type: "error",
-              error:
-                error instanceof RouterError
-                  ? error
-                  : new RouterError(
-                      "provider_protocol_error",
-                      error instanceof Error ? error.message : String(error),
-                    ),
-            };
-            break;
-          }
-
-          if (outcome.kind === "toolCall") {
-            const { id: wireRequestId, params } = outcome.toolCall;
-            // Fail closed on missing protocol identity. The 0.153.4 schema
-            // requires arguments/callId/threadId/tool/turnId; a fabricated id
-            // would let a malformed frame masquerade as a real call, so never
-            // synthesize one.
-            const callId =
-              typeof params.callId === "string" && params.callId.length > 0
-                ? params.callId
-                : undefined;
-            const toolName =
-              typeof params.tool === "string" && params.tool.length > 0
-                ? params.tool
-                : undefined;
-            const hasThreadId =
-              typeof params.threadId === "string" && params.threadId.length > 0;
-            const hasTurnId =
-              typeof params.turnId === "string" && params.turnId.length > 0;
-            const hasArguments = params.arguments !== undefined;
-            if (!callId || !toolName || !hasThreadId || !hasTurnId || !hasArguments) {
-              // Answer the original request so the provider turn terminates
-              // instead of hanging, then fail the run closed.
-              this.client.respondToServerRequest(wireRequestId, {
-                success: false,
-                contentItems: [],
-              });
-              yield {
-                type: "error",
-                error: new RouterError(
-                  "provider_protocol_error",
-                  "Codex item/tool/call missing required protocol identity",
-                ),
-              };
-              break;
-            }
-            const args =
-              typeof params.arguments === "string"
-                ? params.arguments
-                : JSON.stringify(params.arguments);
-            if (!declaredToolNames.has(toolName)) {
-              // Undeclared dynamic tool: answer the wire request so the turn
-              // terminates, then fail closed. No Qoder surface, no broker entry.
-              this.client.respondToServerRequest(wireRequestId, {
-                success: false,
-                contentItems: [],
-              });
-              yield {
-                type: "error",
-                error: new RouterError(
-                  "provider_protocol_error",
-                  "Codex requested a dynamic tool that was not declared on this thread",
-                ),
-              };
-              break;
-            }
-            // Park the ORIGINAL wire request in the shared bounded broker. The
-            // consumer-visible id is a Router-generated globally unique PUBLIC
-            // id; the provider's own callId stays internal. A follow-up request
-            // carrying the public id resolves THIS request with success:true.
-            const publicToolCallId = createPublicToolCallId("chatgpt");
-            this.broker.createPendingCall<PendingToolContext>(
-              {
-                consumer: "qoder",
-                provider: "chatgpt",
-                sessionId: threadId,
-                turnId,
-                toolCallId: publicToolCallId,
-                publicToolCallId,
-              },
-              undefined,
-              signal,
-              {
-                provider: "chatgpt",
-                providerSession: threadId,
-                providerTurn: turnId,
-                providerCallId: callId,
-                wireRequestId,
-              },
-            );
-            // Surface the structured tool call to Qoder (never execute it).
-            yield {
-              type: "tool_call_delta",
-              index: 0,
-              id: publicToolCallId,
-              name: toolName,
-              argumentsDelta: args,
-            };
-            yield { type: "completed", finishReason: "tool_calls" };
-            break;
-          }
-
-          if (outcome.kind === "notification") {
-            const notification = outcome.notification;
-            if (notification.method === "item/agentMessage/delta") {
-              const params = parseAgentDeltaParams(
-                (notification as { params?: unknown }).params,
-              );
-              if (params.delta.length > 0) {
-                yield { type: "text_delta", text: params.delta };
-              }
-            } else if (notification.method === "thread/tokenUsage/updated") {
-              const parsed = parseTokenUsageParams(
-                (notification as { params?: unknown }).params,
-              );
-              const usageEvent: RouterEvent = { type: "usage" };
-              if (parsed.inputTokens !== undefined) {
-                (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
-              }
-              if (parsed.outputTokens !== undefined) {
-                (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
-              }
-              if (parsed.reasoningTokens !== undefined) {
-                (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
-              }
-              if (parsed.cacheReadTokens !== undefined) {
-                (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
-              }
-              yield usageEvent;
-            } else if (notification.method === "turn/completed") {
-              const parsed = parseTurnCompletedParams(
-                (notification as { params?: unknown }).params,
-              );
-              // Ignore completions for other turns (defensive; scope already
-              // filters, but a stale queued frame must never terminate us).
-              if (parsed.turnId !== turnId) continue;
-              completed = true;
-              if (parsed.status === "failed") {
-                yield {
-                  type: "error",
-                  error: new RouterError(
-                    "provider_protocol_error",
-                    `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
-                  ),
-                };
-              } else {
-                yield {
-                  type: "completed",
-                  finishReason: normalizeCodexFinishReason(parsed.status),
-                };
-              }
-            }
-          }
-        }
+        // Externally-owned tools: Codex requests dynamic tool calls as a
+        // server request `item/tool/call`. The Router NEVER executes the tool.
+        // Every call is validated against this thread's declared-tool ACL,
+        // parked in the bounded broker under an independent Router-generated
+        // public id, surfaced to Qoder (tool_call_delta + completed:
+        // tool_calls), and answered later with success:true on the ORIGINAL
+        // wire request. The SAME thread/turn then keeps draining, so a SECOND
+        // (and further) sequential tool request inside the same logical Codex
+        // run is handled identically — never a new thread, never a new turn.
+        yield* this.pumpTurn(request.requestId, threadId, turnId, declaredToolNames, signal);
       } finally {
         // Clean up active turn tracking and release this run's buffered
         // notification state so no content survives into later requests.
@@ -557,12 +400,14 @@ export class CodexAdapter implements ProviderAdapter {
   /**
    * Continue listening on an already-open thread/turn after the pending tool
    * request was resolved with Qoder's result. Streams the turn's remaining
-   * deltas/usage/completion on the SAME thread/turn — never a new thread.
+   * deltas/usage/completion on the SAME thread/turn — never a new thread — and
+   * stays ready for the NEXT item/tool/call on that same turn.
    */
   private async *drainTurn(
     requestId: string,
     threadId: string,
     turnId: string,
+    declaredToolNames: Set<string>,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
     if (!this.client) {
@@ -570,81 +415,289 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const client = this.client;
     this.activeTurns.set(requestId, { threadId, turnId });
-    const scope = { threadId, turnId };
-    const NOTIFICATION_TIMEOUT_MS = 60000;
     try {
-      while (!signal.aborted) {
-        let notification;
-        try {
-          notification = await client.waitForAnyNotification(
-            ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
-            NOTIFICATION_TIMEOUT_MS,
-            scope,
-          );
-        } catch (error) {
-          if (signal.aborted) break;
-          yield {
-            type: "error",
-            error:
-              error instanceof RouterError
-                ? error
-                : new RouterError(
-                    "provider_protocol_error",
-                    error instanceof Error ? error.message : String(error),
-                  ),
-          };
-          break;
-        }
-        if (notification.method === "item/agentMessage/delta") {
-          const params = parseAgentDeltaParams(
-            (notification as { params?: unknown }).params,
-          );
-          if (params.delta.length > 0) {
-            yield { type: "text_delta", text: params.delta };
-          }
-        } else if (notification.method === "thread/tokenUsage/updated") {
-          const parsed = parseTokenUsageParams(
-            (notification as { params?: unknown }).params,
-          );
-          const usageEvent: RouterEvent = { type: "usage" };
-          if (parsed.inputTokens !== undefined) {
-            (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
-          }
-          if (parsed.outputTokens !== undefined) {
-            (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
-          }
-          if (parsed.reasoningTokens !== undefined) {
-            (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
-          }
-          if (parsed.cacheReadTokens !== undefined) {
-            (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
-          }
-          yield usageEvent;
-        } else if (notification.method === "turn/completed") {
-          const parsed = parseTurnCompletedParams(
-            (notification as { params?: unknown }).params,
-          );
-          if (parsed.turnId !== turnId) continue;
-          if (parsed.status === "failed") {
-            yield {
-              type: "error",
-              error: new RouterError(
-                "provider_protocol_error",
-                `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
-              ),
-            };
-          } else {
-            yield {
-              type: "completed",
-              finishReason: normalizeCodexFinishReason(parsed.status),
-            };
-          }
-          break;
-        }
-      }
+      yield* this.pumpTurn(requestId, threadId, turnId, declaredToolNames, signal);
     } finally {
       this.activeTurns.delete(requestId);
-      client.discardScope(scope);
+      client.discardScope({ threadId, turnId });
+    }
+  }
+
+  /**
+   * Reusable per-turn external-tool pump shared by the initial run and every
+   * same-turn continuation. Each iteration races ONE scoped notification
+   * waiter against ONE scoped `item/tool/call` waiter, so a tool request
+   * arriving at any point in the turn is observed; a released or expired tool
+   * waiter is immediately re-armed rather than leaving a gap in which the
+   * app-server would auto-decline the call. A call that passes this thread's
+   * declared-tool ACL is parked for Qoder and ENDS this HTTP response
+   * (finish_reason tool_calls); the next request carrying the result re-enters
+   * this pump on the SAME thread/turn. Parking ends the pump, so at most one
+   * tool call per thread can ever be parked at a time.
+   */
+  private async *pumpTurn(
+    requestId: string,
+    threadId: string,
+    turnId: string,
+    declaredToolNames: Set<string>,
+    signal: AbortSignal,
+  ): AsyncGenerator<RouterEvent, void> {
+    const client = this.client;
+    if (!client) {
+      throw new RouterError("provider_unavailable", "Codex client not available");
+    }
+    const scope = { threadId, turnId };
+    const tracksTools = declaredToolNames.size > 0;
+    let toolCallFuture = tracksTools
+      ? this.armToolCallWaiter(client, scope, NOTIFICATION_TIMEOUT_MS)
+      : undefined;
+
+    while (!signal.aborted) {
+      const notificationPromise = client
+        .waitForAnyNotification(
+          ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+          NOTIFICATION_TIMEOUT_MS,
+          scope,
+        )
+        .then(
+          (notification) => ({ kind: "notification" as const, notification }),
+          (error: unknown) => ({ kind: "error" as const, error }),
+        );
+      const raced = toolCallFuture
+        ? Promise.race([notificationPromise, toolCallFuture])
+        : notificationPromise;
+      const outcome = await raced;
+
+      if (outcome === undefined) {
+        // The scoped tool waiter was released (timeout/cancel) without a call.
+        // Re-arm so the loop is ready for the NEXT item/tool/call. Never
+        // re-arm against a replaced/torn-down client: a dead session has no
+        // app-server to answer, and re-arming would only spin.
+        if (tracksTools && !signal.aborted && this.client === client) {
+          toolCallFuture = this.armToolCallWaiter(client, scope, NOTIFICATION_TIMEOUT_MS);
+        }
+        continue;
+      }
+
+      if (outcome.kind === "error") {
+        const error = outcome.error;
+        // A cancelled/disconnected run terminates silently: the caller aborted
+        // and cancel() released our waiter.
+        if (signal.aborted) return;
+        yield {
+          type: "error",
+          error:
+            error instanceof RouterError
+              ? error
+              : new RouterError(
+                  "provider_protocol_error",
+                  error instanceof Error ? error.message : String(error),
+                ),
+        };
+        return;
+      }
+
+      if (outcome.kind === "toolCall") {
+        toolCallFuture = undefined;
+        yield* this.handleExternalToolCall(outcome.toolCall, {
+          requestId,
+          threadId,
+          turnId,
+          declaredToolNames,
+          signal,
+        });
+        return;
+      }
+
+      const notification = outcome.notification;
+      if (notification.method === "item/agentMessage/delta") {
+        const params = parseAgentDeltaParams((notification as { params?: unknown }).params);
+        if (params.delta.length > 0) {
+          yield { type: "text_delta", text: params.delta };
+        }
+      } else if (notification.method === "thread/tokenUsage/updated") {
+        const parsed = parseTokenUsageParams((notification as { params?: unknown }).params);
+        const usageEvent: RouterEvent = { type: "usage" };
+        if (parsed.inputTokens !== undefined) {
+          (usageEvent as { inputTokens?: number }).inputTokens = parsed.inputTokens;
+        }
+        if (parsed.outputTokens !== undefined) {
+          (usageEvent as { outputTokens?: number }).outputTokens = parsed.outputTokens;
+        }
+        if (parsed.reasoningTokens !== undefined) {
+          (usageEvent as { reasoningTokens?: number }).reasoningTokens = parsed.reasoningTokens;
+        }
+        if (parsed.cacheReadTokens !== undefined) {
+          (usageEvent as { cacheReadTokens?: number }).cacheReadTokens = parsed.cacheReadTokens;
+        }
+        yield usageEvent;
+      } else if (notification.method === "turn/completed") {
+        const parsed = parseTurnCompletedParams((notification as { params?: unknown }).params);
+        // Ignore completions for other turns (defensive; scope already
+        // filters, but a stale queued frame must never terminate us).
+        if (parsed.turnId !== turnId) continue;
+        // Terminal turn: the thread's declaration and any parked marker are
+        // released so nothing lingers for a finished thread.
+        this.threadToolAcl.delete(threadId);
+        this.releaseParkedForThread(threadId);
+        if (parsed.status === "failed") {
+          yield {
+            type: "error",
+            error: new RouterError(
+              "provider_protocol_error",
+              `Codex turn failed: ${(parsed.errorMessage ?? "unknown").slice(0, 200)}`,
+            ),
+          };
+        } else {
+          yield {
+            type: "completed",
+            finishReason: normalizeCodexFinishReason(parsed.status),
+          };
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * Validate and park ONE external tool request. The ORIGINAL wire request is
+   * answered later (on the follow-up request carrying Qoder's result) with
+   * success:true; the provider's own callId is kept internal while Qoder only
+   * ever sees the Router-generated PUBLIC id.
+   */
+  private async *handleExternalToolCall(
+    toolCall: { id: number | string; params: Record<string, unknown> },
+    ctx: {
+      requestId: string;
+      threadId: string;
+      turnId: string;
+      declaredToolNames: Set<string>;
+      signal: AbortSignal;
+    },
+  ): AsyncGenerator<RouterEvent, "parked" | "fatal"> {
+    const client = this.client;
+    if (!client) return "fatal";
+    const { id: wireRequestId, params } = toolCall;
+    // Fail closed on missing protocol identity. The 0.153.4 schema requires
+    // arguments/callId/threadId/tool/turnId; a fabricated id would let a
+    // malformed frame masquerade as a real call, so never synthesize one.
+    const callId =
+      typeof params.callId === "string" && params.callId.length > 0 ? params.callId : undefined;
+    const toolName =
+      typeof params.tool === "string" && params.tool.length > 0 ? params.tool : undefined;
+    const hasThreadId = typeof params.threadId === "string" && params.threadId.length > 0;
+    const hasTurnId = typeof params.turnId === "string" && params.turnId.length > 0;
+    const hasArguments = params.arguments !== undefined;
+    if (!callId || !toolName || !hasThreadId || !hasTurnId || !hasArguments) {
+      // Answer the original request so the provider turn terminates instead of
+      // hanging, then fail the run closed.
+      client.respondToServerRequest(wireRequestId, { success: false, contentItems: [] });
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Codex item/tool/call missing required protocol identity",
+        ),
+      };
+      return "fatal";
+    }
+    const args =
+      typeof params.arguments === "string" ? params.arguments : JSON.stringify(params.arguments);
+    if (!ctx.declaredToolNames.has(toolName)) {
+      // Undeclared dynamic tool: answer the wire request so the turn
+      // terminates, then fail closed. No Qoder surface, no broker entry.
+      client.respondToServerRequest(wireRequestId, { success: false, contentItems: [] });
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Codex requested a dynamic tool that was not declared on this thread",
+        ),
+      };
+      return "fatal";
+    }
+    // Park the ORIGINAL wire request in the shared bounded broker. The
+    // consumer-visible id is a Router-generated globally unique PUBLIC id; the
+    // provider's own callId stays internal. A follow-up request carrying the
+    // public id resolves THIS request with success:true.
+    const publicToolCallId = createPublicToolCallId("chatgpt");
+    this.broker.createPendingCall<PendingToolContext>(
+      {
+        consumer: "qoder",
+        provider: "chatgpt",
+        sessionId: ctx.threadId,
+        turnId: ctx.turnId,
+        toolCallId: publicToolCallId,
+        publicToolCallId,
+      },
+      undefined,
+      ctx.signal,
+      {
+        provider: "chatgpt",
+        providerSession: ctx.threadId,
+        providerTurn: ctx.turnId,
+        providerCallId: callId,
+        wireRequestId,
+      },
+    );
+    // The provider turn stays alive awaiting Qoder's result: record the parked
+    // cross-request session so cancel() can release it and interrupt the turn.
+    // Recorded BEFORE the terminal yield: a consumer that stops reading on
+    // `completed` closes this generator, so post-yield bookkeeping would be lost.
+    this.rememberParked(ctx.requestId, ctx.threadId, ctx.turnId);
+    // Surface the structured tool call to Qoder (never execute it).
+    yield {
+      type: "tool_call_delta",
+      index: 0,
+      id: publicToolCallId,
+      name: toolName,
+      argumentsDelta: args,
+    };
+    yield { type: "completed", finishReason: "tool_calls" };
+    return "parked";
+  }
+
+  /**
+   * Arm one scoped `item/tool/call` waiter. Rejection (timeout/cancel) maps to
+   * undefined ("no tool call"), never an unhandled rejection and never a
+   * spurious failure of a healthy text turn.
+   */
+  private armToolCallWaiter(
+    client: CodexAppServerClient,
+    scope: { threadId: string; turnId: string },
+    timeoutMs: number,
+  ): Promise<
+    | { kind: "toolCall"; toolCall: { id: number | string; params: Record<string, unknown> } }
+    | undefined
+  > {
+    return client.waitForToolCall(timeoutMs, scope).then(
+      (toolCall) => ({ kind: "toolCall" as const, toolCall }),
+      () => undefined,
+    );
+  }
+
+  private rememberThreadAcl(threadId: string, names: Set<string>): void {
+    this.threadToolAcl.delete(threadId);
+    this.threadToolAcl.set(threadId, names);
+    while (this.threadToolAcl.size > MAX_TRACKED_THREADS) {
+      const oldest = this.threadToolAcl.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.threadToolAcl.delete(oldest);
+    }
+  }
+
+  private rememberParked(requestId: string, threadId: string, turnId: string): void {
+    this.parkedTurns.set(requestId, { threadId, turnId });
+    while (this.parkedTurns.size > MAX_TRACKED_THREADS) {
+      const oldest = this.parkedTurns.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.parkedTurns.delete(oldest);
+    }
+  }
+
+  private releaseParkedForThread(threadId: string): void {
+    for (const [requestId, parked] of this.parkedTurns) {
+      if (parked.threadId === threadId) this.parkedTurns.delete(requestId);
     }
   }
 
@@ -652,31 +705,38 @@ export class CodexAdapter implements ProviderAdapter {
     if (!this.client) return;
 
     const activeTurn = this.activeTurns.get(requestId);
-    if (!activeTurn) {
+    const parkedTurn = this.parkedTurns.get(requestId);
+    // A parked cross-request session has no live adapter run (the HTTP reply
+    // already ended with finish_reason tool_calls) but the PROVIDER turn is
+    // still alive awaiting Qoder's result, so it is cancellable all the same.
+    const target = activeTurn ?? parkedTurn;
+    if (!target) {
       return;
     }
 
     try {
       // Fail closed on missing ids: never emit an empty turn interrupt.
-      const params = buildTurnInterruptParams({
-        threadId: activeTurn.threadId,
-        turnId: activeTurn.turnId,
-      });
-      await this.client.interruptTurn(params);
+      if (typeof target.turnId === "string" && target.turnId.length > 0) {
+        const params = buildTurnInterruptParams({
+          threadId: target.threadId,
+          turnId: target.turnId,
+        });
+        await this.client.interruptTurn(params);
+      }
     } catch {
       // Interrupt failures still release tracking below.
     } finally {
       this.activeTurns.delete(requestId);
+      this.parkedTurns.delete(requestId);
+      this.threadToolAcl.delete(target.threadId);
       // Explicit Qoder/provider cancellation releases the parked correlation
-      // for this thread so it does not linger until TTL. (A tool call parked
-      // for the cross-request round-trip is not "active" — the run already
-      // returned — so this cannot cancel a live round-trip.)
-      this.broker.cancelScope({ provider: "chatgpt", sessionId: activeTurn.threadId });
-      if (activeTurn.threadId || activeTurn.turnId) {
+      // for this thread so it does not linger until TTL.
+      this.broker.cancelScope({ provider: "chatgpt", sessionId: target.threadId });
+      if (target.threadId || target.turnId) {
         this.client.discardScope({
-          ...(activeTurn.threadId ? { threadId: activeTurn.threadId } : {}),
-          ...(typeof activeTurn.turnId === "string" && activeTurn.turnId.length > 0
-            ? { turnId: activeTurn.turnId }
+          ...(target.threadId ? { threadId: target.threadId } : {}),
+          ...(typeof target.turnId === "string" && target.turnId.length > 0
+            ? { turnId: target.turnId }
             : {}),
         });
       }
