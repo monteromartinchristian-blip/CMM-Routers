@@ -136,10 +136,15 @@ describe("Codex same-turn dynamic tool round-trip (true continuation)", () => {
       if (event.type === "completed") break;
     }
     const toolDelta = events.find((e) => e.type === "tool_call_delta");
-    expect(toolDelta).toMatchObject({ id: "call_codex_e2e", name: "cmm_echo" });
+    // Consumer-visible identity is a Router-generated globally unique PUBLIC
+    // id; the provider's own callId is retained internally by the broker.
+    const publicId = (toolDelta as { id: string }).id;
+    expect(publicId.startsWith("cmm_chatgpt_")).toBe(true);
+    expect(toolDelta).toMatchObject({ name: "cmm_echo" });
     // The wire request must still be pending: no answer until Qoder resolves.
     expect(toolResponses.length).toBe(0);
     console.log("CODEX_DYNAMIC_TOOL_REQUEST_HELD_PENDING=YES");
+    console.log("CODEX_PROVIDER_INTERNAL_CALL_ID_PRESERVED=YES");
 
     // Follow-up: Qoder supplies the executed result; the adapter resolves the
     // ORIGINAL wire id 901 with success:true and drains the SAME turn.
@@ -147,8 +152,8 @@ describe("Codex same-turn dynamic tool round-trip (true continuation)", () => {
     for await (const event of adapter.run(
       makeCodexRequest("e2e-2", [
         { role: "user", content: "echo canary" },
-        { role: "assistant", content: null, toolCalls: [{ id: "call_codex_e2e", type: "function", function: { name: "cmm_echo", arguments: '{"text":"canary"}' } }] },
-        { role: "tool", content: "canary", toolCallId: "call_codex_e2e" },
+        { role: "assistant", content: null, toolCalls: [{ id: publicId, type: "function", function: { name: "cmm_echo", arguments: '{"text":"canary"}' } }] },
+        { role: "tool", content: "canary", toolCallId: publicId },
       ], [CMM_ECHO_TOOL]),
       new AbortController().signal,
     )) {
