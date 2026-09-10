@@ -49,7 +49,11 @@ interface LiveClaudeSession {
   parkedRequestId: string | undefined;
   /** Public id handed to Qoder for the parked call. */
   publicToolCallId: string | undefined;
-  /** True once this session has parked a call: no second call is accepted. */
+  /**
+   * True WHILE a call is parked: a second, genuinely concurrent call is
+   * refused. It reopens once the parked call has been delivered, so the NEXT
+   * sequential call of the same logical run is accepted.
+   */
   gate: { parked: boolean };
   /** Bounded lifetime for a parked session whose continuation never arrives. */
   ttlTimer: ReturnType<typeof setTimeout> | undefined;
@@ -697,8 +701,23 @@ export class ClaudeAdapter implements ProviderAdapter {
         session.requestId = request.requestId;
         this.sessionsByRequest.set(request.requestId, session);
         if (session.parkedRequestId !== undefined) {
-          session.control.resolve(session.parkedRequestId, result.content ?? "");
+          const parkedRequestId = session.parkedRequestId;
           session.parkedRequestId = undefined;
+          if (session.control.resolve(parkedRequestId, result.content ?? "")) {
+            // The parked round-trip is COMPLETE: Qoder's result has been
+            // delivered to the provider-facing MCP handler. Reopen the gate so
+            // the SAME logical run may issue its NEXT sequential tools/call. A
+            // genuinely PARALLEL call that arrived before this point was
+            // already refused, so concurrency safety is unchanged.
+            session.gate.parked = false;
+            if (session.ttlTimer !== undefined) {
+              // The TTL only guards a session whose continuation never arrives;
+              // it has arrived, so retire the previous deadline. The next park
+              // installs a fresh one, keeping every parked window bounded.
+              clearTimeout(session.ttlTimer);
+              session.ttlTimer = undefined;
+            }
+          }
         }
         try {
           yield* this.drainSession(session, signal);
@@ -755,9 +774,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       // performs transport only and can never reach into this process.
       let control: BridgeControlServer | undefined;
       let toolCalls: BoundedQueue<BridgeToolRequest> | undefined;
-      // The gate closes as soon as this session parks a call, so a second
-      // concurrent tools/call is refused deterministically instead of sitting
-      // unanswered in a queue.
+      // The gate closes while a call is parked, so a second CONCURRENT
+      // tools/call is refused deterministically instead of sitting unanswered
+      // in a queue. It reopens when the parked call is delivered, which lets
+      // the same logical run issue its NEXT sequential call.
       const gate = { parked: false };
       let sessionRef: LiveClaudeSession | undefined;
       let mcpServers: Options["mcpServers"];
