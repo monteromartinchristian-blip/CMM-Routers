@@ -209,6 +209,27 @@ describe("Antigravity multi-step Qoder agent loop", () => {
     }
   }, 60000);
 
+  it("cancels while WAITING for result A with full cleanup", async () => {
+    const fake = multistepRunner();
+    const broker = new DeferredToolBroker({ maxPending: 8, defaultTtlMs: 30000 });
+    const adapter = adapterFor(fake, broker);
+    const user: RouterRequest["messages"] = [{ role: "user", content: "go" }];
+
+    const first = await collect(adapter.run(req("mswa-1", user), new AbortController().signal));
+    expect(first.find((e) => e.type === "tool_call_delta")).toBeDefined();
+    expect(adapter.activeToolSessions()).toBe(1);
+    const pid = fake.pids[0] as number;
+
+    await adapter.cancel("mswa-1");
+    await waitFor(() => !alive(pid), 10000);
+    expect(alive(pid)).toBe(false);
+    await waitFor(() => adapter.activeToolSessions() === 0, 5000);
+    expect(adapter.activeToolSessions()).toBe(0);
+    expect(adapter.liveRendezvousSessions()).toBe(0);
+    expect(broker.activeCount()).toBe(0);
+    console.log("MULTI_STEP_CANCEL_WAITING_TOOL_A=PASS");
+  }, 60000);
+
   it("cancels while WAITING for result B with full cleanup", async () => {
     const fake = multistepRunner();
     const broker = new DeferredToolBroker({ maxPending: 8, defaultTtlMs: 30000 });
