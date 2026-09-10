@@ -39,15 +39,22 @@ interface FakeConfig {
   continuationStatus?: number;
   finalOverride?: string | null;
   expectedContinuationId?: string;
+  /**
+   * Model a provider that OBEYS `tool_choice:required` on every request: the
+   * continuation turn then requests another tool instead of terminating. This is
+   * the real semantic the live canary must survive, and the deterministic suite
+   * uses it to reject a driver that forces a tool on the final turn.
+   */
+  policyFaithful?: boolean;
 }
 
-function completion(model: string, message: Record<string, unknown>): unknown {
+function completion(model: string, message: Record<string, unknown>, finishReason = "stop"): unknown {
   return {
     id: "chatcmpl-cmm-test",
     object: "chat.completion",
     created: 1,
     model,
-    choices: [{ index: 0, message: { role: "assistant", content: "", ...message }, finish_reason: "stop" }],
+    choices: [{ index: 0, message: { role: "assistant", content: "", ...message }, finish_reason: finishReason }],
   };
 }
 
@@ -130,6 +137,27 @@ function fakeRouter(config: FakeConfig = {}): { fetchImpl: FetchLike; requests: 
       const sentId = assistant?.tool_calls[0]?.id;
       if (assistant === undefined || sentId !== expectedId || toolMessage.tool_call_id !== expectedId) {
         return { status: 500, json: errorBody("provider_protocol_error", "wrong continuation id") };
+      }
+      if (config.policyFaithful !== false && record.tool_choice === "required") {
+        // A provider that OBEYS the declared policy must request another tool
+        // when told tool_choice=required, so this turn is NOT terminal. A canary
+        // that forces a tool on the continuation would never reach final text.
+        return {
+          status: 200,
+          json: completion(
+            String(record.model),
+            {
+              tool_calls: [
+                {
+                  id: "cmm_call_2",
+                  type: "function",
+                  function: { name: CANARY_ECHO_NAME, arguments: JSON.stringify({ text: "again" }) },
+                },
+              ],
+            },
+            "tool_calls",
+          ),
+        };
       }
       if (config.continuationStatus !== undefined) {
         return { status: config.continuationStatus, json: errorBody("provider_protocol_error", "boom") };
@@ -317,16 +345,33 @@ describe("canary driver — deterministic fake Router", () => {
     expect((await runCanary({ provider: "command-code", env: missingModel, fetchImpl })).exitCode).toBe(2);
   });
 
+  it("uses a phase-specific Command Code policy: required on request 1, none on the final turn", async () => {
+    const { fetchImpl, requests } = fakeRouter();
+    const outcome = await runCanary({ provider: "command-code", env: makeEnv(), fetchImpl, sentinel: SENTINEL });
+    expect(outcome.exitCode).toBe(0);
+    const posts = requests.filter((r) => r.url.endsWith("/v1/chat/completions"));
+    expect(posts).toHaveLength(2);
+    const body1 = posts[0]?.body as { tool_choice?: unknown };
+    const body2 = posts[1]?.body as { tool_choice?: unknown };
+    expect(body1.tool_choice).toBe("required");
+    expect(body2.tool_choice).toBe("none");
+    expect(text(outcome)).toContain("LIVE_CANARY_COMMAND_CODE_PHASE_POLICY=PASS");
+    console.log("COMMAND_CODE_CANARY_REQUEST1_POLICY=REQUIRED");
+    console.log("COMMAND_CODE_CANARY_REQUEST2_POLICY=NONE");
+  });
+
   it("sends provider-specific policy bodies that the Router accepts", async () => {
     for (const provider of ["claude", "google", "chatgpt", "command-code"]) {
-      const policy = buildCanaryPolicy(provider);
-      if (provider === "command-code") {
-        expect(policy).toEqual({ tool_choice: "required" });
-      } else {
-        expect(policy).toEqual({});
-        expect(policy.tool_choice).toBeUndefined();
+      for (const phase of ["initial", "continuation"] as const) {
+        const policy = buildCanaryPolicy(provider, phase);
+        if (provider === "command-code") {
+          expect(policy).toEqual(phase === "initial" ? { tool_choice: "required" } : { tool_choice: "none" });
+        } else {
+          expect(policy).toEqual({});
+          expect(policy.tool_choice).toBeUndefined();
+        }
+        expect(policy.parallel_tool_calls).toBeUndefined();
       }
-      expect(policy.parallel_tool_calls).toBeUndefined();
     }
 
     // Each provider's body is accepted by the policy mirror (no spend for a

@@ -83,16 +83,30 @@ export interface CanaryOutcome {
 }
 
 /**
- * Provider-specific request policy. One shared policy object must never be used
- * for every provider: Claude and Google reject EXPLCIT parallel-tool control
- * (and any tool_choice other than default/auto), and Codex cannot represent a
- * parallel constraint at all. Only Command Code uses the exact OpenAI forcing
- * semantics it faithfully supports.
+ * Canary request phase. Request 1 must elicit the tool call; request 2 must
+ * consume the supplied tool result and terminate. These are opposite
+ * requirements, so the provider policy is phase-specific, not merely
+ * provider-specific.
  */
-export function buildCanaryPolicy(provider: string): Record<string, unknown> {
+export type CanaryPhase = "initial" | "continuation";
+
+/**
+ * Provider- and phase-specific request policy. One shared policy object must
+ * never be used for every provider or every phase: Claude and Google reject
+ * EXPLICIT parallel-tool control (and any tool_choice other than
+ * default/auto), and Codex cannot represent a parallel constraint at all. Only
+ * Command Code uses the exact OpenAI forcing semantics it faithfully supports.
+ *
+ * On the continuation turn Command Code is told `tool_choice:"none"` — a shape
+ * representable on both of its upstream wires — because the acceptance
+ * requirement is to consume the tool result and answer WITHOUT calling another
+ * tool. Leaving it `required` would ask the provider to do two mutually
+ * incompatible things and make a live PASS untrustworthy.
+ */
+export function buildCanaryPolicy(provider: string, phase: CanaryPhase = "initial"): Record<string, unknown> {
   switch (provider) {
     case "command-code":
-      return { tool_choice: "required" };
+      return phase === "initial" ? { tool_choice: "required" } : { tool_choice: "none" };
     case "claude":
     case "google":
     case "chatgpt":
@@ -312,7 +326,15 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
   lines.push("LIVE_CANARY_SUBSCRIPTION_ROUTE_PREFLIGHT=PASS");
 
   const sentinel = deps.sentinel ?? defaultSentinel();
-  const policy = buildCanaryPolicy(provider);
+  const initialPolicy = buildCanaryPolicy(provider, "initial");
+  const continuationPolicy = buildCanaryPolicy(provider, "continuation");
+  if (provider === "command-code") {
+    if (initialPolicy.tool_choice === "required" && continuationPolicy.tool_choice === "none") {
+      lines.push("LIVE_CANARY_COMMAND_CODE_PHASE_POLICY=PASS");
+    } else {
+      return fail("command-code-phase-policy-not-distinct");
+    }
+  }
   const prompt =
     `You must call the tool ${CANARY_ECHO_NAME} exactly once with ` +
     `{"text":"${sentinel}"}. Do not answer in plain text. Do not call any other tool.`;
@@ -324,7 +346,7 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
     stream: false,
     messages: [{ role: "user", content: prompt }],
     tools,
-    ...policy,
+    ...initialPolicy,
   });
   const first = await deps.fetchImpl(`${base}/v1/chat/completions`, {
     method: "POST",
@@ -377,7 +399,7 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
       { role: "tool", tool_call_id: call.id, content: resultContent },
     ],
     tools,
-    ...policy,
+    ...continuationPolicy,
   });
   const second = await deps.fetchImpl(`${base}/v1/chat/completions`, {
     method: "POST",
