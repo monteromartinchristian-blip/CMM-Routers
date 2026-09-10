@@ -136,4 +136,19 @@ echo "Installed $DEST"
 echo "node: $NODE_BIN"
 echo "codex: $CODEX_BIN"
 echo "agy: $AGY_BIN"
+
+# Qoder bearer provisioning (optional consumer). The runtime wrapper already
+# reads service=cmm-subscription-router account=qoder-bearer from Keychain; a
+# fresh machine needs the item created intentionally. Idempotent: an existing
+# item is left untouched, and the value is never printed.
+QODER_SERVICE="${CMM_QODER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
+QODER_ACCOUNT="${CMM_QODER_KEYCHAIN_ACCOUNT:-qoder-bearer}"
+if security find-generic-password -s "$QODER_SERVICE" -a "$QODER_ACCOUNT" >/dev/null 2>&1; then
+  echo "qoder-bearer: already provisioned in Keychain ($QODER_SERVICE/$QODER_ACCOUNT)"
+else
+  echo "qoder-bearer not provisioned. To enable the Qoder consumer on this Mac:"
+  echo "  security add-generic-password -s $QODER_SERVICE -a $QODER_ACCOUNT -w"
+  echo "(prompts for the token without echoing it; never stored in the repo)"
+fi
+
 echo "Load with: launchctl load \"$DEST\""
