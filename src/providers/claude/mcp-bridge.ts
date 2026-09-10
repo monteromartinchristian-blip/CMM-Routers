@@ -22,10 +22,25 @@ export interface McpBridgeOptions {
   tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }>;
 }
 
+/**
+ * Maximum retained bytes for one unterminated provider-facing MCP frame. A
+ * provider that streams JSON without a newline must not be able to grow this
+ * buffer without limit; the bound is enforced while accumulating and the
+ * transport fails closed on overflow (matching the external bridge parser and
+ * the Router-side control-frame bound).
+ */
+export const MAX_MCP_STDIO_FRAME_BYTES = 1024 * 1024;
+
 function readStdinLines(processLine: (line: string) => void): void {
   let buffer = "";
   process.stdin.setEncoding("utf-8");
   process.stdin.on("data", (chunk: string) => {
+    if (buffer.length + chunk.length > MAX_MCP_STDIO_FRAME_BYTES) {
+      // Fail closed: never retain an unbounded provider-controlled frame.
+      process.exitCode = 1;
+      process.exit(1);
+      return;
+    }
     buffer += chunk;
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";

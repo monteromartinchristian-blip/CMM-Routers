@@ -12,6 +12,13 @@ export const ANTHROPIC_MESSAGES_PATH = "/messages";
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 1024;
 export const MAX_ANTHROPIC_MAX_TOKENS = 4096;
 
+/**
+ * Maximum size of one unterminated upstream SSE frame. A provider that streams
+ * a delimited frame without ever terminating it must not grow Router memory
+ * without bound; overflow fails the request closed with a protocol error.
+ */
+export const MAX_PROVIDER_SSE_FRAME_BYTES = 1024 * 1024;
+
 export type CommandCodeWire = "openai-chat-completions" | "anthropic-messages";
 
 export interface CommandCodeModel {
@@ -494,6 +501,12 @@ export class CommandCodeClient {
                         // Split complete SSE frames; keep partial tail buffered.
                         const frames = carry.split("\n\n");
                         carry = frames.pop() ?? "";
+                        if (carry.length > MAX_PROVIDER_SSE_FRAME_BYTES) {
+                          throw new RouterError(
+                            "provider_protocol_error",
+                            "Command Code upstream SSE frame exceeded the maximum buffered size",
+                          );
+                        }
                         for (const frame of frames) {
                           yield frame;
                         }
@@ -885,6 +898,7 @@ async function openStreamOrError(
           once: true,
         });
       });
+    let sourceError: unknown;
     try {
       for (;;) {
         // Race the source frame against teardown: after tearDown runs, the
@@ -893,11 +907,24 @@ async function openStreamOrError(
         const next = await Promise.race([
           iterator.next().then(
             (value) => ({ kind: "frame" as const, value }),
-            () => ({ kind: "closed" as const }),
+            (error: unknown) => {
+              // A body error is NOT a clean end: record it so a fail-closed
+              // source (e.g. an oversize-frame guard) is surfaced instead of
+              // being mistaken for a completed stream.
+              sourceError = error;
+              return { kind: "closed" as const };
+            },
           ),
           abortEdge(),
         ]);
-        if (next.kind !== "frame") return;
+        if (next.kind !== "frame") {
+          if (sourceError !== undefined && !signal.aborted) {
+            throw sourceError instanceof Error
+              ? sourceError
+              : new RouterError("provider_protocol_error", String(sourceError));
+          }
+          return;
+        }
         if (signal.aborted) return;
         if (next.value.done) return;
         yield next.value.value;
