@@ -214,6 +214,10 @@ RESPONSES_FUNCTION_CALL_ARGUMENTS_DONE=PASS
   is never reached for an oversize result (transport factory invoked 0 times).
 - Malformed complete tool arguments fail closed (Anthropic wire) before contact.
 
+The sentinel-secret logging proof runs through the real HTTP -> Claude adapter
+-> broker -> external bridge path; unmatched sentinels in tool arguments and the
+tool result are absent from every captured stdout/stderr write.
+
 ```text
 SILENT_TOOL_CHOICE_DROP=NONE
 SILENT_PARALLEL_TOOL_POLICY_DROP=NONE

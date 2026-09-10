@@ -57,6 +57,26 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
   });
 
   it("traverses the whole production path and continues the same session", async () => {
+    // Sentinel values prove tool arguments and results never reach a log sink
+    // anywhere on the real HTTP -> adapter -> broker -> bridge path.
+    const ARG_SENTINEL = "CMM_SENTINEL_ARG_7f3a91";
+    const RESULT_SENTINEL = "CMM_SENTINEL_RESULT_9b2c47";
+    const captured: string[] = [];
+    const originalStdout = process.stdout.write.bind(process.stdout);
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+      captured.push(String(chunk));
+      return (originalStdout as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+      captured.push(String(chunk));
+      return (originalStderr as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    const restore = (): void => {
+      process.stdout.write = originalStdout as typeof process.stdout.write;
+      process.stderr.write = originalStderr as typeof process.stderr.write;
+    };
+
     let releaseFn: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       releaseFn = resolve;
@@ -125,7 +145,7 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
         jsonrpc: "2.0",
         id: 9,
         method: "tools/call",
-        params: { name: "cmm_echo", arguments: { text: "canary" } },
+        params: { name: "cmm_echo", arguments: { text: ARG_SENTINEL } },
       })}\n`,
     );
 
@@ -164,7 +184,7 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
               },
             ],
           },
-          { role: "tool", tool_call_id: call.id, content: "canary-from-qoder" },
+          { role: "tool", tool_call_id: call.id, content: RESULT_SENTINEL },
         ],
         tools: [CMM_ECHO_TOOL],
       },
@@ -173,7 +193,7 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
     await waitFor(() => seen.join("").includes('"id":9'));
     const responseLine = seen.join("").split("\n").find((line) => line.includes('"id":9'))!;
     const response = JSON.parse(responseLine) as { result: { content: Array<{ text: string }> } };
-    expect(response.result.content[0]!.text).toBe("canary-from-qoder");
+    expect(response.result.content[0]!.text).toBe(RESULT_SENTINEL);
     releaseFn?.();
 
     const second = await secondPromise;
@@ -183,6 +203,14 @@ describe("production composition: Claude Qoder tool round-trip over HTTP", () =>
     };
     expect(secondBody.choices[0]!.message.content).toContain("final-answer");
     expect(adapter.activeToolSessions()).toBe(0);
+
+    // No log sink anywhere on the path retained the sentinel content.
+    const logged = captured.join("");
+    expect(logged).not.toContain(ARG_SENTINEL);
+    expect(logged).not.toContain(RESULT_SENTINEL);
+    restore();
+    console.log("TOOL_ARGUMENT_LOGGING=NONE");
+    console.log("TOOL_RESULT_LOGGING=NONE");
     console.log("HTTP_ROUNDTRIP_QODER_RESULT_CORRELATED=PASS");
     console.log("HTTP_ROUNDTRIP_SAME_SESSION_CONTINUATION=PASS");
     console.log("QODER_EXECUTION_OWNER=YES");
