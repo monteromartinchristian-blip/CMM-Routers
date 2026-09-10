@@ -34,14 +34,33 @@ export interface BridgeControlServerOptions {
   onToolCall: (request: BridgeToolRequest) => void;
   /** Optional fixed token (tests). Defaults to a fresh 32-byte random token. */
   token?: string;
+  /**
+   * Maximum simultaneously parked tool requests. A provider-side MCP server
+   * must not be able to enqueue past the upstream broker's bound merely by
+   * waiting one layer earlier.
+   */
+  maxPending?: number;
+  /** Lifetime of one parked request whose result never arrives. */
+  pendingTtlMs?: number;
+  /**
+   * Invoked when a bridge connection that still owned parked frames drops.
+   * Lets the adapter fail closed immediately instead of waiting for the TTL.
+   */
+  onDisconnect?: (() => void) | undefined;
 }
 
 interface PendingFrame {
   socket: Socket;
   id: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 const MAX_CONTROL_FRAME_BYTES = 1024 * 1024;
+
+/** Default per-session bound on parked control frames. */
+export const BRIDGE_CONTROL_MAX_PENDING = 16;
+/** Default lifetime of one parked control frame. */
+export const BRIDGE_CONTROL_PENDING_TTL_MS = 120_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,21 +75,30 @@ export class BridgeControlServer {
   private readonly dir: string;
   readonly socketPath: string;
   readonly token: string;
+  readonly maxPending: number;
+  private readonly pendingTtlMs: number;
   private readonly pending = new Map<string, PendingFrame>();
   private closed = false;
 
-  private constructor(
+  constructor(
     server: Server,
     dir: string,
     socketPath: string,
     token: string,
     onToolCall: (request: BridgeToolRequest) => void,
+    maxPending: number,
+    pendingTtlMs: number,
+    onDisconnect?: (() => void) | undefined,
   ) {
     this.server = server;
     this.dir = dir;
     this.socketPath = socketPath;
     this.token = token;
-    this.server.on("connection", (socket) => this.handleConnection(socket, onToolCall));
+    this.maxPending = maxPending;
+    this.pendingTtlMs = pendingTtlMs;
+    this.server.on("connection", (socket) =>
+      this.handleConnection(socket, onToolCall, onDisconnect),
+    );
   }
 
   static async listen(options: BridgeControlServerOptions): Promise<BridgeControlServer> {
@@ -78,8 +106,19 @@ export class BridgeControlServer {
     chmodSync(dir, 0o700);
     const socketPath = join(dir, "bridge.sock");
     const token = options.token ?? randomBytes(32).toString("hex");
+    const maxPending = options.maxPending ?? BRIDGE_CONTROL_MAX_PENDING;
+    const pendingTtlMs = options.pendingTtlMs ?? BRIDGE_CONTROL_PENDING_TTL_MS;
     const server = createServer();
-    const instance = new BridgeControlServer(server, dir, socketPath, token, options.onToolCall);
+    const instance = new BridgeControlServer(
+      server,
+      dir,
+      socketPath,
+      token,
+      options.onToolCall,
+      maxPending,
+      pendingTtlMs,
+      options.onDisconnect,
+    );
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(socketPath, () => {
@@ -94,6 +133,7 @@ export class BridgeControlServer {
   private handleConnection(
     socket: Socket,
     onToolCall: (request: BridgeToolRequest) => void,
+    onDisconnect?: (() => void) | undefined,
   ): void {
     let buffer = "";
     let authenticated = false;
@@ -136,23 +176,56 @@ export class BridgeControlServer {
           socket.destroy();
           return;
         }
-        this.pending.set(id, { socket, id });
+        if (this.pending.size >= this.maxPending) {
+          // Bounded pending state: refuse deterministically. The caller sees a
+          // transport error and the frame is never surfaced to the Router.
+          if (!socket.destroyed) {
+            socket.write(
+              `${JSON.stringify({ id, error: "bridge control pending state bounded" })}\n`,
+            );
+          }
+          continue;
+        }
+        const timer = setTimeout(() => {
+          this.expire(id);
+        }, this.pendingTtlMs);
+        if (typeof timer.unref === "function") timer.unref();
+        this.pending.set(id, { socket, id, timer });
         onToolCall({ id, name, input: frame.input ?? {} });
       }
     });
-    socket.on("error", () => {
-      // A dead bridge socket releases its parked frames so a later resolve
-      // cannot write into a destroyed stream.
+    const releaseSocketFrames = (): void => {
+      let owned = false;
       for (const [id, frame] of this.pending) {
-        if (frame.socket === socket) this.pending.delete(id);
+        if (frame.socket === socket) {
+          clearTimeout(frame.timer);
+          this.pending.delete(id);
+          owned = true;
+        }
       }
-    });
+      // A bridge that dies while the provider waits must fail the parked
+      // session closed immediately, not at TTL.
+      if (owned) onDisconnect?.();
+    };
+    socket.on("error", releaseSocketFrames);
+    socket.on("close", releaseSocketFrames);
+  }
+
+  /** Expire one parked frame whose result never arrived. */
+  private expire(id: string): void {
+    const frame = this.pending.get(id);
+    if (!frame) return;
+    this.pending.delete(id);
+    if (!frame.socket.destroyed) {
+      frame.socket.write(`${JSON.stringify({ id, error: "bridge control request expired" })}\n`);
+    }
   }
 
   /** Release a parked request with Qoder's already-produced result text. */
   resolve(id: string, text: string): boolean {
     const frame = this.pending.get(id);
     if (!frame) return false;
+    clearTimeout(frame.timer);
     this.pending.delete(id);
     if (!frame.socket.destroyed) {
       frame.socket.write(`${JSON.stringify({ id, result: text })}\n`);
@@ -164,6 +237,7 @@ export class BridgeControlServer {
   reject(id: string, message: string): boolean {
     const frame = this.pending.get(id);
     if (!frame) return false;
+    clearTimeout(frame.timer);
     this.pending.delete(id);
     if (!frame.socket.destroyed) {
       frame.socket.write(`${JSON.stringify({ id, error: message })}\n`);
@@ -175,10 +249,15 @@ export class BridgeControlServer {
     return this.pending.size;
   }
 
+  atCapacity(): boolean {
+    return this.pending.size >= this.maxPending;
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     for (const [, frame] of this.pending) {
+      clearTimeout(frame.timer);
       if (!frame.socket.destroyed) frame.socket.destroy();
     }
     this.pending.clear();
