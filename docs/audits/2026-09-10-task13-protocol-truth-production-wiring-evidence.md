@@ -366,7 +366,7 @@ TYPECHECK_RC=0
 BUILD_RC=0
 POST_BUILD_TEST_RC=0
 SECURITY_AUDIT_RC=0  (23 PASS markers)
-TASK13_NEW_SUITES=13 files / 36 tests, all passing (run explicitly by path)
+TASK13_NEW_SUITES=14 files / 37 tests, all passing (run explicitly by path)
 LIVE_TOOL_ACCEPTANCE_RUN=NO
 ```
 
@@ -397,7 +397,40 @@ b0822fd fix: forward Command Code OpenAI tool controls
 309f279 docs: add Task 13 protocol truth production wiring evidence
 8f7e70a feat: wire Claude Qoder tool bridge into the adapter
 e6e3384 feat: wire Antigravity Qoder tool bridge into the adapter
+897edf9 docs: finalize Task 13 evidence and audit for the completed pass
+58ff6ae test: prove the Router-level production path and drop vacuous tests
 ```
+
+### 10.1 Router-level production proof
+
+`tests/http/tool-roundtrip-production.test.ts` traverses the complete
+production path over HTTP — capability boundary, the production `ClaudeAdapter`,
+the shared `DeferredToolBroker`, a real spawned external MCP bridge process and
+the control IPC — then accepts Qoder's simulated result and continues the SAME
+session to the final HTTP response:
+
+```text
+HTTP_ROUNDTRIP_QODER_TOOL_CALL_SURFACED=PASS
+HTTP_ROUNDTRIP_QODER_RESULT_CORRELATED=PASS
+HTTP_ROUNDTRIP_SAME_SESSION_CONTINUATION=PASS
+QODER_EXECUTION_OWNER=YES
+PROVIDER_NATIVE_TOOL_EXECUTION=NONE
+```
+
+The two tests the reaudit identified as vacuous (a bare `JSON.parse` throw and a
+local `"x".repeat(...)` length check) were replaced with real assertions against
+the production guard (`assertToolResultsWithinBound`) and the real producer
+(`buildAnthropicRequestBody`).
+
+### 10.2 Parked-session lifetime
+
+A parked session is bounded by a finite `SESSION_TTL_MS` (120 s, matching the
+broker entry bound) so a continuation that never arrives cannot leak the live
+provider run, the bridge process, or the control socket. `cancel()` deliberately
+does **not** tear down a parked session: the HTTP layer closes the reply socket
+after the `tool_calls` response, which is indistinguishable from a genuine
+cancel at that layer, and killing the session there would break the legitimate
+cross-request round-trip.
 
 ## 11. Known limitations
 
