@@ -200,6 +200,34 @@ export function rejectChatOnlyTools(
   return null;
 }
 
+/**
+ * Codex app-server 0.153.4 exposes NO tool-selection or parallel-execution
+ * control on its wire (verified against the generated experimental schema:
+ * neither tool_choice nor parallel_tool_calls appears anywhere). A constraint
+ * that cannot be faithfully represented is rejected here — identically on
+ * /v1/chat/completions and /v1/responses — instead of being silently dropped.
+ */
+export function codexUnsupportedToolPolicy(
+  provider: string,
+  toolChoice: unknown,
+  parallelToolCalls: boolean | undefined,
+): RouterError | null {
+  if (provider !== "chatgpt") return null;
+  if (toolChoice !== undefined && toolChoice !== "auto") {
+    return new RouterError(
+      "unsupported_capability",
+      "Codex cannot represent the requested tool_choice; refusing to drop it silently",
+    );
+  }
+  if (parallelToolCalls === false) {
+    return new RouterError(
+      "unsupported_capability",
+      "Codex cannot represent parallel_tool_calls=false; refusing to drop it silently",
+    );
+  }
+  return null;
+}
+
 export function mapRouterErrorToHttp(error: unknown): { status: number; type: string; message: string } {
   if (error instanceof RouterError) {
     switch (error.code) {
@@ -360,23 +388,17 @@ export function registerChatCompletions(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    // Codex 0.153.4 has no client-to-server tool declaration channel, so a
-    // forced tool_choice cannot be represented there. Fail closed instead of
-    // silently dropping the client constraint. "auto"/"none" degrade explicitly.
-    if (model.provider === "chatgpt" && toolChoice !== undefined) {
-      const forced =
-        toolChoice === "required" ||
-        (typeof toolChoice === "object" &&
-          toolChoice !== null &&
-          (toolChoice as Record<string, unknown>).type === "function");
-      if (forced) {
-        return reply.code(400).send({
-          error: {
-            type: "unsupported_capability",
-            message: "Model supports chat only; tool selection is not supported on this route",
-          },
-        });
-      }
+    // Codex 0.153.4 CAN declare Qoder tools (experimental dynamicTools), but it
+    // still cannot represent a caller tool-selection or parallel-execution
+    // constraint. Reject those instead of silently dropping them.
+    const codexPolicyError = codexUnsupportedToolPolicy(
+      model.provider,
+      toolChoice,
+      parallelToolCalls,
+    );
+    if (codexPolicyError) {
+      const mapped = mapRouterErrorToHttp(codexPolicyError);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
     const requestId = newRequestId();

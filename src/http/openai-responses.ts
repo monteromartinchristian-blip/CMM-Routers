@@ -3,7 +3,7 @@ import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy } from "./openai-chat.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
@@ -230,6 +230,18 @@ export function registerResponsesApi(
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    // Same Codex tool-policy rejection as /v1/chat/completions: an
+    // unrepresentable constraint must fail identically on both surfaces.
+    const codexPolicyError = codexUnsupportedToolPolicy(
+      model.provider,
+      toolChoice,
+      parallelToolCalls,
+    );
+    if (codexPolicyError) {
+      const mapped = mapRouterErrorToHttp(codexPolicyError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
