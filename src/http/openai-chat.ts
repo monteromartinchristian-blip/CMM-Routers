@@ -2,11 +2,13 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type {
   DiscoveredModel,
+  ProviderId,
   RouterMessage,
   RouterTool,
 } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
+import { enforceProviderToolPolicy } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -201,31 +203,20 @@ export function rejectChatOnlyTools(
 }
 
 /**
- * Codex app-server 0.153.4 exposes NO tool-selection or parallel-execution
- * control on its wire (verified against the generated experimental schema:
- * neither tool_choice nor parallel_tool_calls appears anywhere). A constraint
- * that cannot be faithfully represented is rejected here — identically on
- * /v1/chat/completions and /v1/responses — instead of being silently dropped.
+ * One shared provider tool policy for both HTTP surfaces. Each provider either
+ * maps the caller's constraint exactly or rejects it explicitly; a constraint
+ * is never accepted and then silently dropped.
  */
 export function codexUnsupportedToolPolicy(
   provider: string,
   toolChoice: unknown,
   parallelToolCalls: boolean | undefined,
 ): RouterError | null {
-  if (provider !== "chatgpt") return null;
-  if (toolChoice !== undefined && toolChoice !== "auto") {
-    return new RouterError(
-      "unsupported_capability",
-      "Codex cannot represent the requested tool_choice; refusing to drop it silently",
-    );
-  }
-  if (parallelToolCalls === false) {
-    return new RouterError(
-      "unsupported_capability",
-      "Codex cannot represent parallel_tool_calls=false; refusing to drop it silently",
-    );
-  }
-  return null;
+  return enforceProviderToolPolicy(
+    provider as ProviderId,
+    toolChoice,
+    parallelToolCalls,
+  );
 }
 
 export function mapRouterErrorToHttp(error: unknown): { status: number; type: string; message: string } {
@@ -414,18 +405,24 @@ export function registerChatCompletions(
     };
 
     const abortController = new AbortController();
+    // NORMAL FIRST tool_calls RESPONSE COMPLETION is NOT a cancellation: a
+    // parked cross-request tool session must survive the first reply. Only a
+    // close that arrives BEFORE the response reached its terminal outcome is a
+    // real client cancellation.
+    let responseCompleted = false;
     const tearDown = (): void => {
       abortController.abort();
       void adapter.cancel(requestId).catch(() => undefined);
     };
     // request close fires before the handler settles; reply-socket close
     // fires when the client disconnects mid-stream after headers flush.
-    // Either must tear down the provider run.
+    // Either must tear down the provider run — but only when the response had
+    // not already completed normally.
     request.raw.on("close", () => {
-      if (!reply.sent) tearDown();
+      if (!reply.sent && !responseCompleted) tearDown();
     });
     reply.raw.on("close", () => {
-      tearDown();
+      if (!responseCompleted) tearDown();
     });
 
     const stream = body.stream === true;
@@ -451,8 +448,10 @@ export function registerChatCompletions(
       const aggregated = aggregateEvents(events);
       if ("error" in aggregated) {
         const mapped = mapRouterErrorToHttp(aggregated.error);
+        responseCompleted = true;
         return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
       }
+      responseCompleted = true;
       return reply.send(
         redactObject({
           id: `chatcmpl-cmm-${requestId}`,
@@ -556,10 +555,12 @@ export function registerChatCompletions(
             model: model.id,
             choices: [{ index: 0, delta: {}, finish_reason: typed.finishReason }],
           });
+          responseCompleted = true;
           break;
         } else if (typed.type === "error") {
           const mapped = mapRouterErrorToHttp(typed.error);
           sendChunk({ error: { type: mapped.type, message: mapped.message } });
+          responseCompleted = true;
           break;
         }
       }

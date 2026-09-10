@@ -264,15 +264,20 @@ export function registerResponsesApi(
     };
 
     const abortController = new AbortController();
+    // NORMAL FIRST tool_calls RESPONSE COMPLETION is NOT a cancellation: a
+    // parked cross-request tool session must survive the first reply. Only a
+    // close that arrives BEFORE the response reached its terminal outcome is a
+    // real client cancellation.
+    let responseCompleted = false;
     const tearDown = (): void => {
       abortController.abort();
       void adapter.cancel(requestId).catch(() => undefined);
     };
     request.raw.on("close", () => {
-      if (!reply.sent) tearDown();
+      if (!reply.sent && !responseCompleted) tearDown();
     });
     reply.raw.on("close", () => {
-      tearDown();
+      if (!responseCompleted) tearDown();
     });
 
     if (body.stream !== true) {
@@ -312,6 +317,7 @@ export function registerResponsesApi(
           if (event.outputTokens !== undefined) outputTokens = event.outputTokens;
         } else if (event.type === "error") {
           const mapped = mapRouterErrorToHttp(event.error);
+          responseCompleted = true;
           return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
         }
       }
@@ -327,6 +333,7 @@ export function registerResponsesApi(
           total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
         };
       }
+      responseCompleted = true;
       return reply.send(
         redactObject({
           id: responseId,
@@ -448,10 +455,12 @@ export function registerResponsesApi(
             });
           }
           send("response.completed", { id: responseId, status: "completed" });
+          responseCompleted = true;
           break;
         } else if (typed.type === "error") {
           const mapped = mapRouterErrorToHttp(typed.error);
           send("response.failed", { error: { type: mapped.type, message: mapped.message } });
+          responseCompleted = true;
           break;
         }
       }

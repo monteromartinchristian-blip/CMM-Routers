@@ -1,4 +1,5 @@
 import { RouterError } from "../../core/errors.js";
+import { toAnthropicToolChoice } from "../../core/tool-policy.js";
 import { assertNoSpendPath } from "./spend-guard.js";
 
 export const DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
@@ -645,11 +646,20 @@ export class CommandCodeClient {
     signal: AbortSignal,
     maxOutputTokens?: number,
     tools?: unknown[],
+    toolChoice?: unknown,
+    parallelToolCalls?: boolean,
   ): AsyncGenerator<string, void> {
     const secret = this.readSecret();
     assertNoSpendPath(model);
     const url = this.buildUrl(ANTHROPIC_MESSAGES_PATH);
-    const body = buildAnthropicRequestBody(model, messages, maxOutputTokens, tools);
+    const body = buildAnthropicRequestBody(
+      model,
+      messages,
+      maxOutputTokens,
+      tools,
+      toolChoice,
+      parallelToolCalls,
+    );
     const composed = composeTimeoutSignal(signal, this.timeoutMs);
     let response: CommandCodeHttpResponse;
     try {
@@ -973,6 +983,8 @@ export function buildAnthropicRequestBody(
   messages: CommandCodeChatMessage[],
   maxOutputTokens?: number,
   tools?: unknown[],
+  toolChoice?: unknown,
+  parallelToolCalls?: boolean,
 ): Record<string, unknown> {
   const converted: CommandCodeAnthropicMessage[] = [];
   const systemParts: string[] = [];
@@ -1044,6 +1056,9 @@ export function buildAnthropicRequestBody(
   }
   const requested = maxOutputTokens ?? DEFAULT_ANTHROPIC_MAX_TOKENS;
   const bounded = Math.max(1, Math.min(MAX_ANTHROPIC_MAX_TOKENS, Math.floor(requested)));
+  // Exact Anthropic Messages representation of the caller's tool policy. A
+  // constraint the wire cannot express is rejected, never silently dropped.
+  const anthropicToolChoice = toAnthropicToolChoice(toolChoice, parallelToolCalls);
   return {
     model,
     max_tokens: bounded,
@@ -1051,6 +1066,7 @@ export function buildAnthropicRequestBody(
     messages: converted,
     stream: true,
     ...(tools !== undefined && tools.length > 0 ? { tools } : {}),
+    ...(anthropicToolChoice !== null ? { tool_choice: anthropicToolChoice } : {}),
   };
 }
 
