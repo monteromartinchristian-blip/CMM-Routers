@@ -113,7 +113,12 @@ afterEach(async () => {
   );
 });
 
-describe("prepare-publication", () => {
+const describePreparePublication =
+  process.env.CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY === "1"
+    ? describe.skip
+    : describe;
+
+describePreparePublication("prepare-publication", () => {
   it("policy CLI scans a tree and fails closed on an unsanitized home path", async () => {
     const root = await makeRoot();
     const tree = join(root, "tree");
