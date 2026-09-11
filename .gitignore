@@ -9,3 +9,4 @@ command-code-spend-ack.json
 runtime/
 *.log
 .DS_Store
+.worktrees/
