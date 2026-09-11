@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Qoder smoke test against the local CMM Subscription Router.
+# Qoder smoke test against the local CMM Routers.
 # Usage: CMM_ROUTER_TOKEN=<token> bash scripts/qoder-smoke.sh [base-url]
 #
 # Coverage: health, models, non-streaming chat, streaming chat SSE,

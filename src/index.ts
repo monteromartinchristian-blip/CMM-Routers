@@ -166,7 +166,7 @@ async function main() {
   const composition = await createProductionRegistry();
   const { config, registry, usageStore, registeredProviders, skippedProviders } = composition;
 
-  console.log(`Starting CMM Subscription Router on ${config.host}:${config.port}`);
+  console.log(`Starting CMM Routers on ${config.host}:${config.port}`);
   console.log(`Machine ID: ${config.machineId}`);
   console.log(`Registered providers: ${registeredProviders.join(", ") || "(none)"}`);
   for (const skipped of skippedProviders) {

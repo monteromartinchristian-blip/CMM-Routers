@@ -29,8 +29,8 @@ import {
 export function buildCodexInitializeParams(): InitializeParams {
   return {
     clientInfo: {
-      name: "cmm-subscription-router",
-      title: "CMM Subscription Router",
+      name: "cmm-routers",
+      title: "CMM Routers",
       version: "0.1.0",
     },
     capabilities: { experimentalApi: true },

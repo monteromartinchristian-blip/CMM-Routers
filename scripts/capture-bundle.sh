@@ -14,7 +14,7 @@
 # USAGE
 #   capture-bundle.sh bundle   <ref> <out.tar.gz>
 #       Build the exact-head archive:
-#         git archive --format=tar.gz --prefix=cmm-subscription-router/ \
+#         git archive --format=tar.gz --prefix=cmm-routers/ \
 #           -o <out.tar.gz> <ref>
 #       Nothing is appended to the archive afterwards.
 #
@@ -93,7 +93,7 @@ cmd_bundle() {
   [ -d "$outdir" ] || die "bundle: output directory does not exist: $outdir"
 
   # Exact-head archive. Nothing is appended after this command completes.
-  git archive --format=tar.gz --prefix=cmm-subscription-router/ -o "$out" "$ref"
+  git archive --format=tar.gz --prefix=cmm-routers/ -o "$out" "$ref"
 
   local hash
   hash="$(sha256_of "$out")"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the CMM Subscription Router LaunchAgent (manual step, local only).
+# Install the CMM Routers LaunchAgent (manual step, local only).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

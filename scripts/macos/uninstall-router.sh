@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Uninstall the CMM Subscription Router LaunchAgent.
+# Uninstall the CMM Routers LaunchAgent.
 set -euo pipefail
 
 LABEL="com.cmm.subscription-router"

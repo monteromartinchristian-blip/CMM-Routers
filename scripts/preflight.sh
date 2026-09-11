@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CMM Subscription Router — safe provider authentication preflight.
+# CMM Routers — safe provider authentication preflight.
 # Prints only boolean/status lines. Never prints secret values.
 #
 # Provider-aware fail-closed semantics:
