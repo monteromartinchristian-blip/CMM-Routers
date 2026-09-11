@@ -143,6 +143,36 @@ const MAX_TRACKED_THREADS = 64;
  */
 const NOTIFICATION_TIMEOUT_MS = 60000;
 
+
+function completedAgentMessageFallback(
+  params: unknown,
+): { itemId: string; text: string } | null {
+  if (typeof params !== "object" || params === null) return null;
+  const item = (params as { item?: unknown }).item;
+  if (typeof item !== "object" || item === null) return null;
+
+  const record = item as {
+    type?: unknown;
+    id?: unknown;
+    text?: unknown;
+    phase?: unknown;
+  };
+
+  if (record.type !== "agentMessage") return null;
+  if (typeof record.id !== "string" || record.id.length === 0) return null;
+  if (typeof record.text !== "string" || record.text.length === 0) return null;
+
+  if (
+    record.phase !== undefined &&
+    record.phase !== null &&
+    record.phase !== "final_answer"
+  ) {
+    return null;
+  }
+
+  return { itemId: record.id, text: record.text };
+}
+
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
   private client: CodexAppServerClient | null = null;
@@ -452,10 +482,12 @@ export class CodexAdapter implements ProviderAdapter {
       ? this.armToolCallWaiter(client, scope, NOTIFICATION_TIMEOUT_MS)
       : undefined;
 
+    const streamedAgentItemIds = new Set<string>();
+
     while (!signal.aborted) {
       const notificationPromise = client
         .waitForAnyNotification(
-          ["item/agentMessage/delta", "thread/tokenUsage/updated", "turn/completed"],
+          ["item/agentMessage/delta", "item/completed", "thread/tokenUsage/updated", "turn/completed"],
           NOTIFICATION_TIMEOUT_MS,
           scope,
         )
@@ -512,8 +544,17 @@ export class CodexAdapter implements ProviderAdapter {
       const notification = outcome.notification;
       if (notification.method === "item/agentMessage/delta") {
         const params = parseAgentDeltaParams((notification as { params?: unknown }).params);
+        streamedAgentItemIds.add(params.itemId);
         if (params.delta.length > 0) {
           yield { type: "text_delta", text: params.delta };
+        }
+      } else if (notification.method === "item/completed") {
+        const fallback = completedAgentMessageFallback(
+          (notification as { params?: unknown }).params,
+        );
+        if (fallback !== null && !streamedAgentItemIds.has(fallback.itemId)) {
+          streamedAgentItemIds.add(fallback.itemId);
+          yield { type: "text_delta", text: fallback.text };
         }
       } else if (notification.method === "thread/tokenUsage/updated") {
         const parsed = parseTokenUsageParams((notification as { params?: unknown }).params);
