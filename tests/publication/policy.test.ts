@@ -49,7 +49,7 @@ describe("public publication policy", () => {
       "AKIA" + "A".repeat(16),
       "xoxb-" + "1".repeat(12) + "-" + "A".repeat(24),
       "eyJ" + "A".repeat(24) + "." + "e30" + "." + "B".repeat(24),
-      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
     ];
 
     for (const sample of samples) {
