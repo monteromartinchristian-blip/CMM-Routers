@@ -68,7 +68,10 @@ describe("Claude isolated environment", () => {
     const env = buildIsolatedEnvironment();
     expect(env.PWD).toBeDefined();
     expect(env.PWD).toMatch(tmpdir());
-    expect(env.PWD).not.toMatch(/CMM-Subscription-Router/);
+    // The isolated working directory must not be the Router checkout itself.
+    // Asserted against the live repo root, not a brand-specific name, so
+    // production behavior never depends on the repository's name.
+    expect(env.PWD).not.toBe(process.cwd());
   });
 
   it("leaves normal process/environment unchanged", () => {

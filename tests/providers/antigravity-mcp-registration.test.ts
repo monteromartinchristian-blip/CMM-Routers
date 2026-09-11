@@ -142,7 +142,7 @@ describe("agy mcp list parsing", () => {
   it("parses the real observed list output for an enabled server", () => {
     const output = [
       "NAME             TYPE   STATUS   COMMAND/URL",
-      "cmm-qoder-tools  stdio  enabled  /opt/homebrew/bin/node /Users/chris/CMM-Subscription-Router/dist/bridge/mcp-bridge-launcher.js",
+      "cmm-qoder-tools  stdio  enabled  /opt/homebrew/bin/node /Users/example/CMM-Routers/dist/bridge/mcp-bridge-launcher.js",
       "",
     ].join("\n");
     expect(parseAgyMcpList(output)).toEqual([
@@ -152,7 +152,7 @@ describe("agy mcp list parsing", () => {
         status: "enabled",
         enabled: true,
         command: "/opt/homebrew/bin/node",
-        args: ["/Users/chris/CMM-Subscription-Router/dist/bridge/mcp-bridge-launcher.js"],
+        args: ["/Users/example/CMM-Routers/dist/bridge/mcp-bridge-launcher.js"],
       },
     ]);
   });

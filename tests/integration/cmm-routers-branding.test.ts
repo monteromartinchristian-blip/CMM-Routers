@@ -73,4 +73,21 @@ describe("CMM Routers current identity", () => {
       expect(currentDoc).not.toContain("TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY");
     }
   });
+
+  it("keeps current public surfaces free of user-specific home paths", () => {
+    const currentFiles = [
+      "README.md",
+      "docs/macos-install.md",
+      "docs/qoder-setup.md",
+      "docs/qoder-acceptance.md",
+      "tests/providers/antigravity-adapter.test.ts",
+      "tests/providers/antigravity-mcp-registration.test.ts",
+      "tests/providers/claude-environment.test.ts",
+    ];
+
+    for (const path of currentFiles) {
+      const text = read(path);
+      expect(text).not.toMatch(/\/Users\/(?:chris|christian)\//i);
+    }
+  });
 });

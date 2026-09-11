@@ -531,7 +531,7 @@ describe("Antigravity adapter", () => {
       // consume
     }
     expect(observedCwd).toContain("cmm-antigravity-run-");
-    expect(observedCwd).not.toBe("/Users/chris/CMM-Subscription-Router");
+    expect(observedCwd).not.toBe("/Users/example/CMM-Routers");
   });
 
   it("tracks and cleans up active requests on cancel", async () => {
