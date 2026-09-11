@@ -5,6 +5,7 @@ import type { ProviderAdapter } from "../../src/core/provider.js";
 import type { RouterEvent } from "../../src/core/events.js";
 import {
   buildCanaryPolicy,
+  buildCanaryPrompt,
   CANARY_ECHO_NAME,
   CANARY_ECHO_TOOL,
   expectedFinalToken,
@@ -505,6 +506,56 @@ describe("canary driver — deterministic fake Router", () => {
     console.log("CODEX_CANARY_POLICY_ACCEPTED=PASS_DETERMINISTIC");
     console.log("COMMAND_CODE_CANARY_POLICY_ACCEPTED=PASS_DETERMINISTIC");
     console.log("LIVE_CANARY_MODEL_FALLBACK=NONE");
+  });
+});
+
+describe("canary driver — the prompt must not forbid the Codex final answer", () => {
+  // Task 14 root cause: the Task 13 prompt ordered the model to call the tool
+  // and then "Do not answer in plain text". On the Codex route the continuation
+  // reuses the SAME provider turn, so that prohibition is still in context when
+  // the tool result arrives and the model answers with an EMPTY final
+  // agentMessage. The empty answer is therefore a harness artifact, not a
+  // provider emission defect.
+  it("requires the tool call AND a visible plain-text answer for the Codex route", () => {
+    const prompt = buildCanaryPrompt("chatgpt", SENTINEL);
+    expect(prompt).toContain(CANARY_ECHO_NAME);
+    expect(prompt).toContain(SENTINEL);
+    // No instruction may suppress the user-visible final answer.
+    expect(prompt).not.toMatch(/do not answer in plain text/i);
+    expect(prompt).not.toMatch(/do not reply/i);
+    // The continuation must be told to produce the plain-text answer.
+    expect(prompt).toMatch(/plain[- ]?text/i);
+    expect(prompt).toMatch(/tool/i);
+  });
+
+  it("keeps the other providers' prompt byte-for-byte (their live evidence stays valid)", () => {
+    const original =
+      `You must call the tool ${CANARY_ECHO_NAME} exactly once with ` +
+      `{"text":"${SENTINEL}"}. Do not answer in plain text. Do not call any other tool.`;
+    for (const provider of ["claude", "google", "command-code"]) {
+      expect(buildCanaryPrompt(provider, SENTINEL)).toBe(original);
+    }
+  });
+
+  it("sends the corrected prompt on BOTH ChatGPT requests", async () => {
+    const modelId = "chatgpt/canary-model";
+    const router = fakeRouter({ provider: "chatgpt", models: [{ id: modelId, ownedBy: "cmm:chatgpt" }] });
+    const outcome = await runCanary({
+      provider: "chatgpt",
+      env: makeEnv({ CMM_LIVE_CANARY_MODEL: modelId }),
+      fetchImpl: router.fetchImpl,
+      sentinel: SENTINEL,
+    });
+    expect(outcome.exitCode).toBe(0);
+    const posts = router.requests.filter((r) => r.url.endsWith("/v1/chat/completions"));
+    expect(posts).toHaveLength(2);
+    for (const post of posts) {
+      const messages = (post.body as { messages: Array<{ role: string; content: string | null }> }).messages;
+      const userPrompt = messages.find((m) => m.role === "user")?.content ?? "";
+      expect(userPrompt).not.toMatch(/do not answer in plain text/i);
+      expect(userPrompt).toMatch(/plain[- ]?text/i);
+    }
+    console.log("LIVE_CANARY_PROMPT_ALLOWS_FINAL_ANSWER=YES");
   });
 });
 

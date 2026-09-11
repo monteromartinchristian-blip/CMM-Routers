@@ -128,6 +128,40 @@ export function buildCanaryPolicy(provider: string, phase: CanaryPhase = "initia
   }
 }
 
+/**
+ * The canary prompt. ONE text must satisfy BOTH phases:
+ *
+ * - request 1 must elicit exactly one `canary_echo` call. Codex cannot express
+ *   `tool_choice`, so the prompt is the only forcing mechanism for it.
+ * - the continuation must terminate with visible plain text derived from the
+ *   tool result.
+ *
+ * For the ChatGPT/Codex route the continuation reuses the SAME provider turn,
+ * so the ORIGINAL prompt is still in context when the tool result arrives. A
+ * prompt that forbids plain text ("Do not answer in plain text") then makes the
+ * visible final answer impossible, and the model emits an EMPTY final
+ * agentMessage. That empty answer is a harness artifact, not a provider emission
+ * defect. See docs/task-14-codex-post-tool-continuation.md.
+ *
+ * The other providers keep the original prompt BYTE-FOR-BYTE: their continuation
+ * is a separate request, their recorded live canary results were produced with
+ * that exact prompt, and Task 14 must not alter their behavior.
+ */
+export function buildCanaryPrompt(provider: string, sentinel: string): string {
+  if (provider === "chatgpt") {
+    return (
+      `You must call the tool ${CANARY_ECHO_NAME} exactly once with ` +
+      `{"text":"${sentinel}"}. Do not call any other tool. ` +
+      `After the tool returns its result, reply with one short plain-text sentence ` +
+      `that includes the exact text the tool returned.`
+    );
+  }
+  return (
+    `You must call the tool ${CANARY_ECHO_NAME} exactly once with ` +
+    `{"text":"${sentinel}"}. Do not answer in plain text. Do not call any other tool.`
+  );
+}
+
 function canonicalProvider(provider: string): Provider | null {
   return (PROVIDERS as readonly string[]).includes(provider) ? (provider as Provider) : null;
 }
@@ -379,9 +413,7 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
       return fail("command-code-phase-policy-not-distinct");
     }
   }
-  const prompt =
-    `You must call the tool ${CANARY_ECHO_NAME} exactly once with ` +
-    `{"text":"${sentinel}"}. Do not answer in plain text. Do not call any other tool.`;
+  const prompt = buildCanaryPrompt(provider, sentinel);
   const tools = [CANARY_ECHO_TOOL];
 
   const request1Body = JSON.stringify({

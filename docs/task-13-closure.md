@@ -27,6 +27,26 @@ Command Code is not considered a Task 13 defect. It is intentionally disabled in
 | ChatGPT / Codex | Router PASS; upstream limitation transferred | Tool round-trip reaches same-thread/same-turn continuation, but `codex app-server 0.153.4` emits an empty final `agentMessage`; reproduced without the Router |
 | Command Code | DISABLED_BY_DESIGN | Deterministic routing/tool semantics verified; no current live enablement |
 
+### Post-closure correction (Task 14, 2026-09-11)
+
+The ChatGPT/Codex row above is **corrected**: the empty post-tool final answer was
+**not** an upstream `codex app-server` limitation. The Task 13 canary prompt
+ordered `Do not answer in plain text` — a prohibition on the output under test —
+and the "direct app-server reproduction" reused that same prompt, so it
+reproduced the harness instruction rather than an independent provider defect.
+Because the Codex continuation reuses the same provider turn, the prohibition was
+still in context when the tool result arrived.
+
+Task 14 corrected the prompt (ChatGPT-scoped) and the live
+`chatgpt/gpt-5.6-sol` canary now PASSES the full round-trip with a non-empty
+final answer causally derived from the Qoder result nonce. See
+`docs/task-14-codex-post-tool-continuation.md`.
+
+This is a factual correction only. **Task 13 remains CLOSED**; its closure
+decision, its deterministic verification and its other provider results are
+unaffected.
+
+
 ## Required guarantees
 
 - `NO_PAYG_FALLBACK=YES`
