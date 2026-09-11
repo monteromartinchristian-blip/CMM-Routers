@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.local
+config/local.json
+config/shared.json
+command-code-spend-ack.json
+*-spend-ack.json
+runtime/
+*.log
+.DS_Store
+.worktrees/

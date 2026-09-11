@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cmm.subscription-router</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_DIR__/scripts/macos/run-router.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_DIR__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/CMM-Subscription-Router/router.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/CMM-Subscription-Router/router.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Absolute executable + effective provider paths baked by install-router.sh -->
+    <key>CMM_ROUTER_NODE_BIN</key>
+    <string>__NODE_BIN__</string>
+    <key>CMM_ROUTER_CODEX_BIN</key>
+    <string>__CODEX_BIN__</string>
+    <key>CMM_ROUTER_AGY_BIN</key>
+    <string>__AGY_BIN__</string>
+    <key>PATH</key>
+    <string>__SAFE_PATH__</string>
+    <key>CMM_ROUTER_KEYCHAIN_SERVICE</key>
+    <string>cmm-subscription-router</string>
+    <key>CMM_ROUTER_KEYCHAIN_ACCOUNT</key>
+    <string>router-bearer</string>
+    <key>COMMAND_CODE_KEYCHAIN_SERVICE</key>
+    <string>cmm-subscription-router</string>
+    <key>COMMAND_CODE_KEYCHAIN_ACCOUNT</key>
+    <string>command-code-secret</string>
+    <key>CMM_QODER_KEYCHAIN_SERVICE</key>
+    <string>cmm-subscription-router</string>
+    <key>CMM_QODER_KEYCHAIN_ACCOUNT</key>
+    <string>qoder-bearer</string>
+  </dict>
+</dict>
+</plist>

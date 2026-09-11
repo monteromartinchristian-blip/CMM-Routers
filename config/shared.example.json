@@ -1,0 +1,21 @@
+{
+  "mode": "standalone",
+  "host": "127.0.0.1",
+  "port": 8790,
+  "bearerSecretEnv": "CMM_ROUTER_TOKEN",
+  "providers": {
+    "chatgpt": {
+      "enabled": true
+    },
+    "claude": {
+      "enabled": true
+    },
+    "google": {
+      "enabled": true
+    },
+    "command-code": {
+      "enabled": false,
+      "secretEnv": "COMMAND_CODE_SECRET"
+    }
+  }
+}

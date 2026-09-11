@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ThreadStartParams.dynamicTools (experimental)",
+  "property": {
+    "default": null,
+    "items": {
+      "$ref": "#/definitions/DynamicToolSpec"
+    },
+    "type": [
+      "array",
+      "null"
+    ]
+  },
+  "required": []
+}
