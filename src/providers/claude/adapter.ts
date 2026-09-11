@@ -4,7 +4,7 @@ import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
-import { query, startup, resolveSettings, type Query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { query, startup, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
 import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
 import { BoundedQueue } from "../../core/bounded-queue.js";
@@ -101,6 +101,13 @@ export function extractStreamEventText(event: unknown): string | null {
 }
 
 /**
+ * Effort levels the Claude Agent SDK accepts (Options.effort). The canonical
+ * Router vocabulary also carries "none", which has no SDK equivalent.
+ */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ClaudeEffortLevel = (typeof CLAUDE_EFFORT_LEVELS)[number];
+
+/**
  * Split Router messages into a system prompt plus the ordered conversation.
  * System-role content maps to the SDK's dedicated systemPrompt option;
  * every non-system message (user, assistant history, tool results as text)
@@ -109,16 +116,25 @@ export function extractStreamEventText(event: unknown): string | null {
  */
 export function buildClaudeConversation(messages: RouterRequest["messages"]): {
   systemPrompt: string | undefined;
-  frames: Array<{ role: "user" | "assistant"; text: string }>;
+  frames: Array<{
+    role: "user" | "assistant";
+    text: string;
+    images?: Array<Record<string, unknown>>;
+  }>;
 } {
   const systemParts: string[] = [];
-  const frames: Array<{ role: "user" | "assistant"; text: string }> = [];
+  const frames: Array<{
+    role: "user" | "assistant";
+    text: string;
+    images?: Array<Record<string, unknown>>;
+  }> = [];
   for (const message of messages) {
     const text = message.content ?? "";
     if (message.role === "system") {
       if (text) systemParts.push(text);
       continue;
     }
+    const images = (message.images ?? []).map(toClaudeImageBlock);
     if (message.role === "assistant") {
       if (text) frames.push({ role: "assistant", text });
       continue;
@@ -129,12 +145,34 @@ export function buildClaudeConversation(messages: RouterRequest["messages"]): {
       message.role === "tool" && typeof message.toolCallId === "string"
         ? `[tool_result ${message.toolCallId}] ${text}`
         : text;
-    if (label) frames.push({ role: "user", text: label });
+    if (label || images.length > 0) {
+      frames.push({
+        role: "user",
+        text: label,
+        ...(images.length > 0 ? { images } : {}),
+      });
+    }
   }
   return {
     systemPrompt: systemParts.length > 0 ? systemParts.join("\n") : undefined,
     frames,
   };
+}
+
+/**
+ * Convert one [OI] image reference into an Anthropic Messages image block.
+ * A data URL is split into its declared media type plus base64 payload; any
+ * other reference becomes a URL source the SDK resolves itself.
+ */
+export function toClaudeImageBlock(url: string): Record<string, unknown> {
+  const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+  if (dataUrl) {
+    return {
+      type: "image",
+      source: { type: "base64", media_type: dataUrl[1], data: dataUrl[2] },
+    };
+  }
+  return { type: "image", source: { type: "url", url } };
 }
 
 /**
@@ -762,7 +800,16 @@ export class ClaudeAdapter implements ProviderAdapter {
         for (const frame of conversation.frames) {
           yield {
             type: "user" as const,
-            message: { role: frame.role, content: frame.text },
+            message: {
+              role: frame.role,
+              content:
+                frame.images !== undefined
+                  ? ([
+                      ...(frame.text ? [{ type: "text" as const, text: frame.text }] : []),
+                      ...frame.images,
+                    ] as unknown as SDKUserMessage["message"]["content"])
+                  : frame.text,
+            },
             parent_tool_use_id: null,
           };
         }
@@ -854,6 +901,14 @@ export class ClaudeAdapter implements ProviderAdapter {
         ],
         // Set permission mode to auto (tools are disabled above so no risk)
         permissionMode: "auto",
+        // Reasoning effort, forwarded only when the caller asked for one and
+        // only for a level the SDK accepts. An explicit "none" has no SDK
+        // equivalent, so the option stays absent and the model default applies.
+        ...(request.reasoningEffort !== undefined &&
+        request.reasoningEffort !== "none" &&
+        CLAUDE_EFFORT_LEVELS.includes(request.reasoningEffort)
+          ? { effort: request.reasoningEffort as ClaudeEffortLevel }
+          : {}),
         // Qoder-owned tools are the ONLY extra capability: the external MCP
         // bridge exposes exactly the caller's tools and nothing else.
         ...(mcpServers !== undefined ? { mcpServers } : {}),

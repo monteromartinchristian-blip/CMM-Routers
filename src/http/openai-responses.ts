@@ -4,7 +4,7 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
@@ -61,6 +61,7 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
     }
     let content: string | null = null;
     const toolCalls: RouterMessage["toolCalls"] = [];
+    const imageUrls: string[] = [];
     if (typeof record.content === "string") {
       content = record.content;
     } else if (Array.isArray(record.content)) {
@@ -71,6 +72,11 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
         if (partRecord.type === "input_text" || partRecord.type === "output_text") {
           if (typeof partRecord.text !== "string") return null;
           parts.push(partRecord.text);
+        } else if (partRecord.type === "input_image") {
+          // Responses image input: `image_url` carries either an https URL or a
+          // base64 data URL; both are preserved verbatim for the adapter.
+          if (typeof partRecord.image_url !== "string") return null;
+          imageUrls.push(partRecord.image_url);
         } else if (
           partRecord.type === "function_call" &&
           typeof partRecord.call_id === "string" &&
@@ -92,6 +98,7 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
       return null;
     }
     const message: RouterMessage = { role, content };
+    if (imageUrls.length > 0) message.images = imageUrls;
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
     if (toolCalls.length > 0) message.toolCalls = toolCalls;
@@ -202,6 +209,19 @@ export function registerResponsesApi(
     }
     const toolChoice = parsedToolChoice;
 
+    const reasoningRecord = asRecord(body.reasoning);
+    if (body.reasoning !== undefined && body.reasoning !== null && !reasoningRecord) {
+      return reply
+        .code(400)
+        .send({ error: { type: "invalid_request", message: "reasoning must be an object" } });
+    }
+    const parsedEffort = parseReasoningEffort(reasoningRecord?.effort);
+    if (parsedEffort instanceof RouterError) {
+      const mapped = mapRouterErrorToHttp(parsedEffort);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    const reasoningEffort = parsedEffort;
+
     let model: DiscoveredModel;
     try {
       model = await registry.resolve(body.model);
@@ -269,9 +289,7 @@ export function registerResponsesApi(
         : {}),
       ...(toolChoice !== undefined ? { toolChoice } : {}),
       ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
-      ...(body.reasoning !== undefined && (body.reasoning as Record<string, unknown>).effort !== undefined
-        ? { reasoningEffort: (body.reasoning as Record<string, unknown>).effort as "low" | "medium" | "high" }
-        : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     };
 
     const abortController = new AbortController();

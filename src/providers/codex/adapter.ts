@@ -68,7 +68,7 @@ export function normalizeCodexFinishReason(
 export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
   developerInstructions: string | undefined;
   historyItems: unknown[];
-  turnInput: Array<{ type: "text"; text: string }>;
+  turnInput: Array<{ type: "text"; text: string } | { type: "image"; url: string }>;
 } {
   const systemParts: string[] = [];
   const historyItems: unknown[] = [];
@@ -76,9 +76,15 @@ export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
   messages.forEach((message, index) => {
     if (message.role === "user" && (message.content ?? "")) lastUserIndex = index;
   });
-  const turnInput: Array<{ type: "text"; text: string }> = [];
+  const turnInput: Array<{ type: "text"; text: string } | { type: "image"; url: string }> = [];
+  // Images ride alongside their owning message: the newest user turn carries
+  // them as native turn input, older turns as history items.
+  const imageInput = (url: string): { type: "image"; url: string } => ({ type: "image", url });
+  const historyImages = (urls: string[]): unknown[] =>
+    urls.map((url) => ({ type: "input_image", image_url: url }));
   messages.forEach((message, index) => {
     const text = message.content ?? "";
+    const images = message.images ?? [];
     if (message.role === "system") {
       if (text) systemParts.push(text);
       return;
@@ -110,14 +116,18 @@ export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
       return;
     }
     // user role
-    if (!text) return;
+    if (!text && images.length === 0) return;
     if (index === lastUserIndex) {
-      turnInput.push({ type: "text", text });
+      if (text) turnInput.push({ type: "text", text });
+      for (const url of images) turnInput.push(imageInput(url));
     } else {
       historyItems.push({
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text }],
+        content: [
+          ...(text ? [{ type: "input_text", text }] : []),
+          ...historyImages(images),
+        ],
       });
     }
   });
@@ -369,7 +379,16 @@ export class CodexAdapter implements ProviderAdapter {
         seeds.turnInput.length > 0
           ? seeds.turnInput
           : [{ type: "text" as const, text: "" }];
-      const turnStarted = await this.client.startTurn({ threadId, input });
+      const turnStarted = await this.client.startTurn({
+        threadId,
+        input,
+        // Codex advertises no "none" level: every catalog model's supported
+        // efforts start at "low", so an explicit "none" is not forwardable and
+        // the field is omitted rather than sent as an unadvertised value.
+        ...(request.reasoningEffort !== undefined && request.reasoningEffort !== "none"
+          ? { effort: request.reasoningEffort }
+          : {}),
+      });
       // Schema-backed turn id: result.turn.id (never a flat turnId).
       const { turnId } = parseTurnStartResponse(turnStarted as unknown);
 

@@ -70,10 +70,22 @@ export interface ThreadStartResponse {
 
 export interface TurnStartParams {
   threadId: string;
-  input?: Array<{
-    type: "text";
-    text: string;
-  }>;
+  input?: Array<
+    | {
+        type: "text";
+        text: string;
+      }
+    | {
+        type: "image";
+        url: string;
+      }
+  >;
+  /**
+   * Schema-backed per-turn reasoning-effort override. The field is omitted
+   * entirely when the caller asked for no level, so the provider default stays
+   * provider-owned.
+   */
+  effort?: string;
 }
 
 /**

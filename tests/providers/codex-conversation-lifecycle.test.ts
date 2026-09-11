@@ -85,7 +85,9 @@ describe("Codex conversation roles and thread lifecycle", () => {
     expect(historyText).toContain("ASSISTANT_HISTORY_CODEX");
     console.log("CODEX_USER_HISTORY_PRESERVED=YES");
     console.log("CODEX_ASSISTANT_HISTORY_PRESERVED=YES");
-    expect(seeds.turnInput.map((i) => i.text)).toEqual(["USER_TWO_CODEX"]);
+    expect(
+      seeds.turnInput.filter((i) => i.type === "text").map((i) => i.text),
+    ).toEqual(["USER_TWO_CODEX"]);
     // Ordering: history holds ONE then ASSISTANT, turn holds TWO.
     expect(historyText.indexOf("USER_ONE_CODEX")).toBeLessThan(
       historyText.indexOf("ASSISTANT_HISTORY_CODEX"),

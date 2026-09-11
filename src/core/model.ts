@@ -18,6 +18,21 @@ export interface DiscoveredModel {
   capability?: ProviderCapability;
 }
 
+/**
+ * Canonical reasoning-effort vocabulary shared by the [OI]-compatible surfaces.
+ * Adapters forward only the subset their runtime actually accepts.
+ */
+export const REASONING_EFFORTS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
 export interface RouterTool {
   type: "function";
   function: {
@@ -39,6 +54,7 @@ export interface RouterToolCall {
 export interface RouterMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
+  images?: string[];
   toolCallId?: string;
   name?: string;
   /**
@@ -57,7 +73,7 @@ export interface RouterRequest {
   tools: RouterTool[];
   stream: boolean;
   maxOutputTokens?: number;
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: ReasoningEffort;
   /**
    * Internal, API-independent tool policy produced by the surface-specific
    * wire parsers (parseChatToolChoice / parseResponsesToolChoice). It is NEVER

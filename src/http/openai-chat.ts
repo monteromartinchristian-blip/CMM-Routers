@@ -3,9 +3,11 @@ import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type {
   DiscoveredModel,
   ProviderId,
+  ReasoningEffort,
   RouterMessage,
   RouterTool,
 } from "../core/model.js";
+import { REASONING_EFFORTS } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
 import { enforceProviderToolPolicy, parseChatToolChoice } from "../core/tool-policy.js";
@@ -39,6 +41,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * Parse the [OI]-compatible `reasoning_effort` field. An unknown level is a
+ * caller error and must fail with 400 rather than being silently coerced to a
+ * different level the caller never asked for.
+ */
+export function parseReasoningEffort(value: unknown): ReasoningEffort | RouterError | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && (REASONING_EFFORTS as readonly string[]).includes(value)) {
+    return value as ReasoningEffort;
+  }
+  return new RouterError(
+    "invalid_request",
+    `reasoning_effort must be one of: ${REASONING_EFFORTS.join(", ")}`,
+  );
+}
+
 function parseMessages(input: unknown): RouterMessage[] | null {
   if (!Array.isArray(input) || input.length === 0) return null;
   const messages: RouterMessage[] = [];
@@ -53,16 +71,41 @@ function parseMessages(input: unknown): RouterMessage[] | null {
     ) {
       return null;
     }
-    const content =
-      record.content === null || record.content === undefined
-        ? null
-        : typeof record.content === "string"
-          ? record.content
-          : null;
-    if (content === null && record.content !== null && record.content !== undefined) {
+    let content: string | null = null;
+    let images: string[] | undefined;
+    if (record.content === null || record.content === undefined) {
+      content = null;
+    } else if (typeof record.content === "string") {
+      content = record.content;
+    } else if (Array.isArray(record.content)) {
+      // [OI] multimodal user content: text parts plus image_url parts. The
+      // image reference is preserved on the internal contract instead of
+      // rejecting the whole message for not being a plain string.
+      const texts: string[] = [];
+      const imageUrls: string[] = [];
+      for (const part of record.content) {
+        const partRecord = asRecord(part);
+        if (!partRecord) return null;
+        if (partRecord.type === "text") {
+          if (typeof partRecord.text !== "string") return null;
+          texts.push(partRecord.text);
+          continue;
+        }
+        if (partRecord.type === "image_url") {
+          const imageUrl = asRecord(partRecord.image_url);
+          if (!imageUrl || typeof imageUrl.url !== "string") return null;
+          imageUrls.push(imageUrl.url);
+          continue;
+        }
+        return null;
+      }
+      content = texts.join("");
+      if (imageUrls.length > 0) images = imageUrls;
+    } else {
       return null;
     }
     const message: RouterMessage = { role: record.role, content };
+    if (images !== undefined) message.images = images;
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
     // Preserve assistant tool-call history (OpenAI chat shape) so real tool
@@ -371,6 +414,13 @@ export function registerChatCompletions(
     }
     const toolChoice = parsedToolChoice;
 
+    const parsedEffort = parseReasoningEffort(body.reasoning_effort);
+    if (parsedEffort instanceof RouterError) {
+      const mapped = mapRouterErrorToHttp(parsedEffort);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    const reasoningEffort = parsedEffort;
+
     let model: DiscoveredModel;
     try {
       model = await registry.resolve(body.model);
@@ -413,6 +463,7 @@ export function registerChatCompletions(
       tools,
       stream: body.stream === true,
       ...(typeof body.max_tokens === "number" ? { maxOutputTokens: body.max_tokens } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(toolChoice !== undefined ? { toolChoice } : {}),
       ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
     };
