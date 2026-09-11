@@ -36,4 +36,41 @@ describe("CMM Routers current identity", () => {
   it("does not rewrite historical Task 13 identity", () => {
     expect(read("docs/task-13-closure.md")).toContain("CMM Subscription Router");
   });
+
+  it("documents the two canonical profiles and legacy compatibility boundary", () => {
+    const readme = read("README.md");
+    const install = read("docs/macos-install.md");
+    const qoderSetup = read("docs/qoder-setup.md");
+    const qoderAcceptance = read("docs/qoder-acceptance.md");
+
+    expect(readme).toContain("# CMM Routers");
+    expect(readme).toContain(
+      "Use the AI subscriptions you already pay for, from the tools you actually want to use.",
+    );
+    expect(readme).toContain("CMMChat Router");
+    expect(readme).toContain("CHAT_ONLY");
+    expect(readme).toContain("CMM Code Router");
+    expect(readme).toContain("CHAT_AND_TOOLS");
+    expect(readme).toContain("Qoder");
+    expect(readme).toContain("legacy compatibility");
+
+    for (const currentDoc of [install, qoderSetup, qoderAcceptance]) {
+      expect(currentDoc).toContain("CMM Routers");
+    }
+  });
+
+  it("no longer presents the obsolete all-provider CHAT_ONLY matrix as current truth", () => {
+    const readme = read("README.md");
+
+    expect(readme).not.toContain("| chatgpt/* | CHAT_ONLY | BLOCKED |");
+    expect(readme).not.toContain("All routes: `CHAT_ONLY`");
+
+    for (const currentDoc of [
+      readme,
+      read("docs/qoder-setup.md"),
+      read("docs/qoder-acceptance.md"),
+    ]) {
+      expect(currentDoc).not.toContain("TOOL_ACCEPTANCE=BLOCKED_PROVIDER_CAPABILITY");
+    }
+  });
 });
