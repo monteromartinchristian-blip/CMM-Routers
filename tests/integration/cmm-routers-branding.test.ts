@@ -90,4 +90,23 @@ describe("CMM Routers current identity", () => {
       expect(text).not.toMatch(/\/Users\/(?:chris|christian)\//i);
     }
   });
+  it("links and preserves the safe public publication workflow", () => {
+    const readme = readFileSync(
+      new URL("../../README.md", import.meta.url),
+      "utf8",
+    );
+    const publication = readFileSync(
+      new URL("../../docs/publication.md", import.meta.url),
+      "utf8",
+    );
+
+    expect(readme).toContain("docs/publication.md");
+    expect(publication).toContain("prepare-publication.sh");
+    expect(publication).toContain("push-publication.sh");
+    expect(publication).toContain("verify-publication.sh");
+    expect(publication).toContain("PUSH_PERFORMED=NO");
+    expect(publication).toContain("PUBLIC_RELEASE_REPRODUCIBLE=YES");
+    expect(publication).toContain("There is no force-push mode");
+  });
+
 });
