@@ -7,6 +7,11 @@ import { CodexAdapter } from "./providers/codex/adapter.js";
 import { ClaudeAdapter } from "./providers/claude/adapter.js";
 import { AntigravityAdapter } from "./providers/antigravity/adapter.js";
 import { CommandCodeAdapter } from "./providers/command-code/adapter.js";
+import { CavotiAdapter } from "./providers/cavoti/adapter.js";
+import {
+  defaultCavotiAckPath,
+  requireCavotiSpendAcknowledgement,
+} from "./providers/cavoti/spend-guard.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 
 export interface ProductionComposition {
@@ -26,6 +31,15 @@ export interface ProductionComposition {
 function isCommandCodeAckValid(): boolean {
   try {
     requireSpendAcknowledgement();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isCavotiAckValid(ackPath: string): boolean {
+  try {
+    requireCavotiSpendAcknowledgement(ackPath);
     return true;
   } catch {
     return false;
@@ -144,6 +158,40 @@ export async function createProductionRegistry(
     }
   } else {
     skippedProviders.push({ id: "command-code", reason: "disabled in config" });
+  }
+
+  if (resolved.providers.cavoti.enabled) {
+    const cavoti = resolved.providers.cavoti;
+    const configuredAckPath = process.env.CMM_CAVOTI_ACK_PATH?.trim();
+    const ackPath =
+      configuredAckPath && configuredAckPath.length > 0
+        ? configuredAckPath
+        : defaultCavotiAckPath();
+
+    if (!isCavotiAckValid(ackPath)) {
+      skippedProviders.push({
+        id: "cavoti",
+        reason: "PAYG spend acknowledgement missing or invalid",
+      });
+    } else {
+      const secret = process.env[cavoti.secretEnv]?.trim();
+      if (!secret) {
+        skippedProviders.push({
+          id: "cavoti",
+          reason: `secret env ${cavoti.secretEnv} absent`,
+        });
+      } else {
+        const adapter = new CavotiAdapter({
+          baseUrl: cavoti.baseUrl,
+          secretEnv: cavoti.secretEnv,
+          ackPath,
+        });
+        await registry.register(adapter);
+        registeredProviders.push(adapter.id);
+      }
+    }
+  } else {
+    skippedProviders.push({ id: "cavoti", reason: "disabled in config" });
   }
 
   await registry.refresh();

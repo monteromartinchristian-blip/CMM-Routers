@@ -4,7 +4,8 @@ export type ProviderId =
   | "chatgpt"
   | "claude"
   | "google"
-  | "command-code";
+  | "command-code"
+  | "cavoti";
 
 export type ProviderCapability =
   | "CHAT_AND_TOOLS"

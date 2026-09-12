@@ -16,6 +16,9 @@ export interface UsageRecord {
   status: UsageStatus;
   inputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
+  cacheReadTokens?: number;
+  costUsd?: number;
   errorCode?: string;
 }
 
@@ -31,6 +34,11 @@ export interface UsageAggregates {
   lastSuccessAt: string | null;
   activeModel: string | null;
   averageLatencyMs: number | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalReasoningTokens: number;
+  totalCacheReadTokens: number;
+  totalCostUsd: number;
 }
 
 const MAX_RECORDS = 500;
@@ -49,6 +57,9 @@ export class UsageStore {
       status: UsageStatus;
       inputTokens?: number | undefined;
       outputTokens?: number | undefined;
+      reasoningTokens?: number | undefined;
+      cacheReadTokens?: number | undefined;
+      costUsd?: number | undefined;
       errorCode?: string | undefined;
     },
   ): UsageRecord {
@@ -64,6 +75,13 @@ export class UsageStore {
       status: outcome.status,
       ...(outcome.inputTokens !== undefined ? { inputTokens: outcome.inputTokens } : {}),
       ...(outcome.outputTokens !== undefined ? { outputTokens: outcome.outputTokens } : {}),
+      ...(outcome.reasoningTokens !== undefined
+        ? { reasoningTokens: outcome.reasoningTokens }
+        : {}),
+      ...(outcome.cacheReadTokens !== undefined
+        ? { cacheReadTokens: outcome.cacheReadTokens }
+        : {}),
+      ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
       ...(outcome.errorCode !== undefined ? { errorCode: outcome.errorCode } : {}),
     };
     this.records.push(record);
@@ -86,8 +104,20 @@ export class UsageStore {
     let cancelledEvents = 0;
     let latencySum = 0;
     let lastSuccessAt: string | null = null;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalReasoningTokens = 0;
+    let totalCacheReadTokens = 0;
+    let totalCostUsd = 0;
+
     for (const record of this.records) {
       latencySum += record.durationMs;
+      totalInputTokens += record.inputTokens ?? 0;
+      totalOutputTokens += record.outputTokens ?? 0;
+      totalReasoningTokens += record.reasoningTokens ?? 0;
+      totalCacheReadTokens += record.cacheReadTokens ?? 0;
+      totalCostUsd += record.costUsd ?? 0;
+
       if (record.status === "success") {
         successCount += 1;
         lastSuccessAt = record.startedAt;
@@ -97,6 +127,7 @@ export class UsageStore {
       if (record.status === "timeout_error") timeoutEvents += 1;
       if (record.status === "cancelled") cancelledEvents += 1;
     }
+
     const activeEntries = [...this.active.values()];
     return {
       totalRequests,
@@ -110,6 +141,11 @@ export class UsageStore {
       lastSuccessAt,
       activeModel: activeEntries.length > 0 ? (activeEntries[0]?.model ?? null) : null,
       averageLatencyMs: totalRequests > 0 ? Math.round(latencySum / totalRequests) : null,
+      totalInputTokens,
+      totalOutputTokens,
+      totalReasoningTokens,
+      totalCacheReadTokens,
+      totalCostUsd,
     };
   }
 }

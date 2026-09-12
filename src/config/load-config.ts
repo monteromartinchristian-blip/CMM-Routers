@@ -22,14 +22,15 @@ const BOOTSTRAP_SHARED_CONFIG = {
       baseUrl: "https://api.commandcode.ai/provider/v1",
       secretEnv: "COMMAND_CODE_SECRET",
     },
+    cavoti: {
+      enabled: false,
+      baseUrl: "https://cavoti.com/v1",
+      secretEnv: "CAVOTI_API_KEY",
+      model: "deepseek-v4.1-flash",
+    },
   },
 } as const;
 
-/**
- * Bootstrap a fresh config dir from the documented defaults. Returns true
- * when shared.json was created, false when one already existed. Never
- * overwrites an existing file and never writes secrets.
- */
 export function ensureSharedConfig(configDir?: string): boolean {
   const baseDir = configDir ?? resolve(process.cwd(), "config");
   const sharedPath = resolve(baseDir, "shared.json");
@@ -38,12 +39,6 @@ export function ensureSharedConfig(configDir?: string): boolean {
   return true;
 }
 
-/**
- * Bootstrap a config dir from the shipped shared.example.json. Returns true
- * when shared.json was created, false when one already existed. Never
- * overwrites an existing file and never writes secrets. Throws a clear
- * error when the example itself is missing.
- */
 export function ensureSharedConfigFromExample(configDir?: string): boolean {
   const baseDir = configDir ?? resolve(process.cwd(), "config");
   const sharedPath = resolve(baseDir, "shared.json");
@@ -57,7 +52,6 @@ export function ensureSharedConfigFromExample(configDir?: string): boolean {
       `Missing ${examplePath}: cannot bootstrap shared.json on a fresh clone`,
     );
   }
-  // Validate the example parses before installing it as the live config.
   JSON.parse(exampleRaw);
   writeFileSync(sharedPath, exampleRaw.endsWith("\n") ? exampleRaw : `${exampleRaw}\n`, "utf-8");
   return true;
