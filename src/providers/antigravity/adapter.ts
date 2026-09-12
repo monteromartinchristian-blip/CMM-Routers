@@ -451,6 +451,7 @@ export interface ParsedStreamEvent {
 export function feedStreamLine(
   line: string,
   emit: (event: ParsedStreamEvent) => void,
+  state?: { sawText: boolean },
 ): { terminal: boolean } {
   const trimmed = line.trim();
   if (!trimmed) return { terminal: false };
@@ -474,7 +475,10 @@ export function feedStreamLine(
       : envelope;
   if (type === "step_update") {
     const texts = extractTextFromStepUpdate(event);
-    if (texts.length > 0) emit({ kind: "text", texts });
+    if (texts.length > 0) {
+      if (state !== undefined) state.sawText = true;
+      emit({ kind: "text", texts });
+    }
     const usageField = (event.usage ?? envelope.usage) as unknown;
     if (usageField && typeof usageField === "object") {
       const u = usageField as Record<string, unknown>;
@@ -521,8 +525,9 @@ export function feedStreamLine(
       });
     }
     const response = event.response ?? envelope.response;
-    // A terminal text-bearing result with no prior deltas still surfaces.
-    if (typeof response === "string" && response.length > 0) {
+    // result.response is the provider's accumulated final response. Surface it
+    // only as a fallback when this stream emitted no incremental text deltas.
+    if (typeof response === "string" && response.length > 0 && state?.sawText !== true) {
       emit({ kind: "text", texts: [response], terminalResponse: true });
     }
     emit({ kind: "completed", finishReason });
@@ -588,6 +593,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       const stdoutBuf = new CappedTextBuffer(this.maxStdoutDiagnosticBytes);
       const stderrBuf = new CappedTextBuffer(this.maxStderrDiagnosticBytes);
       let lineBuffer = "";
+    const streamState = { sawText: false };
       let settled = false;
       let lineOverflowed = false;
       let terminationPromise: Promise<"exited" | "killed"> | undefined;
@@ -651,7 +657,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
             return;
           }
           if (options.signal.aborted) return;
-          feedStreamLine(part, onEvent);
+          feedStreamLine(part, onEvent, streamState);
         }
         if (Buffer.byteLength(lineBuffer, "utf8") > this.maxNdjsonLineBytes) {
           failClosedOversizeLine();
@@ -666,7 +672,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         if (!lineOverflowed && lineBuffer.trim()) {
           if (Buffer.byteLength(lineBuffer, "utf8") <= this.maxNdjsonLineBytes) {
-            feedStreamLine(lineBuffer, onEvent);
+            feedStreamLine(lineBuffer, onEvent, streamState);
           }
           lineBuffer = "";
         }
