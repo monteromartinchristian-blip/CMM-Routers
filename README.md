@@ -186,3 +186,9 @@ bash scripts/security-audit.sh
 - Command Code live enablement, gated on an explicit human spend decision.
 - Multi-Mac Qoder model synchronization.
 - Additional compatible subscription providers.
+
+## Safe public maintenance
+
+Public updates are prepared through a one-way sanitization pipeline that keeps the private development history separate from the public Git history. Preparation, guarded push, and fresh-clone verification are separate fail-closed steps.
+
+See [Safe public publication workflow](docs/publication.md) for the maintenance procedure and safety gates.
