@@ -7,8 +7,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { acquirePublicationMetaTestLock } from "./meta-test-lock.js";
 const projectRoot = resolve(import.meta.dirname, "../..");
 const prepareScript = join(
   projectRoot,
@@ -114,11 +115,23 @@ afterEach(async () => {
 });
 
 const describePreparePublication =
-  process.env.CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY === "1"
+  process.env.CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY === "1" ||
+  process.env.CMM_ROUTERS_PUBLICATION_FRESH_CLONE_VERIFY === "1"
     ? describe.skip
     : describe;
 
 describePreparePublication("prepare-publication", () => {
+  let releasePublicationMetaTestLock: (() => Promise<void>) | undefined;
+
+  beforeAll(async () => {
+    releasePublicationMetaTestLock =
+      await acquirePublicationMetaTestLock();
+  }, 310_000);
+
+  afterAll(async () => {
+    await releasePublicationMetaTestLock?.();
+  });
+
   it("policy CLI scans a tree and fails closed on an unsanitized home path", async () => {
     const root = await makeRoot();
     const tree = join(root, "tree");
