@@ -67,13 +67,6 @@ function enforceAccountOnlySettings(): void {
 const PRINT_TIMEOUT_MS = 120_000;
 const MODELS_TIMEOUT_MS = 30_000;
 
-/**
- * Effort vocabulary accepted by `agy --effort` (verified against agy 1.2.1).
- * The Gemini slugs already fix their level in the model id; only the
- * adjustable routes forward a caller-supplied level.
- */
-export const AGY_EFFORT_LEVELS = ["low", "medium", "high"] as const;
-export type AgyEffortLevel = (typeof AGY_EFFORT_LEVELS)[number];
 
 const ANSI_PATTERN = /\[[0-9;?]*[ -/]*[@-~]/g;
 const ANSI_RESIDUE_PATTERN = /\[1m/;
@@ -856,14 +849,13 @@ export class AntigravityAdapter implements ProviderAdapter {
     return this.registry.maxLiveSessions();
   }
 
-  buildInferenceArgs(upstreamSlug: string, prompt: string, effort?: string): string[] {
-    // `agy` only accepts low|medium|high. The Gemini slugs already encode their
-    // level in the model id, so a caller-supplied effort is forwarded only for
-    // the adjustable models and only when it is inside agy's vocabulary.
-    const agyEffort =
-      effort !== undefined && AGY_EFFORT_LEVELS.includes(effort as AgyEffortLevel)
-        ? effort
-        : undefined;
+  buildInferenceArgs(upstreamSlug: string, prompt: string, _effort?: string): string[] {
+    // agy 1.2.2 exposes --effort globally in CLI help, but support is
+    // model-specific. Current discovered subscription routes do not expose a
+    // machine-readable effort capability: Gemini/GPT-OSS variants encode their
+    // level in the slug, while Claude Sonnet 4.6 explicitly rejects --effort.
+    // Do not synthesize an unsupported control until agy exposes truthful
+    // per-model capability metadata that can be discovered and tested.
     return [
       "--print",
       prompt,
@@ -871,7 +863,6 @@ export class AntigravityAdapter implements ProviderAdapter {
       "stream-json",
       "--model",
       upstreamSlug,
-      ...(agyEffort !== undefined ? ["--effort", agyEffort] : []),
       "--mode",
       "plan",
       "--sandbox",

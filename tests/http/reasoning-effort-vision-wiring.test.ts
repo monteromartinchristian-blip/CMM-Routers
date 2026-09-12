@@ -267,10 +267,11 @@ describe("Antigravity --effort wiring", () => {
     return new AntigravityAdapter();
   }
 
-  it("appends --effort for an adjustable model", () => {
-    const args = adapter().buildInferenceArgs("claude-sonnet-4-6", "prompt", "high");
-    expect(args).toContain("--effort");
-    expect(args[args.indexOf("--effort") + 1]).toBe("high");
+  it("does not append --effort for AGY-routed Claude models without proven support", () => {
+    for (const model of ["claude-sonnet-4-6", "claude-opus-4-6-thinking"]) {
+      const args = adapter().buildInferenceArgs(model, "prompt", "high");
+      expect(args).not.toContain("--effort");
+    }
   });
 
   it("omits --effort when the caller specified none", () => {
