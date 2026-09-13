@@ -1,0 +1,220 @@
+import Foundation
+import CMMUsageCore
+
+enum ContractFailure: Error, CustomStringConvertible {
+    case expected(String)
+
+    var description: String {
+        switch self {
+        case .expected(let message): return message
+        }
+    }
+}
+
+func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+    guard condition() else { throw ContractFailure.expected(message) }
+}
+
+func testProviderPressureDecoding() throws {
+    let json = #"""
+    {
+      "data": [{
+        "provider": {
+          "id": "provider:example",
+          "displayName": "Example AI",
+          "kind": "first_party",
+          "status": "enabled",
+          "metadata": {},
+          "createdAt": "2026-09-13T12:00:00.000Z",
+          "updatedAt": "2026-09-13T12:00:00.000Z"
+        },
+        "pressure": {
+          "providerId": "provider:example",
+          "status": "critical",
+          "routes": [{
+            "accessRouteId": "route:example",
+            "status": "critical",
+            "constraints": [{
+              "bucketId": "bucket:weekly",
+              "bindingId": "binding:weekly",
+              "status": "critical",
+              "enforcement": "hard",
+              "metric": { "kind": "percentage" },
+              "unit": "fraction",
+              "remainingFraction": 0.08,
+              "resetAt": "2026-09-14T09:00:00.000Z",
+              "source": "provider_official_api",
+              "confidence": "exact"
+            }],
+            "primaryConstraint": {
+              "bucketId": "bucket:weekly",
+              "bindingId": "binding:weekly",
+              "status": "critical",
+              "enforcement": "hard",
+              "metric": { "kind": "percentage" },
+              "unit": "fraction",
+              "remainingFraction": 0.08,
+              "resetAt": "2026-09-14T09:00:00.000Z",
+              "source": "provider_official_api",
+              "confidence": "exact"
+            }
+          }]
+        }
+      }]
+    }
+    """#
+    let response = try JSONDecoder().decode(UsageListResponse<ProviderUsageView>.self, from: Data(json.utf8))
+    try expect(response.data.first?.provider.displayName == "Example AI", "provider name should decode")
+    try expect(response.data.first?.pressure.status == .critical, "provider pressure should decode")
+    try expect(response.data.first?.pressure.routes.first?.primaryConstraint?.remainingFraction == 0.08, "primary quota should remain independent")
+}
+
+final class MemoryCredentialStore: UsageCredentialStore {
+    var token: String?
+
+    init(token: String?) {
+        self.token = token
+    }
+
+    func readToken() throws -> String? { token }
+    func saveToken(_ token: String) throws { self.token = token }
+    func deleteToken() throws { token = nil }
+}
+
+final class StubURLProtocol: URLProtocol {
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: ContractFailure.expected("missing URL handler"))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+func testReadOnlyAPIClient() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let credentials = MemoryCredentialStore(token: "read-only-token")
+    let client = CMMUsageAPIClient(
+        baseURL: URL(string: "http://127.0.0.1:8790")!,
+        credentialStore: credentials,
+        session: session
+    )
+
+    StubURLProtocol.handler = { request in
+        try expect(request.url?.path == "/v1/cmm/usage/providers", "client must stay on the Usage API")
+        try expect(request.httpMethod == "GET", "provider fetch must be read-only")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer read-only-token", "client must use the scoped Usage credential")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        let data = Data(#"{"data":[]}"#.utf8)
+        return (response, data)
+    }
+
+    let providers = try await client.fetchProviders()
+    try expect(providers.isEmpty, "provider response should decode")
+
+    StubURLProtocol.handler = { request in
+        try expect(request.url?.path == "/v1/cmm/usage/refresh-all", "refresh must use the Usage refresh endpoint")
+        try expect(request.httpMethod == "POST", "refresh-all must be POST")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        return (response, Data("[]".utf8))
+    }
+    _ = try await client.refreshAll()
+}
+
+func testDashboardFetchAndSafePresentation() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = CMMUsageAPIClient(
+        baseURL: URL(string: "http://127.0.0.1:8790")!,
+        credentialStore: MemoryCredentialStore(token: "usage-token"),
+        session: session
+    )
+
+    StubURLProtocol.handler = { request in
+        let path = request.url!.path
+        let body: String
+        switch path {
+        case "/v1/cmm/usage":
+            body = #"{"generatedAt":"2026-09-13T12:00:00.000Z","providerCount":1,"productCount":1,"modelCount":1,"routeCount":1,"quotaCount":2,"warningCount":0,"criticalCount":1,"exhaustedCount":0}"#
+        case "/v1/cmm/usage/providers":
+            body = #"{"data":[{"provider":{"id":"provider:example","displayName":"Example AI","kind":"first_party","status":"enabled","metadata":{},"createdAt":"2026-09-13T12:00:00.000Z","updatedAt":"2026-09-13T12:00:00.000Z"},"pressure":{"providerId":"provider:example","status":"critical","routes":[]}}]}"#
+        case "/v1/cmm/usage/products":
+            body = #"{"data":[{"id":"product:example","providerId":"provider:example","displayName":"Example Pro","kind":"subscription","metadata":{}}]}"#
+        case "/v1/cmm/usage/models":
+            body = #"{"data":[{"model":{"id":"model:example","canonicalName":"Example Model","vendor":"Example","lifecycle":"active","aliases":[],"metadata":{}},"constraints":{"modelIdentityId":"model:example","routes":[]}}]}"#
+        case "/v1/cmm/usage/routes":
+            body = #"{"data":[{"route":{"id":"route:example","accountId":"account:example","productId":"product:example","modelIdentityId":"model:example","providerModelId":"example-model","displayName":"Example Model","status":"available","metadata":{}},"health":{"accessRouteId":"route:example","status":"critical","constraints":[]}}]}"#
+        case "/v1/cmm/usage/quotas":
+            body = #"{"data":[{"bucket":{"id":"bucket:weekly","accountId":"account:example","productId":"product:example","displayName":"Weekly","metric":{"kind":"percentage"},"windowPolicy":{"kind":"provider_reported"},"unit":"fraction","enforcement":"hard","status":"critical","metadata":{}},"bucketId":"bucket:weekly","status":"critical","reconciled":{"selected":{"id":"snapshot:weekly","quotaBucketId":"bucket:weekly","observedAt":"2026-09-13T12:00:00.000Z","remainingFraction":0.08,"resetAt":"2026-09-14T09:00:00.000Z","source":"provider_official_api","confidence":"exact","stalenessAfter":"2026-09-13T12:10:00.000Z"},"stale":false},"forecast":{"predictedExhaustionAt":"2026-09-13T20:00:00.000Z","willExhaustBeforeReset":true,"confidence":"calculated"}},{"bucket":{"id":"bucket:unknown","accountId":"account:example","productId":"product:example","displayName":"Monthly global","metric":{"kind":"provider_defined","providerKey":"monthly"},"windowPolicy":{"kind":"provider_reported"},"unit":"units","enforcement":"hard","status":"unknown","metadata":{}},"bucketId":"bucket:unknown","status":"unknown","reconciled":{"stale":true},"forecast":{"willExhaustBeforeReset":false,"confidence":"unknown"}}]}"#
+        case "/v1/cmm/usage/history":
+            body = #"{"data":[{"id":"usage:1","occurredAt":"2026-09-13T11:59:00.000Z","providerId":"provider:example","accountId":"account:example","productId":"product:example","accessRouteId":"route:example","requests":1,"source":"router_measured","confidence":"measured","metadata":{}}]}"#
+        case "/v1/cmm/usage/costs":
+            body = #"{"data":[{"id":"cost:1","occurredAt":"2026-09-13T11:59:00.000Z","providerId":"provider:example","accountId":"account:example","productId":"product:example","amount":0.01,"currency":"USD","kind":"usage","source":"provider_official_api","confidence":"exact","metadata":{}}]}"#
+        case "/v1/cmm/usage/subscriptions":
+            body = #"{"data":[{"id":"subscription:1","accountId":"account:example","productId":"product:example","status":"active","startedAt":"2026-09-01T00:00:00.000Z","billingAmount":20,"billingCurrency":"USD","metadata":{}}]}"#
+        case "/v1/cmm/usage/alerts":
+            body = #"{"data":[{"bucketId":"bucket:weekly","status":"critical","kind":"predicted_exhaustion"}]}"#
+        default:
+            throw ContractFailure.expected("unexpected dashboard path: \(path)")
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        return (response, Data(body.utf8))
+    }
+
+    let dashboard = try await client.fetchDashboard()
+    try expect(dashboard.overallStatus == .critical, "dashboard should surface the worst real status")
+    try expect(dashboard.providers.count == 1 && dashboard.products.count == 1, "dashboard should load provider/product data")
+    try expect(dashboard.models.count == 1 && dashboard.routes.count == 1, "dashboard should load model/route data")
+    try expect(dashboard.quotas.count == 2 && dashboard.subscriptions.count == 1, "dashboard should load quotas and subscriptions")
+    try expect(dashboard.quotas[0].remainingSummary == "8% remaining", "known provider percentage should render directly")
+    try expect(dashboard.quotas[1].remainingSummary == "Unknown", "unknown quota must not render as zero")
+    try expect(dashboard.quotas[0].forecastSummary.contains("Predicted exhaustion"), "forecast should remain visible")
+}
+
+func testClientRejectsNonLoopbackBaseURL() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    StubURLProtocol.handler = { _ in
+        throw ContractFailure.expected("non-loopback client must fail before networking")
+    }
+    let client = CMMUsageAPIClient(
+        baseURL: URL(string: "https://example.com")!,
+        credentialStore: MemoryCredentialStore(token: "usage-token"),
+        session: URLSession(configuration: configuration)
+    )
+
+    do {
+        _ = try await client.fetchProviders()
+        throw ContractFailure.expected("non-loopback base URL should be rejected")
+    } catch CMMUsageAPIError.loopbackRequired {
+        // Expected: the native client is physically unable to leave loopback.
+    }
+}
+
+do {
+    try testProviderPressureDecoding()
+    try await testReadOnlyAPIClient()
+    try await testDashboardFetchAndSafePresentation()
+    try await testClientRejectsNonLoopbackBaseURL()
+    print("CMMUsageContractTests: PASS")
+} catch {
+    fputs("CMMUsageContractTests: FAIL: \(error)\n", stderr)
+    exit(1)
+}
