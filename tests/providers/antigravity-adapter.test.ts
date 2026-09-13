@@ -1,4 +1,6 @@
 import { describe, expect, it, beforeEach } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   AntigravityAdapter,
   feedStreamLine,
@@ -8,6 +10,7 @@ import {
 } from "../../src/providers/antigravity/adapter.js";
 import type { RouterRequest } from "../../src/core/model.js";
 import { RouterError } from "../../src/core/errors.js";
+import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 type SeenRequest = {
   url?: string;
@@ -579,6 +582,131 @@ describe("Antigravity adapter", () => {
 
   it("cancel of unknown request is a no-op", async () => {
     await expect(adapter.cancel("no-such-request")).resolves.toBeUndefined();
+  });
+
+  describe("client-owned tool agent isolation", () => {
+    const AGENT_NAME = "cmm-router-tool-bridge";
+    const AGENT_RELATIVE_PATH = join(".agents", "agents", AGENT_NAME, "agent.md");
+
+    /**
+     * Provider tools that MUST NOT be reachable from a Qoder-owned tool run.
+     * None of these names may appear anywhere in the generated agent.
+     */
+    const FORBIDDEN_NATIVE_TOOLS = [
+      "run_command",
+      "view_file",
+      "write_file",
+      "replace_file_content",
+      "grep_search",
+      "code_search",
+      "browser_",
+    ];
+
+    interface LaunchSnapshot {
+      args: string[];
+      cwd: string;
+      agentExists: boolean;
+      agentBody: string;
+      agentsDirExists: boolean;
+    }
+
+    /**
+     * Captures the launch contract at the exact moment the provider would be
+     * spawned, so the assertions cannot be satisfied by work done later: the
+     * agent must already exist in the run cwd before agy ever runs.
+     */
+    function captureRunner(into: LaunchSnapshot[]) {
+      return {
+        async streamInference(
+          args: string[],
+          options: { cwd: string },
+          onEvent: (event: ParsedStreamEvent) => void,
+        ) {
+          const agentPath = join(options.cwd, AGENT_RELATIVE_PATH);
+          const agentExists = existsSync(agentPath);
+          into.push({
+            args: [...args],
+            cwd: options.cwd,
+            agentExists,
+            agentBody: agentExists ? readFileSync(agentPath, "utf-8") : "",
+            agentsDirExists: existsSync(join(options.cwd, ".agents")),
+          });
+          onEvent({ kind: "completed", finishReason: "stop" });
+          return { status: 0, signal: null, stdout: "", stderr: "" };
+        },
+        async runInference(_args: string[], _options: { cwd: string; timeoutMs: number }) {
+          return { status: 0, signal: null, stdout: "", stderr: "" };
+        },
+      };
+    }
+
+    function adapterCapturing(
+      into: LaunchSnapshot[],
+      options?: { mcpRegistrar?: () => void },
+    ): AntigravityAdapter {
+      return new AntigravityAdapter(
+        captureRunner(into) as unknown as ConstructorParameters<typeof AntigravityAdapter>[0],
+        undefined,
+        options,
+      );
+    }
+
+    it("launches tool-capable runs under the CMM-owned MCP-only custom agent", async () => {
+      const launches: LaunchSnapshot[] = [];
+      const adapterWithRunner = adapterCapturing(launches, { mcpRegistrar: () => undefined });
+      const request: RouterRequest = { ...makeRequest(), tools: [CMM_ECHO_TOOL] };
+
+      for await (const _ of adapterWithRunner.run(request, new AbortController().signal)) {
+        // consume: the launch snapshot captured at spawn time is the assertion
+        // surface, not the events this fake run produces afterwards.
+      }
+
+      expect(launches.length).toBe(1);
+      const launch = launches[0]!;
+      const flagIndex = launch.args.indexOf("--agent");
+      expect(flagIndex).toBeGreaterThanOrEqual(0);
+      expect(launch.args[flagIndex + 1]).toBe(AGENT_NAME);
+      expect(launch.cwd).toContain("cmm-antigravity-run-");
+      expect(launch.agentExists).toBe(true);
+      expect(launch.agentBody).toContain(`name: ${AGENT_NAME}`);
+      expect(launch.agentBody).toContain("excludeDefaultComponents: true");
+      expect(launch.agentBody).toContain("inheritMcp: true");
+      expect(launch.agentBody).toContain("call_mcp_tool");
+      for (const forbidden of FORBIDDEN_NATIVE_TOOLS) {
+        expect(launch.agentBody).not.toContain(forbidden);
+      }
+    });
+
+    it("removes the run cwd, and with it the CMM agent, when the provider run never starts", async () => {
+      const launches: LaunchSnapshot[] = [];
+      const adapterWithRunner = adapterCapturing(launches, { mcpRegistrar: () => undefined });
+      const request: RouterRequest = { ...makeRequest(), tools: [CMM_ECHO_TOOL] };
+
+      for await (const _ of adapterWithRunner.run(request, new AbortController().signal)) {
+        // consume
+      }
+
+      // The capture runner never reports a provider pid, so the tool session
+      // aborts before it can own the cwd. Nothing from this run - especially
+      // the generated agent - may survive the request.
+      expect(launches.length).toBe(1);
+      expect(existsSync(join(launches[0]!.cwd, AGENT_RELATIVE_PATH))).toBe(false);
+      expect(existsSync(launches[0]!.cwd)).toBe(false);
+    });
+
+    it("keeps ordinary chat free of the CMM tool agent", async () => {
+      const launches: LaunchSnapshot[] = [];
+      const adapterWithRunner = adapterCapturing(launches);
+
+      for await (const _ of adapterWithRunner.run(makeRequest(), new AbortController().signal)) {
+        // consume
+      }
+
+      expect(launches.length).toBe(1);
+      expect(launches[0]!.args).not.toContain("--agent");
+      expect(launches[0]!.agentsDirExists).toBe(false);
+      expect(launches[0]!.agentExists).toBe(false);
+    });
   });
 
   describe("account-only spending gate", () => {
