@@ -7,6 +7,7 @@ export function registerDiagnostics(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  registerLegacyUsageRoute = true,
 ): void {
   fastify.get("/v1/cmm/providers", async () => {
     const models = registry.listModels();
@@ -39,29 +40,31 @@ export function registerDiagnostics(
     });
   });
 
-  fastify.get("/v1/cmm/usage", async () => {
-    if (!usageStore) {
+  if (registerLegacyUsageRoute) {
+    fastify.get("/v1/cmm/usage", async () => {
+      if (!usageStore) {
+        return redactObject({
+          status: "disabled",
+          totalRequests: 0,
+          recent: [],
+        });
+      }
+      const aggregates = usageStore.aggregates();
       return redactObject({
-        status: "disabled",
-        totalRequests: 0,
-        recent: [],
+        status: "ok",
+        totalRequests: aggregates.totalRequests,
+        successCount: aggregates.successCount,
+        failureCount: aggregates.failureCount,
+        activeRequests: aggregates.activeRequests,
+        activeModel: aggregates.activeModel,
+        averageLatencyMs: aggregates.averageLatencyMs,
+        lastSuccessAt: aggregates.lastSuccessAt,
+        quotaEvents: aggregates.quotaEvents,
+        rateLimitEvents: aggregates.rateLimitEvents,
+        timeoutEvents: aggregates.timeoutEvents,
+        cancelledEvents: aggregates.cancelledEvents,
+        recent: usageStore.listRecent(20),
       });
-    }
-    const aggregates = usageStore.aggregates();
-    return redactObject({
-      status: "ok",
-      totalRequests: aggregates.totalRequests,
-      successCount: aggregates.successCount,
-      failureCount: aggregates.failureCount,
-      activeRequests: aggregates.activeRequests,
-      activeModel: aggregates.activeModel,
-      averageLatencyMs: aggregates.averageLatencyMs,
-      lastSuccessAt: aggregates.lastSuccessAt,
-      quotaEvents: aggregates.quotaEvents,
-      rateLimitEvents: aggregates.rateLimitEvents,
-      timeoutEvents: aggregates.timeoutEvents,
-      cancelledEvents: aggregates.cancelledEvents,
-      recent: usageStore.listRecent(20),
     });
-  });
+  }
 }

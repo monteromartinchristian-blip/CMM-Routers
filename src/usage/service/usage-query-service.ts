@@ -1,5 +1,15 @@
 import { AlertEngine } from "../alerts/alert-engine.js";
-import type { QuotaStatus, RouteHealth } from "../domain/types.js";
+import type {
+  AccessRoute,
+  CostEvent,
+  ModelIdentity,
+  Product,
+  Provider,
+  QuotaBucket,
+  QuotaStatus,
+  RouteHealth,
+  UsageEvent,
+} from "../domain/types.js";
 import { resolveRouteHealth } from "../domain/quota-resolution.js";
 import { forecastQuota, type QuotaForecast } from "../forecasting/quota-forecast.js";
 import {
@@ -28,6 +38,43 @@ export interface ProviderPressureView {
 
 export interface UsageQueryServiceOptions {
   now?: () => Date;
+}
+
+export interface ProviderUsageView {
+  provider: Provider;
+  pressure: ProviderPressureView;
+}
+
+export interface ModelUsageView {
+  model: ModelIdentity;
+  constraints: ModelConstraintView;
+}
+
+export interface RouteUsageView {
+  route: AccessRoute;
+  health: RouteHealth;
+}
+
+export interface QuotaUsageView extends QuotaStateView {
+  bucket: QuotaBucket;
+}
+
+export interface UsageAlertView {
+  bucketId: string;
+  status: Extract<QuotaStatus, "warning" | "critical" | "exhausted">;
+  kind: "usage_fraction" | "predicted_exhaustion" | "quota_exhausted";
+}
+
+export interface UsageOverview {
+  generatedAt: string;
+  providerCount: number;
+  productCount: number;
+  modelCount: number;
+  routeCount: number;
+  quotaCount: number;
+  warningCount: number;
+  criticalCount: number;
+  exhaustedCount: number;
 }
 
 const statusRank: Record<QuotaStatus, number> = {
@@ -122,5 +169,98 @@ export class UsageQueryService {
       routes.length === 0 ? "unknown" : "healthy",
     );
     return { providerId, status, routes };
+  }
+
+  async getOverview(): Promise<UsageOverview> {
+    const [providers, products, models, routes, quotas] = await Promise.all([
+      this.store.listProviders(),
+      this.store.listProducts(),
+      this.store.listModelIdentities(),
+      this.store.listAccessRoutes(),
+      this.listQuotas(),
+    ]);
+    return {
+      generatedAt: this.now().toISOString(),
+      providerCount: providers.length,
+      productCount: products.length,
+      modelCount: models.length,
+      routeCount: routes.length,
+      quotaCount: quotas.length,
+      warningCount: quotas.filter((quota) => quota.status === "warning").length,
+      criticalCount: quotas.filter((quota) => quota.status === "critical").length,
+      exhaustedCount: quotas.filter((quota) => quota.status === "exhausted").length,
+    };
+  }
+
+  async listProviders(): Promise<ProviderUsageView[]> {
+    const providers = await this.store.listProviders();
+    return Promise.all(
+      providers.map(async (provider) => ({
+        provider,
+        pressure: await this.getProviderPressure(provider.id),
+      })),
+    );
+  }
+
+  async listProducts(): Promise<Product[]> {
+    return this.store.listProducts();
+  }
+
+  async listModels(): Promise<ModelUsageView[]> {
+    const models = await this.store.listModelIdentities();
+    return Promise.all(
+      models.map(async (model) => ({
+        model,
+        constraints: await this.getModelConstraints(model.id),
+      })),
+    );
+  }
+
+  async listRoutes(): Promise<RouteUsageView[]> {
+    const routes = await this.store.listAccessRoutes();
+    return Promise.all(
+      routes.map(async (route) => ({
+        route,
+        health: await this.getRouteHealth(route.id),
+      })),
+    );
+  }
+
+  async listQuotas(): Promise<QuotaUsageView[]> {
+    const buckets = await this.store.listQuotaBuckets();
+    return Promise.all(
+      buckets.map(async (bucket) => ({
+        bucket,
+        ...(await this.getQuotaState(bucket.id)),
+      })),
+    );
+  }
+
+  async listHistory(limit = 100): Promise<UsageEvent[]> {
+    return this.store.listUsageEvents(limit);
+  }
+
+  async listCosts(limit = 100): Promise<CostEvent[]> {
+    return this.store.listCostEvents(limit);
+  }
+
+  async listAlerts(): Promise<UsageAlertView[]> {
+    const quotas = await this.listQuotas();
+    const alerts: UsageAlertView[] = [];
+    for (const quota of quotas) {
+      if (quota.status === "exhausted") {
+        alerts.push({ bucketId: quota.bucketId, status: quota.status, kind: "quota_exhausted" });
+        continue;
+      }
+      if (quota.status !== "critical" && quota.status !== "warning") continue;
+      alerts.push({
+        bucketId: quota.bucketId,
+        status: quota.status,
+        kind: quota.forecast.willExhaustBeforeReset
+          ? "predicted_exhaustion"
+          : "usage_fraction",
+      });
+    }
+    return alerts;
   }
 }

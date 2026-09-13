@@ -35,15 +35,20 @@ export interface UsageStore {
   appendQuotaSnapshots(values: readonly QuotaSnapshot[]): Promise<void>;
 
   getProvider(id: string): Promise<Provider | undefined>;
+  listProviders(): Promise<Provider[]>;
   getAccount(id: string): Promise<Account | undefined>;
   getProduct(id: string): Promise<Product | undefined>;
+  listProducts(providerId?: string): Promise<Product[]>;
   getSubscriptionPeriod(id: string): Promise<SubscriptionPeriod | undefined>;
   listSubscriptionPeriods(productId?: string): Promise<SubscriptionPeriod[]>;
   getModelIdentity(id: string): Promise<ModelIdentity | undefined>;
+  listModelIdentities(): Promise<ModelIdentity[]>;
   getAccessRoute(id: string): Promise<AccessRoute | undefined>;
   listAccessRoutes(productId?: string): Promise<AccessRoute[]>;
   getQuotaBucket(id: string): Promise<QuotaBucket | undefined>;
+  listQuotaBuckets(productId?: string): Promise<QuotaBucket[]>;
   getCurrentQuotaState(bucketId: string): Promise<QuotaSnapshot[]>;
   getRouteGraph(accessRouteId: string): Promise<RouteGraph>;
   listUsageEvents(limit?: number): Promise<UsageEvent[]>;
+  listCostEvents(limit?: number): Promise<CostEvent[]>;
 }

@@ -11,6 +11,9 @@ import {
   CONSUMER_QODER,
   type ConsumerId,
 } from "../core/consumer-capability.js";
+import type { UsageService as CmmUsageService } from "../usage/service/usage-service.js";
+import { isUsageApiPath, verifyUsageBearer } from "../usage/api/usage-auth.js";
+import { registerUsageRoutes } from "../usage/api/usage-routes.js";
 
 export interface ServerOptions {
   host: string;
@@ -25,6 +28,10 @@ export interface ServerOptions {
    * client can never enable tools by itself, and CMMChat can never use them.
    */
   qoderToken?: string;
+  /** Read-only credential scoped to the CMM Usage API surface. */
+  usageToken?: string;
+  /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
+  cmmUsageService?: CmmUsageService;
 }
 
 export type ConsumerRequest = FastifyRequest & { consumerId: ConsumerId };
@@ -42,6 +49,13 @@ export function resolveConsumerId(
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
+  if (
+    options.usageToken !== undefined &&
+    (options.usageToken === options.bearerSecret || options.usageToken === options.qoderToken)
+  ) {
+    throw new Error("Usage bearer token must be distinct from inference bearer tokens");
+  }
+
   const fastify = Fastify({
     logger: false,
     // Headroom over the 1 MiB tool-result policy so an at-bound result plus
@@ -57,6 +71,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // User-Agent, or model names.
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
+      const usageCredential = verifyUsageBearer(request.headers.authorization, options.usageToken);
+      if (usageCredential) {
+        if (options.cmmUsageService !== undefined && isUsageApiPath(request.url)) return;
+        return reply.code(403).send({
+          error: {
+            type: "usage_scope_forbidden",
+            message: "Usage credential is restricted to the CMM Usage API",
+          },
+        });
+      }
+
       const consumerId = resolveConsumerId(request, options);
       if (consumerId === null) {
         return reply.code(401).send({
@@ -112,7 +137,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   // Diagnostic endpoints
-  registerDiagnostics(fastify, options.registry, options.usageStore);
+  registerDiagnostics(
+    fastify,
+    options.registry,
+    options.usageStore,
+    options.cmmUsageService === undefined,
+  );
+
+  if (options.cmmUsageService !== undefined) {
+    registerUsageRoutes(fastify, options.cmmUsageService);
+  }
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer
   // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.

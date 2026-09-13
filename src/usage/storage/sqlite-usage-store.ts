@@ -247,12 +247,26 @@ export class SqliteUsageStore implements UsageStore {
     return this.selectById<Provider>("providers", id);
   }
 
+  async listProviders(): Promise<Provider[]> {
+    const rows = this.db().prepare("SELECT payload_json FROM providers ORDER BY id").all() as PayloadRow[];
+    return decodeAll<Provider>(rows);
+  }
+
   async getAccount(id: string): Promise<Account | undefined> {
     return this.selectById<Account>("accounts", id);
   }
 
   async getProduct(id: string): Promise<Product | undefined> {
     return this.selectById<Product>("products", id);
+  }
+
+  async listProducts(providerId?: string): Promise<Product[]> {
+    const rows = (providerId === undefined
+      ? this.db().prepare("SELECT payload_json FROM products ORDER BY id").all()
+      : this.db()
+          .prepare("SELECT payload_json FROM products WHERE provider_id = ? ORDER BY id")
+          .all(providerId)) as PayloadRow[];
+    return decodeAll<Product>(rows);
   }
 
   async getSubscriptionPeriod(id: string): Promise<SubscriptionPeriod | undefined> {
@@ -272,6 +286,13 @@ export class SqliteUsageStore implements UsageStore {
     return this.selectById<ModelIdentity>("model_identities", id);
   }
 
+  async listModelIdentities(): Promise<ModelIdentity[]> {
+    const rows = this.db()
+      .prepare("SELECT payload_json FROM model_identities ORDER BY id")
+      .all() as PayloadRow[];
+    return decodeAll<ModelIdentity>(rows);
+  }
+
   async getAccessRoute(id: string): Promise<AccessRoute | undefined> {
     return this.selectById<AccessRoute>("access_routes", id);
   }
@@ -287,6 +308,15 @@ export class SqliteUsageStore implements UsageStore {
 
   async getQuotaBucket(id: string): Promise<QuotaBucket | undefined> {
     return this.selectById<QuotaBucket>("quota_buckets", id);
+  }
+
+  async listQuotaBuckets(productId?: string): Promise<QuotaBucket[]> {
+    const rows = (productId === undefined
+      ? this.db().prepare("SELECT payload_json FROM quota_buckets ORDER BY id").all()
+      : this.db()
+          .prepare("SELECT payload_json FROM quota_buckets WHERE product_id = ? ORDER BY id")
+          .all(productId)) as PayloadRow[];
+    return decodeAll<QuotaBucket>(rows);
   }
 
   async getCurrentQuotaState(bucketId: string): Promise<QuotaSnapshot[]> {
@@ -322,5 +352,12 @@ export class SqliteUsageStore implements UsageStore {
       .prepare("SELECT payload_json FROM usage_events ORDER BY occurred_at DESC, id DESC LIMIT ?")
       .all(limit) as PayloadRow[];
     return decodeAll<UsageEvent>(rows);
+  }
+
+  async listCostEvents(limit = 100): Promise<CostEvent[]> {
+    const rows = this.db()
+      .prepare("SELECT payload_json FROM cost_events ORDER BY occurred_at DESC, id DESC LIMIT ?")
+      .all(limit) as PayloadRow[];
+    return decodeAll<CostEvent>(rows);
   }
 }
