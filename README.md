@@ -182,11 +182,50 @@ bash scripts/security-audit.sh
 
 ## Roadmap
 
-- Additional clients and harnesses on the `CMM Code Router` profile.
-- Command Code live enablement, gated on an explicit human spend decision.
-- Multi-Mac Qoder model synchronization.
-- Additional compatible subscription providers.
+CMM Routers will remain pre-stable until the current provider set is proven end-to-end in real clients and the catalog/runtime architecture is ready to evolve with upstream providers.
 
+### 1. Close current compatibility gaps
+
+- Finish live tool compatibility for the remaining Google/Antigravity edge cases, including GPT-OSS and real Qoder tool selection.
+- Revalidate ChatGPT/Codex when subscription quota is available.
+- Complete Command Code live enablement only after an explicit human spend decision.
+- Complete multi-Mac Qoder synchronization and the final real-Qoder compatibility gate.
+- Treat models that require optional paid credits as discoverable catalog entries even when local credit use is disabled; billing availability is separate from catalog truth.
+
+### 2. Make provider catalogs dynamic
+
+The provider is the source of truth for which models exist. CMM Routers is the source of truth for how those models are exposed safely and truthfully to consumers.
+
+- Reflect provider model additions, removals, aliases, and relevant metadata changes automatically.
+- Replace the current fixed managed-model layout with namespace-aware reconciliation.
+- Keep provider discovery, Router capability truth, live compatibility status, and local billing availability as separate concerns.
+- Reconcile CMM-managed models into Qoder without deleting or rewriting legitimate unmanaged user models.
+- Never enable PAYG, paid-credit usage, cross-provider fallback, or unknown-model fallback implicitly.
+
+### 3. Normalize the local repository path
+
+- Rename the local checkout from `$HOME/CMM-Routers` to `$HOME/CMM Routers`.
+- Repair all path-bound local integrations, including launchd, AGY MCP registration, scripts, tests, and Qoder-facing configuration.
+- Prove that no active runtime dependency still points to the old local path.
+- Keep the GitHub repository slug hyphenated where spaces are impractical.
+
+### 4. Expand provider support
+
+- Add additional compatible subscription providers one at a time through the same provider contract.
+- Require truthful discovery, capability mapping, secure credential handling, fail-closed routing, and client-owned tool round-trips where supported.
+- Keep Qoder as a supported client/harness rather than making any single client the identity of CMM Routers.
+
+### 5. Stable public release
+
+A stable tag is created only after:
+
+- the current provider compatibility matrix is green or explicitly truthful about unsupported capabilities;
+- dynamic provider catalog reconciliation is proven;
+- the local path migration is complete and audited;
+- the intended provider expansion for the target release is complete;
+- build, tests, typecheck, security audit, privacy/secret checks, public export verification, and real-client compatibility gates pass.
+
+Until then, public `main` remains pre-stable.
 ## Safe public maintenance
 
 Public updates are prepared through a one-way sanitization pipeline that keeps the private development history separate from the public Git history. Preparation, guarded push, and fresh-clone verification are separate fail-closed steps.
