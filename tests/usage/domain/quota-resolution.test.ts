@@ -72,4 +72,20 @@ describe("quota domain validation", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  it("rejects semantically inconsistent absolute and fractional quota observations", () => {
+    const valid = canonicalQuotaScenarios.percentageOnly.quotaStates[0]?.snapshot;
+    expect(valid).toBeDefined();
+
+    const parsed = quotaSnapshotSchema.safeParse({
+      ...valid,
+      usedValue: 80,
+      remainingValue: 40,
+      limitValue: 100,
+      usedFraction: 0.9,
+      remainingFraction: 0.9,
+    });
+
+    expect(parsed.success).toBe(false);
+  });
 });

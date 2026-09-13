@@ -36,10 +36,25 @@ function isStale(snapshot: QuotaSnapshot, nowMs: number): boolean {
   return timestamp(snapshot.stalenessAfter) <= nowMs;
 }
 
+function freshnessLifetime(snapshot: QuotaSnapshot): number {
+  return Math.max(0, timestamp(snapshot.stalenessAfter) - timestamp(snapshot.observedAt));
+}
+
+function observationsAreComparablyFresh(a: QuotaSnapshot, b: QuotaSnapshot): boolean {
+  const observedDifference = Math.abs(timestamp(a.observedAt) - timestamp(b.observedAt));
+  const comparableWindow = Math.min(freshnessLifetime(a), freshnessLifetime(b));
+  return observedDifference <= comparableWindow;
+}
+
 function compareSnapshots(a: QuotaSnapshot, b: QuotaSnapshot, nowMs: number): number {
   const aStale = isStale(a, nowMs);
   const bStale = isStale(b, nowMs);
   if (aStale !== bStale) return aStale ? 1 : -1;
+
+  const observedDifference = timestamp(b.observedAt) - timestamp(a.observedAt);
+  if (!observationsAreComparablyFresh(a, b) && observedDifference !== 0) {
+    return observedDifference;
+  }
 
   const sourceDifference = sourceRank[a.source] - sourceRank[b.source];
   if (sourceDifference !== 0) return sourceDifference;
@@ -47,7 +62,6 @@ function compareSnapshots(a: QuotaSnapshot, b: QuotaSnapshot, nowMs: number): nu
   const confidenceDifference = confidenceRank[a.confidence] - confidenceRank[b.confidence];
   if (confidenceDifference !== 0) return confidenceDifference;
 
-  const observedDifference = timestamp(b.observedAt) - timestamp(a.observedAt);
   if (observedDifference !== 0) return observedDifference;
 
   return a.id.localeCompare(b.id);

@@ -61,6 +61,27 @@ describe("reconcileQuotaSnapshots", () => {
     expect(state.stale).toBe(false);
   });
 
+  it("prefers a materially newer router measurement over much older authoritative data that is still non-stale", () => {
+    const olderOfficial = snapshot("older-official", {
+      remainingFraction: 0.8,
+      source: "provider_official_api",
+      confidence: "exact",
+      observedAt: "2026-09-13T10:00:00.000Z",
+      stalenessAfter: "2026-09-13T13:00:00.000Z",
+    });
+    const recentMeasured = snapshot("recent-router", {
+      remainingFraction: 0.55,
+      source: "router_measured",
+      confidence: "measured",
+      observedAt: "2026-09-13T11:59:00.000Z",
+      stalenessAfter: "2026-09-13T12:09:00.000Z",
+    });
+
+    const state = reconcileQuotaSnapshots([olderOfficial, recentMeasured], now);
+
+    expect(state.selected?.id).toBe("recent-router");
+  });
+
   it("retains exact and estimated conflicting observations for diagnostics", () => {
     const exact = snapshot("exact", {
       remainingValue: 70,
@@ -111,7 +132,7 @@ describe("reconcileQuotaSnapshots", () => {
     expect(state.selected).not.toHaveProperty("limitValue");
   });
 
-  it("refuses to reconcile snapshots from incompatible quota buckets", () => {
+  it("keeps incompatible units isolated by refusing cross-bucket reconciliation", () => {
     expect(() =>
       reconcileQuotaSnapshots(
         [snapshot("a"), snapshot("b", { quotaBucketId: "bucket:currency" })],
