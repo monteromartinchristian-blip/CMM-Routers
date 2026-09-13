@@ -123,6 +123,24 @@ export class UsageAdapterManager {
     }));
   }
 
+  async discover(id: string): Promise<UsageDiscoveryResult> {
+    const adapter = this.adapters.get(id)?.adapter;
+    if (adapter === undefined) {
+      return {
+        status: "error",
+        error: { kind: "unavailable", message: "Usage adapter is not registered" },
+      };
+    }
+    const discoveryCapability = ([
+      "discover_accounts",
+      "discover_products",
+      "discover_models",
+      "discover_quota_graph",
+    ] as const).find((capability) => adapter.capabilities().has(capability));
+    if (discoveryCapability === undefined) return unsupported("discover_accounts");
+    return this.invoke(id, discoveryCapability, (value) => value.discover());
+  }
+
   private async invoke<T extends AdapterResult>(
     id: string,
     capability: UsageAdapterCapability,

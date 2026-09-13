@@ -2,11 +2,16 @@ import type {
   AccessRoute,
   Account,
   AdapterCapability,
+  ConsumptionRule,
   CostEvent,
   ModelIdentity,
   Product,
   Provider,
+  QuotaBinding,
+  QuotaBucket,
+  QuotaGroup,
   QuotaSnapshot,
+  SubscriptionPeriod,
   UsageEvent,
 } from "../domain/types.js";
 
@@ -68,6 +73,11 @@ export interface UsageDiscoverySuccess {
   products: Product[];
   models: ModelIdentity[];
   accessRoutes: AccessRoute[];
+  subscriptionPeriods?: SubscriptionPeriod[];
+  quotaGroups?: QuotaGroup[];
+  quotaBuckets?: QuotaBucket[];
+  quotaBindings?: QuotaBinding[];
+  consumptionRules?: ConsumptionRule[];
   metadata?: Readonly<Record<string, unknown>>;
 }
 

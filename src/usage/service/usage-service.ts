@@ -41,6 +41,33 @@ export class UsageService {
     const capabilities = adapter.capabilities();
     let success = true;
 
+    const hasDiscovery =
+      capabilities.has("discover_accounts") ||
+      capabilities.has("discover_products") ||
+      capabilities.has("discover_models") ||
+      capabilities.has("discover_quota_graph");
+    if (hasDiscovery) {
+      const result = await this.adapters.discover(adapterId);
+      if (result.status === "ok") {
+        for (const value of result.providers) await this.store.upsertProvider(value);
+        for (const value of result.accounts) await this.store.upsertAccount(value);
+        for (const value of result.products) await this.store.upsertProduct(value);
+        for (const value of result.subscriptionPeriods ?? []) {
+          await this.store.upsertSubscriptionPeriod(value);
+        }
+        for (const value of result.models) await this.store.upsertModelIdentity(value);
+        for (const value of result.accessRoutes) await this.store.upsertAccessRoute(value);
+        for (const value of result.quotaGroups ?? []) await this.store.upsertQuotaGroup(value);
+        for (const value of result.quotaBuckets ?? []) await this.store.upsertQuotaBucket(value);
+        for (const value of result.consumptionRules ?? []) {
+          await this.store.upsertConsumptionRule(value);
+        }
+        for (const value of result.quotaBindings ?? []) await this.store.upsertQuotaBinding(value);
+      } else if (result.status === "error") {
+        success = false;
+      }
+    }
+
     if (capabilities.has("collect_usage_events")) {
       const result = await this.adapters.collectUsageEvents(adapterId);
       if (result.status === "ok") await this.events.ingest(result.values);
