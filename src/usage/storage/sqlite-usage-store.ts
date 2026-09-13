@@ -183,7 +183,7 @@ export class SqliteUsageStore implements UsageStore {
 
   async appendUsageEvents(values: readonly UsageEvent[]): Promise<void> {
     const statement = this.db().prepare(`
-      INSERT INTO usage_events(
+      INSERT OR IGNORE INTO usage_events(
         id, occurred_at, provider_id, account_id, product_id, access_route_id, model_identity_id, payload_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
@@ -205,7 +205,7 @@ export class SqliteUsageStore implements UsageStore {
 
   async appendCostEvents(values: readonly CostEvent[]): Promise<void> {
     const statement = this.db().prepare(`
-      INSERT INTO cost_events(
+      INSERT OR IGNORE INTO cost_events(
         id, occurred_at, provider_id, account_id, product_id, access_route_id, payload_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
@@ -226,7 +226,7 @@ export class SqliteUsageStore implements UsageStore {
 
   async appendQuotaSnapshots(values: readonly QuotaSnapshot[]): Promise<void> {
     const statement = this.db().prepare(`
-      INSERT INTO quota_snapshots(id, quota_bucket_id, observed_at, payload_json)
+      INSERT OR IGNORE INTO quota_snapshots(id, quota_bucket_id, observed_at, payload_json)
       VALUES (?, ?, ?, ?)
     `);
     this.transaction(() => {
