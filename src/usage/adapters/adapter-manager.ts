@@ -22,6 +22,12 @@ interface ManagedAdapter {
   enabled: boolean;
 }
 
+export interface ManagedUsageAdapterView {
+  id: string;
+  adapter: UsageAdapter;
+  enabled: boolean;
+}
+
 const forbiddenOutputKeys = new Set([
   "apikey",
   "token",
@@ -107,6 +113,14 @@ export class UsageAdapterManager {
 
   isEnabled(id: string): boolean {
     return this.adapters.get(id)?.enabled ?? false;
+  }
+
+  list(): ManagedUsageAdapterView[] {
+    return [...this.adapters.entries()].map(([id, managed]) => ({
+      id,
+      adapter: managed.adapter,
+      enabled: managed.enabled,
+    }));
   }
 
   private async invoke<T extends AdapterResult>(
