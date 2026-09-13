@@ -90,7 +90,7 @@ function normalizeFailure(error: unknown): { status: "error"; error: UsageAdapte
 export class UsageAdapterManager {
   private readonly adapters = new Map<string, ManagedAdapter>();
 
-  register(adapter: UsageAdapter, enabled = true): void {
+  register(adapter: UsageAdapter, enabled = true, runtimeId = adapter.id): void {
     const manifest = adapter.manifest();
     if (manifest.id !== adapter.id) {
       throw new Error(`Usage adapter manifest id mismatch: ${adapter.id}`);
@@ -98,7 +98,7 @@ export class UsageAdapterManager {
     if (manifest.collectionSafety !== "non_inference_only") {
       throw new Error(`Usage adapter ${adapter.id} cannot use inference probing for metadata`);
     }
-    this.adapters.set(adapter.id, { adapter, enabled });
+    this.adapters.set(runtimeId, { adapter, enabled });
   }
 
   get(id: string): UsageAdapter | undefined {

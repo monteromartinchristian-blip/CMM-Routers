@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProductionRegistry, createProductionServer } from "../../src/index.js";
+import { createProductionUsageRuntime } from "../../src/usage/runtime/production-runtime.js";
+import { UsageIntegrationCatalog } from "../../src/usage/runtime/configured-runtime.js";
 
 describe("production composition root", () => {
   let dir: string;
@@ -104,5 +106,41 @@ describe("production composition root", () => {
     const server = createProductionServer(composition, "composition-test-secret");
     const ready = await server.inject({ method: "GET", url: "/ready" });
     expect([200, 503]).toContain(ready.statusCode);
+  });
+
+  it("wires the production CMM Usage service behind its scoped read-only credential", { timeout: 60000 }, async () => {
+    writeConfig();
+    const { loadConfig } = await import("../../src/config/load-config.js");
+    const composition = await createProductionRegistry(loadConfig(dir));
+    const usage = await createProductionUsageRuntime({
+      configDir: dir,
+      databasePath: ":memory:",
+      catalog: new UsageIntegrationCatalog(),
+    });
+    const server = createProductionServer(
+      composition,
+      "composition-test-secret",
+      undefined,
+      { service: usage.runtime.service, token: "usage-read-only" },
+    );
+
+    const usageResponse = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/usage",
+      headers: { authorization: "Bearer usage-read-only" },
+    });
+    expect(usageResponse.statusCode).toBe(200);
+    expect(usageResponse.json()).toMatchObject({ providerCount: 0, quotaCount: 0 });
+
+    const inferenceResponse = await server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: "Bearer usage-read-only", "content-type": "application/json" },
+      payload: { model: "anything", messages: [{ role: "user", content: "hi" }] },
+    });
+    expect(inferenceResponse.statusCode).toBe(403);
+
+    await server.close();
+    await usage.close();
   });
 });

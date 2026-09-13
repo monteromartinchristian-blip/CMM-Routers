@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "apiCredentialRef": "keychain://CMM%20Usage/local-api",
+  "integrations": [
+    {
+      "id": "deepseek-primary",
+      "type": "deepseek",
+      "enabled": false,
+      "credentialRef": "keychain://CMM%20Usage/deepseek-primary",
+      "settings": {}
+    },
+    {
+      "id": "deepseek-secondary",
+      "type": "deepseek",
+      "enabled": false,
+      "credentialRef": "keychain://CMM%20Usage/deepseek-secondary",
+      "settings": {}
+    }
+  ]
+}

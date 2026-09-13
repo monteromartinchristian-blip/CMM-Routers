@@ -13,6 +13,8 @@ import {
   requireCavotiSpendAcknowledgement,
 } from "./providers/cavoti/spend-guard.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
+import type { UsageService as CmmUsageService } from "./usage/service/usage-service.js";
+import { createProductionUsageRuntime } from "./usage/runtime/production-runtime.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -199,7 +201,17 @@ export async function createProductionRegistry(
   return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
 }
 
-export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {
+export interface ProductionUsageServerBinding {
+  service: CmmUsageService;
+  token: string;
+}
+
+export function createProductionServer(
+  composition: ProductionComposition,
+  bearerSecret: string,
+  qoderSecret?: string,
+  usage?: ProductionUsageServerBinding,
+) {
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
@@ -207,18 +219,32 @@ export function createProductionServer(composition: ProductionComposition, beare
     ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
+    ...(usage === undefined ? {} : { cmmUsageService: usage.service, usageToken: usage.token }),
   });
 }
 
 async function main() {
   const composition = await createProductionRegistry();
   const { config, registry, usageStore, registeredProviders, skippedProviders } = composition;
+  const cmmUsage = await createProductionUsageRuntime(
+    process.env.CMM_CONFIG_DIR === undefined ? {} : { configDir: process.env.CMM_CONFIG_DIR },
+  );
+  cmmUsage.runtime.service.start();
+  const usageToken = await cmmUsage.resolveApiToken();
 
   console.log(`Starting CMM Routers on ${config.host}:${config.port}`);
   console.log(`Machine ID: ${config.machineId}`);
   console.log(`Registered providers: ${registeredProviders.join(", ") || "(none)"}`);
   for (const skipped of skippedProviders) {
     console.log(`Skipped provider ${skipped.id}: ${skipped.reason}`);
+  }
+  console.log(
+    `CMM Usage integrations: ${cmmUsage.runtime.adapters.list().map(({ id }) => id).join(", ") || "(none)"}`,
+  );
+  if (usageToken === undefined) {
+    console.warn(
+      `CMM Usage API disabled: no credential resolved from ${cmmUsage.config.apiCredentialRef}`,
+    );
   }
 
   const bearerSecret = process.env[config.bearerSecretEnv];
@@ -233,12 +259,18 @@ async function main() {
   // every authenticated client is CMMChat (permanently CHAT_ONLY).
   const qoderSecret = process.env.CMM_QODER_TOKEN;
 
-  const server = createProductionServer(composition, bearerSecret, qoderSecret);
+  const server = createProductionServer(
+    composition,
+    bearerSecret,
+    qoderSecret,
+    usageToken === undefined ? undefined : { service: cmmUsage.runtime.service, token: usageToken },
+  );
 
   const shutdown = async () => {
     try {
       await server.close();
     } finally {
+      await cmmUsage.close();
       process.exit(0);
     }
   };

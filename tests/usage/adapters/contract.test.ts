@@ -168,4 +168,17 @@ describe("usage adapter contract", () => {
     expect(manager.get(adapter.id)).toBe(adapter);
     expect(adapter.quotaCalls).toBe(0);
   });
+
+  it("can register multiple instances of one adapter type under stable runtime ids", () => {
+    const first = new TestAdapter([]);
+    const second = new TestAdapter([]);
+    const manager = new UsageAdapterManager();
+
+    manager.register(first, true, "claude-personal");
+    manager.register(second, true, "claude-work");
+
+    expect(manager.get("claude-personal")).toBe(first);
+    expect(manager.get("claude-work")).toBe(second);
+    expect(manager.list().map(({ id }) => id)).toEqual(["claude-personal", "claude-work"]);
+  });
 });

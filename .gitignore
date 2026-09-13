@@ -6,7 +6,8 @@ config/local.json
 config/shared.json
 command-code-spend-ack.json
 *-spend-ack.json
-runtime/
+/runtime/
+config/usage.json
 *.log
 .DS_Store
 .worktrees/
