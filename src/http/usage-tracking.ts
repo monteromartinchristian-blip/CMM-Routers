@@ -1,5 +1,9 @@
 import type { RouterEvent } from "../core/events.js";
 import type { UsageStatus, UsageStore } from "../observability/usage-store.js";
+import type {
+  RouterTelemetryObservation,
+  RouterTelemetrySink,
+} from "../usage/service/router-telemetry-bridge.js";
 
 export function usageStatusForRouterErrorCode(code: string): UsageStatus {
   switch (code) {
@@ -36,6 +40,7 @@ export async function* trackProviderStream(
   modelId: string,
   events: AsyncIterable<RouterEvent>,
   signal?: AbortSignal,
+  telemetry?: RouterTelemetrySink,
 ): AsyncGenerator<RouterEvent, TrackedOutcome, void> {
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -65,6 +70,30 @@ export async function* trackProviderStream(
     costUsd,
   });
 
+  const finish = (outcome: TrackedOutcome): TrackedOutcome => {
+    if (telemetry !== undefined) {
+      const observation: RouterTelemetryObservation = {
+        requestId,
+        routerProviderId: provider,
+        routerModelId: modelId,
+        status: outcome.status,
+        ...(outcome.inputTokens !== undefined ? { inputTokens: outcome.inputTokens } : {}),
+        ...(outcome.outputTokens !== undefined ? { outputTokens: outcome.outputTokens } : {}),
+        ...(outcome.reasoningTokens !== undefined ? { reasoningTokens: outcome.reasoningTokens } : {}),
+        ...(outcome.cacheReadTokens !== undefined ? { cacheReadTokens: outcome.cacheReadTokens } : {}),
+        ...(outcome.costUsd !== undefined ? { costUsd: outcome.costUsd } : {}),
+        ...(outcome.errorCode !== undefined ? { errorCode: outcome.errorCode } : {}),
+        ...(outcome.finishReason !== undefined ? { finishReason: outcome.finishReason } : {}),
+      };
+      try {
+        telemetry.observe(observation);
+      } catch {
+        // CMM Usage telemetry is observational and cannot make inference fail.
+      }
+    }
+    return outcome;
+  };
+
   if (!usageStore) {
     for await (const event of events) {
       const typed = event as RouterEvent;
@@ -72,7 +101,7 @@ export async function* trackProviderStream(
 
       if (signal?.aborted) {
         yield typed;
-        return { events: collected, status: "cancelled", ...usageFields() };
+        return finish({ events: collected, status: "cancelled", ...usageFields() });
       }
 
       if (typed.type === "usage") {
@@ -83,29 +112,29 @@ export async function* trackProviderStream(
 
       if (typed.type === "completed") {
         yield typed;
-        return {
+        return finish({
           events: collected,
           status: "success",
           ...usageFields(),
           finishReason: typed.finishReason,
-        };
+        });
       }
 
       if (typed.type === "error") {
         const errorCode = errorCodeOf(typed.error);
         yield typed;
-        return {
+        return finish({
           events: collected,
           status: usageStatusForTerminalError(typed.error),
           ...usageFields(),
           ...(errorCode ? { errorCode } : {}),
           error: typed.error,
-        };
+        });
       }
 
       yield typed;
     }
-    return { events: collected, status: "provider_error", ...usageFields() };
+    return finish({ events: collected, status: "provider_error", ...usageFields() });
   }
 
   usageStore.beginRequest(requestId, provider, modelId);
@@ -131,7 +160,7 @@ export async function* trackProviderStream(
         endOnce({ status: "cancelled", ...usageFields() });
         record(typed);
         yield typed;
-        return { events: collected, status: "cancelled", ...usageFields() };
+        return finish({ events: collected, status: "cancelled", ...usageFields() });
       }
 
       if (typed.type === "usage") {
@@ -145,12 +174,12 @@ export async function* trackProviderStream(
         endOnce({ status: "success", ...usageFields() });
         record(typed);
         yield typed;
-        return {
+        return finish({
           events: collected,
           status: "success",
           ...usageFields(),
           finishReason: typed.finishReason,
-        };
+        });
       }
 
       if (typed.type === "error") {
@@ -163,13 +192,13 @@ export async function* trackProviderStream(
         });
         record(typed);
         yield typed;
-        return {
+        return finish({
           events: collected,
           status,
           ...usageFields(),
           ...(errorCode ? { errorCode } : {}),
           error: typed.error,
-        };
+        });
       }
 
       record(typed);
@@ -177,17 +206,25 @@ export async function* trackProviderStream(
     }
 
     endOnce({ status: "provider_error", ...usageFields() });
-    return {
+    return finish({
       events: collected,
       status: "provider_error",
       ...usageFields(),
-    };
+    });
   } catch (error) {
     const errorCode = errorCodeOf(error);
+    const status = errorCode === "provider_timeout" ? "timeout_error" : "provider_error";
     endOnce({
-      status: errorCode === "provider_timeout" ? "timeout_error" : "provider_error",
+      status,
       ...usageFields(),
       ...(errorCode ? { errorCode } : {}),
+    });
+    finish({
+      events: collected,
+      status,
+      ...usageFields(),
+      ...(errorCode ? { errorCode } : {}),
+      error,
     });
     throw error;
   }

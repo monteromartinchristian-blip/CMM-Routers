@@ -18,6 +18,7 @@ import { trackProviderStream } from "./usage-tracking.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
+import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
 
 interface ChatMessageInput {
   role?: unknown;
@@ -356,6 +357,7 @@ export function registerChatCompletions(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  routerTelemetry?: RouterTelemetrySink,
 ): void {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -501,6 +503,7 @@ export function registerChatCompletions(
           model.id,
           adapter.run(routerRequest, abortController.signal),
           abortController.signal,
+          routerTelemetry,
         );
         for await (const event of tracked) {
           events.push(event as RouterEvent);
@@ -567,6 +570,7 @@ export function registerChatCompletions(
         model.id,
         adapter.run(routerRequest, abortController.signal),
         abortController.signal,
+        routerTelemetry,
       );
       for await (const event of tracked) {
         const typed = event as RouterEvent;

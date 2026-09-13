@@ -14,6 +14,7 @@ import {
 import type { UsageService as CmmUsageService } from "../usage/service/usage-service.js";
 import { isUsageApiPath, verifyUsageBearer } from "../usage/api/usage-auth.js";
 import { registerUsageRoutes } from "../usage/api/usage-routes.js";
+import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
 
 export interface ServerOptions {
   host: string;
@@ -32,6 +33,8 @@ export interface ServerOptions {
   usageToken?: string;
   /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
   cmmUsageService?: CmmUsageService;
+  /** Optional sink for normalized inference consumption metadata. */
+  routerTelemetry?: RouterTelemetrySink;
 }
 
 export type ConsumerRequest = FastifyRequest & { consumerId: ConsumerId };
@@ -150,10 +153,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer
   // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
-  registerChatCompletions(fastify, options.registry, options.usageStore);
+  registerChatCompletions(fastify, options.registry, options.usageStore, options.routerTelemetry);
 
   // OpenAI-compatible responses API
-  registerResponsesApi(fastify, options.registry, options.usageStore);
+  registerResponsesApi(fastify, options.registry, options.usageStore, options.routerTelemetry);
 
   return fastify;
 }
