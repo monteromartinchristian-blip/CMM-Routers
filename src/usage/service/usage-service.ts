@@ -104,6 +104,15 @@ export class UsageService {
     return this.scheduler.runNow(adapterId);
   }
 
+  async refreshAll(): Promise<CollectionRunResult[]> {
+    const results: CollectionRunResult[] = [];
+    for (const { id, enabled } of this.adapters.list()) {
+      if (!enabled) continue;
+      results.push(await this.refresh(id));
+    }
+    return results;
+  }
+
   start(): void {
     this.scheduler.start();
   }

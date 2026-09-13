@@ -37,8 +37,16 @@ export function registerUsageRoutes(fastify: FastifyInstance, service: UsageServ
     redactObject({ data: await service.queries.listCosts() }),
   );
 
+  fastify.get("/v1/cmm/usage/subscriptions", async () =>
+    redactObject({ data: await service.queries.listSubscriptions() }),
+  );
+
   fastify.get("/v1/cmm/usage/alerts", async () =>
     redactObject({ data: await service.queries.listAlerts() }),
+  );
+
+  fastify.post("/v1/cmm/usage/refresh-all", async () =>
+    redactObject(await service.refreshAll()),
   );
 
   fastify.post<{ Body: RefreshBody }>("/v1/cmm/usage/refresh", async (request, reply) => {

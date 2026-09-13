@@ -245,6 +245,28 @@ describe("UsageService orchestration", () => {
     expect(adapter.quotaCalls).toBe(2);
   });
 
+  it("manual refresh all refreshes every enabled adapter and skips disabled adapters", async () => {
+    const { bucketId } = await seedGraph();
+    const first = new CollectionAdapter("first", bucketId, 60_000);
+    const second = new CollectionAdapter("second", bucketId, 60_000);
+    const disabled = new CollectionAdapter("disabled", bucketId, 60_000);
+    const manager = new UsageAdapterManager();
+    manager.register(first);
+    manager.register(second);
+    manager.register(disabled, false);
+    const usage = service(manager);
+
+    const results = await usage.refreshAll();
+
+    expect(results.map(({ adapterId }) => adapterId).sort()).toEqual(["first", "second"]);
+    expect(first.refreshCalls).toBe(1);
+    expect(second.refreshCalls).toBe(1);
+    expect(disabled.refreshCalls).toBe(0);
+    expect(first.quotaCalls).toBe(1);
+    expect(second.quotaCalls).toBe(1);
+    expect(disabled.quotaCalls).toBe(0);
+  });
+
   it("starts and shuts down the scheduler cleanly", async () => {
     const manager = new UsageAdapterManager();
     const usage = service(manager);

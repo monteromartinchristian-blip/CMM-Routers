@@ -8,6 +8,7 @@ import type {
   QuotaBucket,
   QuotaStatus,
   RouteHealth,
+  SubscriptionPeriod,
   UsageEvent,
 } from "../domain/types.js";
 import { resolveRouteHealth } from "../domain/quota-resolution.js";
@@ -242,6 +243,10 @@ export class UsageQueryService {
 
   async listCosts(limit = 100): Promise<CostEvent[]> {
     return this.store.listCostEvents(limit);
+  }
+
+  async listSubscriptions(): Promise<SubscriptionPeriod[]> {
+    return this.store.listSubscriptionPeriods();
   }
 
   async listAlerts(): Promise<UsageAlertView[]> {

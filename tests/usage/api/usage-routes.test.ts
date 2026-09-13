@@ -98,6 +98,14 @@ async function setupUsage(): Promise<{ service: UsageService; adapter: ApiAdapte
     displayName: "Example Product",
     kind: "subscription",
   });
+  await registry.startSubscription({
+    id: "subscription:api",
+    accountId: account.id,
+    productId: product.id,
+    startedAt: "2026-09-01T00:00:00.000Z",
+    billingAmount: 20,
+    billingCurrency: "USD",
+  });
   const model = await registry.registerModel({
     id: "model:api",
     canonicalName: "Example Model",
@@ -170,6 +178,7 @@ describe("CMM Usage local API", () => {
       "/v1/cmm/usage/quotas",
       "/v1/cmm/usage/history",
       "/v1/cmm/usage/costs",
+      "/v1/cmm/usage/subscriptions",
       "/v1/cmm/usage/alerts",
     ];
     for (const path of paths) {
@@ -207,6 +216,45 @@ describe("CMM Usage local API", () => {
     const beforeQuotaCalls = adapter.quotaCalls;
     const response = await server.inject({ method: "POST", url: "/v1/cmm/usage/refresh", headers: { ...auth(), "content-type": "application/json" }, payload: { adapterId: adapter.id } });
     expect(response.statusCode).toBe(200);
+    expect(adapter.refreshCalls).toBe(1);
+    expect(adapter.quotaCalls).toBe(beforeQuotaCalls + 1);
+    await server.close();
+  });
+
+  it("exposes normalized subscription periods", async () => {
+    const { service } = await setupUsage();
+    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret, usageToken, registry: new ProviderRegistry(), cmmUsageService: service });
+    const response = await server.inject({ method: "GET", url: "/v1/cmm/usage/subscriptions", headers: auth() });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual([
+      expect.objectContaining({
+        id: "subscription:api",
+        accountId: "account:api",
+        productId: "product:api",
+        status: "active",
+        billingAmount: 20,
+        billingCurrency: "USD",
+      }),
+    ]);
+    await server.close();
+  });
+
+  it("manual refresh all refreshes active integrations without exposing adapter ids to the client", async () => {
+    const { service, adapter } = await setupUsage();
+    const server = buildServer({ host: "127.0.0.1", port: 0, bearerSecret, usageToken, registry: new ProviderRegistry(), cmmUsageService: service });
+    const beforeQuotaCalls = adapter.quotaCalls;
+    const response = await server.inject({
+      method: "POST",
+      url: "/v1/cmm/usage/refresh-all",
+      headers: { ...auth(), "content-type": "application/json" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      expect.objectContaining({ adapterId: adapter.id, attempted: true, success: true }),
+    ]);
     expect(adapter.refreshCalls).toBe(1);
     expect(adapter.quotaCalls).toBe(beforeQuotaCalls + 1);
     await server.close();
