@@ -15,23 +15,47 @@ export interface ForecastQuotaOptions {
   minimumSamples?: number;
 }
 
+type MeasurementBasis = "absolute" | "fraction";
+
+const confidenceRank: Record<Confidence, number> = {
+  exact: 0,
+  measured: 1,
+  calculated: 2,
+  estimated: 3,
+  unknown: 4,
+};
+
 function time(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function usedNative(snapshot: QuotaSnapshot): number | undefined {
-  if (snapshot.usedValue !== undefined) return snapshot.usedValue;
-  if (snapshot.remainingValue !== undefined) return -snapshot.remainingValue;
+function measurementBasis(bucket: QuotaBucket): MeasurementBasis {
+  return bucket.unit === "fraction" || bucket.metric.kind === "percentage" ? "fraction" : "absolute";
+}
+
+function usedNative(snapshot: QuotaSnapshot, basis: MeasurementBasis): number | undefined {
+  if (basis === "absolute") {
+    if (snapshot.usedValue !== undefined) return snapshot.usedValue;
+    if (snapshot.remainingValue !== undefined) return -snapshot.remainingValue;
+    return undefined;
+  }
   if (snapshot.usedFraction !== undefined) return snapshot.usedFraction;
   if (snapshot.remainingFraction !== undefined) return -snapshot.remainingFraction;
   return undefined;
 }
 
-function remainingNative(snapshot: QuotaSnapshot): number | undefined {
-  if (snapshot.remainingValue !== undefined) return snapshot.remainingValue;
-  return snapshot.remainingFraction;
+function remainingNative(snapshot: QuotaSnapshot, basis: MeasurementBasis): number | undefined {
+  return basis === "absolute" ? snapshot.remainingValue : snapshot.remainingFraction;
+}
+
+function forecastConfidence(snapshots: readonly QuotaSnapshot[]): Confidence {
+  let result: Confidence = "calculated";
+  for (const snapshot of snapshots) {
+    if (confidenceRank[snapshot.confidence] > confidenceRank[result]) result = snapshot.confidence;
+  }
+  return result;
 }
 
 function unknown(bucket: QuotaBucket): QuotaForecast {
@@ -63,9 +87,15 @@ export function forecastQuota(
   if (latestFreshUntil !== undefined && latestFreshUntil <= now.getTime()) return unknown(bucket);
 
   const currentReset = latest.resetAt;
+  if (bucket.windowPolicy.kind !== "none") {
+    const resetTime = time(currentReset);
+    if (resetTime === undefined || resetTime <= now.getTime()) return unknown(bucket);
+  }
+
   const currentWindow = ordered.filter((snapshot) => snapshot.resetAt === currentReset);
+  const basis = measurementBasis(bucket);
   const measurable = currentWindow.filter(
-    (snapshot) => time(snapshot.observedAt) !== undefined && usedNative(snapshot) !== undefined,
+    (snapshot) => time(snapshot.observedAt) !== undefined && usedNative(snapshot, basis) !== undefined,
   );
   if (measurable.length < minimumSamples) return unknown(bucket);
 
@@ -75,8 +105,8 @@ export function forecastQuota(
 
   const firstTime = time(first.observedAt);
   const lastTime = time(last.observedAt);
-  const firstUsed = usedNative(first);
-  const lastUsed = usedNative(last);
+  const firstUsed = usedNative(first, basis);
+  const lastUsed = usedNative(last, basis);
   if (
     firstTime === undefined ||
     lastTime === undefined ||
@@ -88,16 +118,18 @@ export function forecastQuota(
   }
 
   const burnRate = (lastUsed - firstUsed) / ((lastTime - firstTime) / 1000);
+  const confidence = forecastConfidence(measurable);
+  if (confidence === "unknown") return unknown(bucket);
   const result: QuotaForecast = {
     bucketId: bucket.id,
     unit: bucket.unit,
-    confidence: "calculated",
+    confidence,
     burnRate,
   };
 
-  const remaining = remainingNative(latest);
-  const resetAt = time(latest.resetAt);
-  const secondsToReset = resetAt === undefined ? undefined : (resetAt - now.getTime()) / 1000;
+  const remaining = remainingNative(last, basis);
+  const resetAt = time(last.resetAt);
+  const secondsToReset = resetAt === undefined ? undefined : (resetAt - lastTime) / 1000;
 
   if (remaining !== undefined && secondsToReset !== undefined && secondsToReset > 0) {
     const sustainableRate = remaining / secondsToReset;
@@ -106,7 +138,7 @@ export function forecastQuota(
   }
 
   if (remaining !== undefined && burnRate > 0) {
-    const predictedMs = now.getTime() + (remaining / burnRate) * 1000;
+    const predictedMs = lastTime + (remaining / burnRate) * 1000;
     result.predictedExhaustionAt = new Date(predictedMs).toISOString();
     if (resetAt !== undefined) result.willExhaustBeforeReset = predictedMs < resetAt;
   }

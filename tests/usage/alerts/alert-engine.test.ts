@@ -135,4 +135,61 @@ describe("AlertEngine", () => {
 
     expect(result.status).toBe("warning");
   });
+
+  it("treats exact 100% usage as exhausted even when the bucket status lags behind", () => {
+    const engine = new AlertEngine();
+    const result = engine.evaluate({
+      bucket: bucket("healthy"),
+      snapshot: snapshot(1),
+      now: new Date("2026-09-13T12:00:00.000Z"),
+    });
+
+    expect(result.status).toBe("exhausted");
+    expect(result.alert?.kind).toBe("quota_exhausted");
+  });
+
+  it("rejects a snapshot from another quota bucket", () => {
+    const engine = new AlertEngine();
+
+    expect(() =>
+      engine.evaluate({
+        bucket: bucket(),
+        snapshot: { ...snapshot(0.8), quotaBucketId: "bucket:other" },
+        now: new Date("2026-09-13T12:00:00.000Z"),
+      }),
+    ).toThrow(/bucket/i);
+  });
+
+  it("rejects a forecast with an incompatible unit", () => {
+    const engine = new AlertEngine();
+
+    expect(() =>
+      engine.evaluate({
+        bucket: bucket(),
+        forecast: {
+          bucketId: "bucket:test",
+          unit: "fraction",
+          confidence: "calculated",
+          willExhaustBeforeReset: true,
+        },
+        now: new Date("2026-09-13T12:00:00.000Z"),
+      }),
+    ).toThrow(/unit/i);
+  });
+
+  it("supports per-bucket threshold overrides", () => {
+    const engine = new AlertEngine({
+      thresholdsForBucket: (value) =>
+        value.id === "bucket:test"
+          ? { warningUsedFraction: 0.5, criticalUsedFraction: 0.7 }
+          : undefined,
+    });
+    const result = engine.evaluate({
+      bucket: bucket(),
+      snapshot: snapshot(0.6),
+      now: new Date("2026-09-13T12:00:00.000Z"),
+    });
+
+    expect(result.status).toBe("warning");
+  });
 });
