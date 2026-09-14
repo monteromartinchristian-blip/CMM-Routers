@@ -23,6 +23,7 @@ describe("CMM Usage runtime configuration", () => {
     expect(config).toEqual({
       version: 1,
       apiCredentialRef: "keychain://CMM%20Usage/local-api",
+      managementApiCredentialRef: "keychain://CMM%20Usage/local-management-api",
       integrations: [],
     });
   });

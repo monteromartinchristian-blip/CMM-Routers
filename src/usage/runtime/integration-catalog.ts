@@ -6,6 +6,7 @@ import { DeepSeekUsageAdapter } from "../adapters/deepseek/adapter.js";
 import { GoogleAiProUsageAdapter } from "../adapters/google-ai-pro/adapter.js";
 import { OpenAiApiUsageAdapter } from "../adapters/openai-api/adapter.js";
 import { OpenRouterUsageAdapter } from "../adapters/openrouter/adapter.js";
+import { OpenAiCompatibleUsageAdapter } from "../adapters/openai-compatible/adapter.js";
 import { QwenModelStudioUsageAdapter } from "../adapters/qwen-model-studio/adapter.js";
 import {
   UsageIntegrationCatalog,
@@ -76,6 +77,17 @@ const openRouterSettings = z.object({
   managementCredentialRef: z.string().min(1).optional(),
 }).strict();
 
+const openAiCompatibleSettings = z.object({
+  name: z.string().min(1),
+  baseUrl: z.string().url(),
+  defaultModel: z.string().min(1).optional(),
+  discoverModels: z.boolean().default(true),
+  useInCmmChat: z.boolean().default(true),
+  usageEndpoint: z.string().min(1).optional(),
+  billingEndpoint: z.string().min(1).optional(),
+  quotaMode: z.enum(["automatic", "manual", "unknown"]).default("unknown"),
+}).strict();
+
 function credentialFor(
   definition: UsageIntegrationDefinition,
   resolver: SecureCredentialResolver,
@@ -87,6 +99,17 @@ function credentialFor(
   }
   return {
     reference,
+    resolve: (value: string) => resolver.resolve(value),
+  };
+}
+
+function optionalCredentialFor(
+  definition: UsageIntegrationDefinition,
+  resolver: SecureCredentialResolver,
+) {
+  if (definition.credentialRef === undefined) return undefined;
+  return {
+    reference: definition.credentialRef,
     resolve: (value: string) => resolver.resolve(value),
   };
 }
@@ -194,6 +217,79 @@ export function createDefaultUsageIntegrationCatalog(
       ...(settings.managementCredentialRef === undefined
         ? {}
         : { managementCredential: credentialFor(definition, resolver, settings.managementCredentialRef) }),
+    });
+  });
+
+  catalog.register("openai-compatible", (definition) => {
+    const settings = openAiCompatibleSettings.parse(definition.settings);
+    const now = new Date().toISOString();
+    const suffix = encodeURIComponent(definition.id);
+    const providerId = `provider:custom:${suffix}`;
+    const accountId = `account:custom:${suffix}`;
+    const productId = `product:custom:${suffix}`;
+    const routeId = `route:custom:${suffix}:default`;
+    const credential = optionalCredentialFor(definition, resolver);
+    return new OpenAiCompatibleUsageAdapter({
+      id: `openai-compatible:${definition.id}`,
+      displayName: settings.name,
+      baseUrl: settings.baseUrl,
+      ...(credential === undefined ? {} : { credential }),
+      manual: {
+        id: `openai-compatible:${definition.id}`,
+        displayName: settings.name,
+        provider: {
+          id: providerId,
+          displayName: settings.name,
+          kind: "generic",
+          status: "enabled",
+          metadata: { customEndpoint: true },
+          createdAt: now,
+          updatedAt: now,
+        },
+        accounts: [{
+          id: accountId,
+          providerId,
+          label: settings.name,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        }],
+        products: [{
+          id: productId,
+          providerId,
+          displayName: settings.name,
+          kind: "custom",
+          metadata: {
+            quotaMode: settings.quotaMode,
+            useInCmmChat: settings.useInCmmChat,
+            ...(settings.usageEndpoint === undefined ? {} : { usageEndpoint: settings.usageEndpoint }),
+            ...(settings.billingEndpoint === undefined ? {} : { billingEndpoint: settings.billingEndpoint }),
+          },
+        }],
+        accessRoutes: settings.defaultModel === undefined
+          ? []
+          : [{
+              id: routeId,
+              accountId,
+              productId,
+              providerModelId: settings.defaultModel,
+              displayName: settings.defaultModel,
+              status: "available",
+              metadata: { customEndpoint: true },
+            }],
+        quotaBuckets: [],
+        quotaBindings: [],
+        quotaSnapshots: [],
+      },
+      ...(settings.discoverModels
+        ? {
+            modelDiscovery: {
+              path: "models",
+              accountId,
+              productId,
+            },
+          }
+        : {}),
     });
   });
 

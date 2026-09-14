@@ -14,6 +14,7 @@ const integrationSchema = z.object({
 const runtimeSchema = z.object({
   version: z.literal(1).default(1),
   apiCredentialRef: z.string().min(1).default("keychain://CMM%20Usage/local-api"),
+  managementApiCredentialRef: z.string().min(1).default("keychain://CMM%20Usage/local-management-api"),
   databasePath: z.string().min(1).optional(),
   integrations: z.array(integrationSchema).default([]),
 }).strict().superRefine((value, context) => {
@@ -65,14 +66,12 @@ function assertNoInlineSecrets(value: unknown, path: string): void {
 export interface LoadedUsageRuntimeConfig extends UsageRuntimeConfig {
   version: 1;
   apiCredentialRef: string;
+  managementApiCredentialRef: string;
   databasePath?: string;
   integrations: UsageIntegrationDefinition[];
 }
 
-export function loadUsageRuntimeConfig(configDir?: string): LoadedUsageRuntimeConfig {
-  const baseDir = configDir ?? resolve(process.cwd(), "config");
-  const path = resolve(baseDir, "usage.json");
-  const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf-8")) as unknown : {};
+export function parseUsageRuntimeConfig(raw: unknown): LoadedUsageRuntimeConfig {
   const parsed = runtimeSchema.parse(raw);
   for (const integration of parsed.integrations) {
     assertNoInlineSecrets(integration.settings, `integrations.${integration.id}.settings`);
@@ -80,6 +79,7 @@ export function loadUsageRuntimeConfig(configDir?: string): LoadedUsageRuntimeCo
   return {
     version: parsed.version,
     apiCredentialRef: parsed.apiCredentialRef,
+    managementApiCredentialRef: parsed.managementApiCredentialRef,
     integrations: parsed.integrations.map((integration) => ({
       id: integration.id,
       type: integration.type,
@@ -91,4 +91,11 @@ export function loadUsageRuntimeConfig(configDir?: string): LoadedUsageRuntimeCo
     })),
     ...(parsed.databasePath === undefined ? {} : { databasePath: parsed.databasePath }),
   };
+}
+
+export function loadUsageRuntimeConfig(configDir?: string): LoadedUsageRuntimeConfig {
+  const baseDir = configDir ?? resolve(process.cwd(), "config");
+  const path = resolve(baseDir, "usage.json");
+  const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf-8")) as unknown : {};
+  return parseUsageRuntimeConfig(raw);
 }

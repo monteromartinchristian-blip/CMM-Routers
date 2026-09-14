@@ -17,6 +17,7 @@ import type { UsageService as CmmUsageService } from "./usage/service/usage-serv
 import { createProductionUsageRuntime } from "./usage/runtime/production-runtime.js";
 import type { PresentationCatalogService } from "./usage/presentation/presentation-catalog-service.js";
 import type { VisibilityStore } from "./usage/presentation/visibility-store.js";
+import type { ConnectionManagementService } from "./usage/service/connection-management-service.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -208,6 +209,8 @@ export interface ProductionUsageServerBinding {
   token: string;
   catalog?: PresentationCatalogService;
   visibility?: VisibilityStore;
+  managementToken?: string;
+  connections?: ConnectionManagementService;
 }
 
 export function createProductionServer(
@@ -230,6 +233,8 @@ export function createProductionServer(
           usageToken: usage.token,
           ...(usage.catalog === undefined ? {} : { cmmUsageCatalog: usage.catalog }),
           ...(usage.visibility === undefined ? {} : { cmmUsageVisibility: usage.visibility }),
+          ...(usage.managementToken === undefined ? {} : { usageManagementToken: usage.managementToken }),
+          ...(usage.connections === undefined ? {} : { cmmUsageConnections: usage.connections }),
         }),
   });
 }
@@ -242,6 +247,7 @@ async function main() {
   );
   cmmUsage.runtime.service.start();
   const usageToken = await cmmUsage.resolveApiToken();
+  const usageManagementToken = await cmmUsage.resolveManagementApiToken();
 
   console.log(`Starting CMM Routers on ${config.host}:${config.port}`);
   console.log(`Machine ID: ${config.machineId}`);
@@ -255,6 +261,11 @@ async function main() {
   if (usageToken === undefined) {
     console.warn(
       `CMM Usage API disabled: no credential resolved from ${cmmUsage.config.apiCredentialRef}`,
+    );
+  }
+  if (usageManagementToken === undefined) {
+    console.warn(
+      `CMM Usage connection management disabled: no credential resolved from ${cmmUsage.config.managementApiCredentialRef}`,
     );
   }
 
@@ -281,6 +292,12 @@ async function main() {
           token: usageToken,
           catalog: cmmUsage.presentationCatalog,
           visibility: cmmUsage.visibility,
+          ...(usageManagementToken === undefined
+            ? {}
+            : {
+                managementToken: usageManagementToken,
+                connections: cmmUsage.connections,
+              }),
         },
   );
 

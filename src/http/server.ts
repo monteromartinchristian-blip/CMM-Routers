@@ -18,6 +18,9 @@ import { registerCatalogRoutes } from "../usage/api/catalog-routes.js";
 import type { PresentationCatalogService } from "../usage/presentation/presentation-catalog-service.js";
 import type { VisibilityStore } from "../usage/presentation/visibility-store.js";
 import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
+import type { ConnectionManagementService } from "../usage/service/connection-management-service.js";
+import { isUsageMutationPath, verifyUsageManagementBearer } from "../usage/api/connection-auth.js";
+import { registerConnectionRoutes } from "../usage/api/connection-routes.js";
 
 export interface ServerOptions {
   host: string;
@@ -34,12 +37,16 @@ export interface ServerOptions {
   qoderToken?: string;
   /** Read-only credential scoped to the CMM Usage API surface. */
   usageToken?: string;
+  /** Privileged credential scoped only to CMM Usage connection/visibility mutation. */
+  usageManagementToken?: string;
   /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
   cmmUsageService?: CmmUsageService;
   /** Product-facing safe catalog projection for CMM Usage and CMMChat. */
   cmmUsageCatalog?: PresentationCatalogService;
   /** Route-scoped visibility preferences exposed through read-only catalog API. */
   cmmUsageVisibility?: VisibilityStore;
+  /** Privileged semantic connection-management surface. */
+  cmmUsageConnections?: ConnectionManagementService;
   /** Optional sink for normalized inference consumption metadata. */
   routerTelemetry?: RouterTelemetrySink;
 }
@@ -65,6 +72,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   ) {
     throw new Error("Usage bearer token must be distinct from inference bearer tokens");
   }
+  if (
+    options.usageManagementToken !== undefined &&
+    (options.usageManagementToken === options.bearerSecret ||
+      options.usageManagementToken === options.qoderToken ||
+      options.usageManagementToken === options.usageToken)
+  ) {
+    throw new Error("Usage management token must be distinct from read and inference bearer tokens");
+  }
 
   const fastify = Fastify({
     logger: false,
@@ -81,6 +96,20 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // User-Agent, or model names.
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
+      const managementCredential = verifyUsageManagementBearer(
+        request.headers.authorization,
+        options.usageManagementToken,
+      );
+      if (managementCredential) {
+        if (options.cmmUsageConnections !== undefined && isUsageMutationPath(request.url)) return;
+        return reply.code(403).send({
+          error: {
+            type: "usage_management_scope_forbidden",
+            message: "Usage management credential is restricted to mutation endpoints",
+          },
+        });
+      }
+
       const usageCredential = verifyUsageBearer(request.headers.authorization, options.usageToken);
       if (usageCredential) {
         if (options.cmmUsageService !== undefined && isUsageApiPath(request.url)) return;
@@ -159,6 +188,12 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   }
   if (options.cmmUsageCatalog !== undefined && options.cmmUsageVisibility !== undefined) {
     registerCatalogRoutes(fastify, options.cmmUsageCatalog, options.cmmUsageVisibility);
+  }
+  if (
+    options.cmmUsageConnections !== undefined &&
+    options.usageManagementToken !== undefined
+  ) {
+    registerConnectionRoutes(fastify, options.cmmUsageConnections, options.usageManagementToken);
   }
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer

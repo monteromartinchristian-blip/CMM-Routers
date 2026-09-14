@@ -12,12 +12,20 @@ import type { UsageServiceOptions } from "../service/usage-service.js";
 import { createDefaultProviderDirectory } from "../presentation/provider-directory.js";
 import { PresentationCatalogService } from "../presentation/presentation-catalog-service.js";
 import { VisibilityStore } from "../presentation/visibility-store.js";
+import { ManagedConfigStore } from "./managed-config-store.js";
+import {
+  LocalSecureCredentialWriter,
+  type CredentialWriter,
+} from "./credential-writer.js";
+import { ConnectionManagementService } from "../service/connection-management-service.js";
 
 export interface ProductionUsageRuntimeOptions {
   configDir?: string;
   databasePath?: string;
   catalog?: UsageIntegrationCatalog;
   credentialResolver?: SecureCredentialResolver;
+  credentialWriter?: CredentialWriter;
+  managedConfigStore?: ManagedConfigStore;
   service?: UsageServiceOptions;
 }
 
@@ -27,7 +35,9 @@ export interface ProductionUsageRuntime {
   runtime: ConfiguredUsageRuntime;
   presentationCatalog: PresentationCatalogService;
   visibility: VisibilityStore;
+  connections: ConnectionManagementService;
   resolveApiToken(): Promise<string | undefined>;
+  resolveManagementApiToken(): Promise<string | undefined>;
   close(): Promise<void>;
 }
 
@@ -67,6 +77,14 @@ export async function createProductionUsageRuntime(
     createDefaultProviderDirectory(config.integrations),
     visibility,
   );
+  const managedConfigStore = options.managedConfigStore ?? new ManagedConfigStore(options.configDir);
+  const credentialWriter = options.credentialWriter ?? new LocalSecureCredentialWriter();
+  const connections = new ConnectionManagementService(
+    managedConfigStore,
+    credentialWriter,
+    runtime,
+    visibility,
+  );
 
   return {
     config,
@@ -74,7 +92,9 @@ export async function createProductionUsageRuntime(
     runtime,
     presentationCatalog,
     visibility,
+    connections,
     resolveApiToken: async () => resolver.resolve(config.apiCredentialRef),
+    resolveManagementApiToken: async () => resolver.resolve(config.managementApiCredentialRef),
     close: async () => {
       await runtime.service.stop();
       await store.close();
