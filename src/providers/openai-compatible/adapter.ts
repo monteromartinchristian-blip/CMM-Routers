@@ -9,6 +9,7 @@ import { RouterError } from "../../core/errors.js";
 import { toChatWireToolChoice } from "../../core/tool-policy.js";
 import {
   isActivatedModel,
+  type ProviderActivationSpec,
   type ProviderManifest,
 } from "../manifest.js";
 import {
@@ -32,6 +33,8 @@ export interface OpenAiCompatibleAdapterOptions {
   secretEnv?: string | undefined;
   /** Administrative discovery path override (config `discoveryPath`). */
   discoveryPath?: string | undefined;
+  /** Effective activation; defaults to the manifest's scope. */
+  activation?: ProviderActivationSpec | undefined;
   timeoutMs?: number | undefined;
   fetchFn?: ProviderFetchFn | undefined;
   client?: OpenAiCompatibleClient | undefined;
@@ -84,6 +87,19 @@ function finiteNumber(value: unknown): number | undefined {
 }
 
 /**
+ * Display name tolerance across OpenAI-compatible catalogs. The id is the
+ * contract; a name is presentation only, so an absent or non-string name
+ * degrades to the exact id instead of failing discovery.
+ */
+function displayNameOf(record: Record<string, unknown>): string | undefined {
+  for (const field of ["name", "display_name", "displayName"] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+/**
  * Generic OpenAI-compatible adapter: one class for every provider in the
  * approved wave, parameterized entirely by its manifest (identity, base URL,
  * credential namespace, discovery path, api styles, tool capability,
@@ -95,6 +111,9 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   private readonly manifest: ProviderManifest;
   private readonly client: OpenAiCompatibleClient;
   private readonly discoveryPath: string;
+  private readonly activation: ProviderActivationSpec;
+  /** Manifest with the effective activation applied (config may override it). */
+  private readonly effectiveManifest: ProviderManifest;
   private readonly pending = new Map<string, PendingCancellation>();
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
@@ -113,6 +132,11 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       );
     }
     this.discoveryPath = options.discoveryPath ?? this.manifest.discovery.path;
+    this.activation = options.activation ?? this.manifest.activation;
+    this.effectiveManifest =
+      this.activation === this.manifest.activation
+        ? this.manifest
+        : { ...this.manifest, activation: this.activation };
     this.client =
       options.client ??
       new OpenAiCompatibleClient({
@@ -140,22 +164,28 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
    * route that could spend.
    */
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
-    if (this.manifest.activation.mode === "none") return [];
+    if (this.activation.mode === "none") return [];
     this.requireSecret();
     const data = await this.client.listModels(this.discoveryPath, signal);
     const discovered: DiscoveredModel[] = [];
+    // Duplicate handling follows the existing router policy (first occurrence
+    // wins): a provider catalog that repeats an id must not produce two routes
+    // with the same identity, and the first entry is the one the provider
+    // listed as authoritative.
+    const seen = new Set<string>();
     for (const entry of data) {
       if (entry === null || typeof entry !== "object") continue;
       const record = entry as Record<string, unknown>;
       const id = typeof record.id === "string" ? record.id : null;
       if (id === null || id.length === 0) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
       discovered.push({
         id: `${this.id}/${id}`,
         provider: this.id,
         // Exact provider model id: never normalized, prefixed or aliased.
         upstreamModel: id,
-        displayName:
-          typeof record.name === "string" && record.name.length > 0 ? record.name : id,
+        displayName: displayNameOf(record) ?? id,
         capability: this.manifest.toolCapability,
       });
     }
@@ -163,7 +193,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   }
 
   async health(signal?: AbortSignal): Promise<ProviderHealth> {
-    if (this.manifest.activation.mode === "none") {
+    if (this.activation.mode === "none") {
       return {
         status: "degraded",
         detail: `${this.manifest.displayName} routes are not activated pending an exact model id`,
@@ -197,7 +227,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       };
       return;
     }
-    if (!isActivatedModel(this.manifest, request.model.upstreamModel)) {
+    if (!isActivatedModel(this.effectiveManifest, request.model.upstreamModel)) {
       // Activation is an exact, fail-closed gate: an unactivated route never
       // reaches the provider and therefore never spends.
       yield {
