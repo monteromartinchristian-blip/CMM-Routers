@@ -1,5 +1,6 @@
 import type { ProviderId } from "../core/model.js";
 import type { WaveProviderActivationConfig } from "../config/schema.js";
+import { CAVOTI_PINNED_MODEL } from "./cavoti/spend-guard.js";
 import {
   assertUniqueProviderManifests,
   defineProviderManifest,
@@ -171,6 +172,26 @@ export const VIKEY_MANIFEST: ProviderManifest = openAiWaveManifest({
   toolCapability: "CHAT_ONLY",
 });
 
+/**
+ * Cavoti AI: recovered from the in-tree implementation (adapter, client,
+ * spend-guard and historical tests) rather than rewritten. It keeps its
+ * dedicated adapter because it is an exact-model pinned PAYG route with a
+ * machine-local spend acknowledgement and an account-state billing block that
+ * is distinct from quota exhaustion. The manifest records the same identity the
+ * runtime uses: the pinned model is the only activated route.
+ */
+export const CAVOTI_MANIFEST: ProviderManifest = defineProviderManifest({
+  id: "cavoti",
+  displayName: "Cavoti AI",
+  billingClass: "payg",
+  baseUrl: "https://cavoti.com/v1",
+  auth: { scheme: "bearer", secretEnv: "CAVOTI_API_KEY" },
+  discovery: { method: "GET", path: "/models" },
+  apiStyles: ["openai-chat-completions"],
+  toolCapability: "CHAT_AND_TOOLS",
+  activation: { mode: "allowlist", models: [CAVOTI_PINNED_MODEL] },
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -190,6 +211,7 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
  */
 export const PROVIDER_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   ...GENERIC_WAVE_MANIFESTS,
+  CAVOTI_MANIFEST,
 ];
 
 /** Subscription bridges: present and unchanged, not part of the HTTP wave. */

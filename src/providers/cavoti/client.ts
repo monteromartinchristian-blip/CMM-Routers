@@ -1,4 +1,4 @@
-import { RouterError } from "../../core/errors.js";
+import { RouterError, isUnsettledBillingState } from "../../core/errors.js";
 
 export const CAVOTI_DEFAULT_BASE_URL = "https://cavoti.com/v1";
 export const CAVOTI_DEFAULT_SECRET_ENV = "CAVOTI_API_KEY";
@@ -46,6 +46,15 @@ function mapStatus(status: number, body: string): RouterError {
   const lowered = body.toLowerCase();
   if (status === 401 || status === 403) {
     return new RouterError("provider_auth_required", "Cavoti authentication rejected");
+  }
+  // Account-state block first: an unsettled account is not an exhausted
+  // allowance, and the operator action (settle the balance) is different.
+  if (status === 402 && isUnsettledBillingState(body)) {
+    return new RouterError(
+      "provider_billing_blocked",
+      "Cavoti account billing is blocked: unsettled usage must be settled before retrying",
+      { billingState: "unsettled", upstream: body.slice(0, 300) },
+    );
   }
   if (
     status === 402 ||

@@ -208,18 +208,16 @@ export type WaveProviderId = (typeof WAVE_PROVIDER_IDS)[number];
 
 /**
  * Typed accessor for one wave provider's config entry. The index signature is
- * confined here so the composition root never casts config shapes itself, and
- * a missing entry is a programming error rather than a silent `undefined`.
+ * confined here so the composition root never casts config shapes itself.
+ * Returns undefined when the entry is absent: a config object built without the
+ * schema (or an older config) must not crash the composition root — the caller
+ * skips that provider with a reason, which is fail-closed.
  */
 export function waveProviderConfig(
   providers: SharedConfig["providers"],
   id: WaveProviderId,
-): WaveProviderConfig {
-  const entry = (providers as unknown as Record<string, WaveProviderConfig | undefined>)[id];
-  if (entry === undefined) {
-    throw new Error(`Wave provider ${id} is missing from the parsed providers block`);
-  }
-  return entry;
+): WaveProviderConfig | undefined {
+  return (providers as unknown as Record<string, WaveProviderConfig | undefined>)[id];
 }
 
 export const localConfigSchema = z

@@ -72,6 +72,10 @@ function registerWaveProvider(
     throw new Error(`Provider ${manifest.id} is not a wave provider id`);
   }
   const configured = waveProviderConfig(config.providers, manifest.id);
+  if (configured === undefined) {
+    skippedProviders.push({ id: manifest.id, reason: "not present in config" });
+    return null;
+  }
   if (!configured.enabled) {
     skippedProviders.push({ id: manifest.id, reason: "disabled in config" });
     return null;

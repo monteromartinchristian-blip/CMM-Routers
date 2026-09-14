@@ -1,4 +1,4 @@
-import { RouterError } from "../../core/errors.js";
+import { RouterError, isUnsettledBillingState } from "../../core/errors.js";
 import { splitSseChunks, parseSseDataLine } from "../../core/sse.js";
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
@@ -83,6 +83,15 @@ export function mapProviderStatus(
     return new RouterError(
       "provider_auth_required",
       `Provider authentication rejected: ${context}`,
+    );
+  }
+  if (status === 402 && isUnsettledBillingState(bodyText)) {
+    // Same account-state vocabulary as the dedicated Cavoti route: an
+    // unsettled account is a billing block, not an exhausted allowance.
+    return new RouterError(
+      "provider_billing_blocked",
+      `Provider account billing is blocked: outstanding usage must be settled (${context})`,
+      { billingState: "unsettled", upstream: bodyText.slice(0, MAX_ERROR_BODY_CHARS) },
     );
   }
   if (

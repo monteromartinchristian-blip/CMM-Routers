@@ -283,6 +283,10 @@ export function mapRouterErrorToHttp(error: unknown): { status: number; type: st
       case "provider_quota_exhausted":
       case "provider_rate_limited":
         return { status: 429, type: error.code, message: error.message };
+      case "provider_billing_blocked":
+        // 402 Payment Required: the account owes money. Distinguished from 429
+        // so a consumer never treats a billing block as a retryable limit.
+        return { status: 402, type: error.code, message: error.message };
       case "provider_timeout":
         return { status: 504, type: error.code, message: error.message };
       case "provider_unavailable":
