@@ -314,4 +314,260 @@ provider. Findings: none Critical/Important. Minor deferred: the `providers`
 default block in `sharedConfigSchema` is seeded with four entries and relies on
 `prefault` to fill the rest — documented inline.
 
-(commits, RED/GREEN evidence, self-reviews appended per task)
+### Task 5 — DeepSeek, OpenRouter and OpenCode Zen
+
+- RED: `npx vitest run ... tests/providers/wave-deepseek-openrouter-zen.test.ts`
+  → `Error: Provider deepseek is not part of the approved wave inventory` (5 failed).
+- GREEN: same command → `Tests 5 passed (5)` after adding the three manifests.
+- Files: `src/providers/manifests.ts` (`openAiWaveManifest` factory + the three
+  manifests), `tests/providers/wave-deepseek-openrouter-zen.test.ts`,
+  `tests/helpers/wave-fixtures.ts` (shared fixture transport: recording fetch,
+  catalog + SSE responses, adapter factory).
+- Test-fixture fix during the task: the first version of the end-to-end case fed
+  a plain JSON body where SSE frames were required; replaced with a real
+  `ReadableStream` SSE fixture.
+- Verified: identity/credential/endpoint per provider, discovery authoritative
+  (`activation: all`, no catalog), one adapter class for all three, exact model
+  ids namespaced per provider, one `GET /models` then one `POST
+  /chat/completions` end to end with the injected transport.
+
+### Task 6 — Kira AI
+
+- RED: `npx vitest run ... tests/providers/wave-kira.test.ts` → same
+  not-in-inventory error (6 failed).
+- GREEN: `Tests 6 passed (6)`.
+- Ruling R7 applied: billing class is the neutral `api`; the four user-supplied
+  free-model names are used ONLY as discovery fixtures, and the test asserts no
+  source file embeds them (no second catalog) and that an extra unexpected model
+  still surfaces (discovery, not the list, defines the catalog).
+- Ruling R9 applied: `toolCapability: "CHAT_ONLY"` until a Kira tool round-trip
+  is proven.
+
+### Task 7 — NVIDIA NIM / initial activation scope
+
+- RED: `npx vitest run ... tests/providers/wave-nvidia-nim.test.ts` → 4 failed.
+- GREEN: `Tests 5 passed (5)` after adding `NVIDIA_NIM_MANIFEST` with
+  `activation: { mode: "none", models: [] }`.
+- Ruling R6 applied verbatim: the exact provider model id is not deterministically
+  known, so nothing is routable and no upstream request is made; discovery stays
+  available to an operator, and a configured `allowlist` (the administrative
+  confirmation) exposes the catalog while routing exactly one exact id.
+- The test also asserts no `kimi`/`moonshotai`/`nvidia/<id>` literal exists in `src/`.
+- Ruling R12 (new): billing class `api` (neutral) — no repository evidence of the
+  account's billing shape, and the router must not claim pricing it cannot prove.
+
+### Task 8 — Vikey
+
+- RED: `npx vitest run ... tests/providers/wave-vikey.test.ts` → 6 failed.
+- GREEN: `Tests 6 passed (6)`.
+- Ruling R3 applied: no canonical host is known, so `baseUrl` is `null` and the
+  endpoint is configuration-required. Tests prove an enabled-but-unconfigured
+  route is skipped with a `baseUrl` reason, and that a configured route does
+  exactly one authenticated `GET /models` with exact id preservation.
+- `toolCapability: "CHAT_ONLY"` (R9).
+
+### Task 9 — Recover and integrate Cavoti AI
+
+- RED: `npx vitest run ... tests/providers/cavoti-billing-state.test.ts` → 5 failed.
+- GREEN: `Tests 8 passed (8)`; historical `tests/providers/cavoti-provider.test.ts`
+  passes unchanged (two failures surfaced mid-task were caused by an over-strict
+  config accessor and are fixed below).
+- Historical recovery: the in-tree `adapter.ts` / `client.ts` / `spend-guard.ts`
+  and its historical tests are reused as-is; no adapter was rewritten. The task
+  adds the missing account-state classification and the manifest entry.
+- 402 classification: HTTP 402 whose body marks an unsettled/outstanding account
+  now maps to the new `provider_billing_blocked` category (meta
+  `billingState: "unsettled"`), while a plain 402 keeps
+  `provider_quota_exhausted`. Detection lives in one helper
+  (`isUnsettledBillingState` in `src/core/errors.ts`) shared by the Cavoti client
+  and the generic OpenAI-compatible transport, so both paths agree.
+- Usage boundary: `provider_billing_blocked → "billing_blocked"`, a new
+  `UsageStatus` counted separately as `billingBlockedEvents` (never merged into
+  `quotaEvents`); `/v1/cmm/usage` exposes the counter; HTTP mapping is 402 with
+  the stable `provider_billing_blocked` type (not 429, so nothing retries a
+  block that only settlement clears).
+- Fix applied: `waveProviderConfig` threw for config objects built without the
+  schema (the historical Cavoti tests pass a literal), which would have broken
+  hand-built/legacy configs; it now returns `undefined` and the composition root
+  skips that provider with reason "not present in config" (fail closed).
+- Ruling R13 (new): Cavoti's manifest declares `activation: allowlist` with the
+  pinned model, so the inventory records the same exact-route truth the runtime
+  enforces.
+
+### Task 10 — Cline API / ClinePass
+
+- RED: `npx vitest run ... tests/providers/wave-cline.test.ts` → 4 failed.
+- GREEN: `Tests 4 passed (4)`.
+- Treated as its own API/ClinePass provider (`https://api.cline.bot/api/v1`), not
+  as promotional IDE/CLI free models: only the account's `GET /models` catalog is
+  exposed. Streaming + tool-call coverage exercises exactly the generic router
+  path that already exists (no Cline-specific behavior added).
+
+### Task 11 — Ollama Cloud
+
+- RED: `npx vitest run ... tests/providers/wave-ollama-cloud.test.ts` → 7 failed.
+- GREEN: `Tests 5 passed (5)`; test-only fix: the "no local runtime" scan was
+  file-scoped and flagged unrelated loopback literals (the router's own listen
+  host) plus one of my own comments — it is now line-scoped.
+- Cloud identity: `ollama-cloud` with `https://ollama.com/v1`, API-key auth,
+  `OLLAMA_CLOUD_API_KEY`, `billingClass: payg`. No local Ollama runtime support,
+  no loopback base URL, no local-runtime environment variable handling; the
+  regression test asserts the manifest host is public and that every request in
+  the fixture goes to the cloud host.
+
+### Task 12 — CommandCode deterministic
+
+- RED: `npx vitest run ... tests/providers/wave-commandcode.test.ts` → 1 failed
+  (registration/inventory); the deterministic `/models` and both-wire routing
+  fixtures already passed against the existing adapter, which is the point: the
+  implementation is recovered, not re-derived.
+- GREEN: `Tests 4 passed (4)` after adding `COMMAND_CODE_MANIFEST`.
+- Ruling R4 applied: the route id stays `command-code`; the plan's `commandcode`
+  token maps to it. Ruling R8 applied: the router base URL default is unchanged.
+- Recorded markers (printed by the test and recorded here):
+```text
+COMMANDCODE_IMPLEMENTATION=PASS
+COMMANDCODE_LIVE_CANARY=DEFERRED_UNTIL_USER_AUTHORIZATION_AFTER_QUOTA_RESET
+```
+
+### Task 13 — Integrate provider inventory with CMM Usage metadata
+
+- RED: `npx vitest run ... tests/providers/wave-inventory.test.ts` → 3 failed.
+- GREEN: `Tests 6 passed (6)`, printing
+  `WAVE_REGISTERED_PROVIDER_COUNT=13` and
+  `CMM_USAGE_PROVIDER_METADATA_BRIDGE=PASS`.
+- Files: `src/providers/manifests.ts` (`providerInventory()` — a projection of
+  the manifest catalog, never a second list), `src/registry/provider-registry.ts`
+  (`listProviderIds()`), `src/http/diagnostics.ts` (`/v1/cmm/providers` reports
+  route identity + billing class + credential NAMESPACE + tool capability +
+  activation scope; `/v1/cmm/usage` reports `billingBlockedEvents`),
+  `config/shared.example.json`, `.env.example`, `scripts/validate-config.mjs`
+  (status-safe wave fields: enabled flags, credential names, configured base
+  URLs, activation scope).
+- Inventory: the 12 approved providers appear exactly once (11 route ids plus the
+  `commandcode` → `command-code` mapping), and the three subscription bridges
+  remain present and unchanged. Neither list is duplicated anywhere else.
+- Billing metadata flows through the existing route/account identity fields
+  (provider id → registry route; provider/model → usage record); no second
+  catalog and no credit/balance claim is introduced.
+- State distinctions at the existing Usage boundary: routability = registered
+  route + discovered catalog + activation scope; unsettled billing =
+  `billing_blocked`/`billingBlockedEvents`; rate-limited = `rate_limit_error`;
+  available credit = deliberately NOT claimed by the router (that is the
+  provider's own billing surface, and CMM Usage owns money state).
+
+### Task 14 — Full deterministic verification and broad review
+
+See "Verification results" below for the captured commands and outcomes.
+`LIVE_ADMIN_CALLS=0` and `LIVE_INFERENCE_COUNT=0`: every provider interaction in
+this wave is driven by injected fixture transports; no provider was contacted.
+
+self-review (SPEC, tasks 5-14): every task's plan checklist is implemented as
+written, including the exact negative instructions (`commandcode` mapping, no
+invented initial-scope model id, Kira expectations as fixtures only, Cavoti 402
+distinction, Ollama Cloud ≠ local, CommandCode markers, inventory completeness).
+
+self-review (QUALITY, tasks 5-14): one adapter + manifests for the generic
+providers, data-only manifests validated at construction, two documented
+exceptions with demonstrated protocol/account-state reasons (Command Code,
+Cavoti), credential namespaces pinned per provider and unique across the wave,
+activation fail-closed at discovery and run time, no secrets in code, logs,
+fixtures or reports. Findings: none Critical/Important. Minors deferred:
+
+1. `stream_options.include_usage` is not sent (providers that reject unknown
+   request fields would fail); usage is recorded only when the upstream emits it.
+2. The buffered (non-streaming) discovery body is bounded by the operation
+   deadline but not by a byte cap before `JSON.parse`; the SSE path does cap its
+   buffer.
+3. `providerInventory()` re-derives a small projection per diagnostics call;
+   trivial cost, kept for a single source of truth.
+4. Activation inheritance means an operator cannot express "all models" for a
+   manifest that says `none` without listing exact ids — intentional (R6/R10),
+   recorded so it is not mistaken for a bug.
+
+## Verification results (Task 14)
+
+- Full serialized suite: `npx vitest run --no-file-parallelism --maxWorkers 1`
+  → `Test Files 152 passed | 5 skipped (157)`,
+  `Tests 863 passed | 25 skipped (888)`, 0 failed, 292.23s. The 5 skipped files
+  are the live-opt-in integration suites (antigravity, claude, codex,
+  command-code, tool-roundtrip) which are skipped by design without a live
+  session — pre-existing, not a wave regression.
+- `npm run build` → clean. `npm run typecheck` → clean.
+- `bash scripts/security-audit.sh` → `SECURITY_AUDIT=PASS`, including the new
+  `OPENAI_COMPATIBLE_UNDECLARED_TOOL_FAIL_CLOSED=PASS` assertion.
+- `node scripts/validate-config.mjs` against `config/shared.example.json`
+  (copied into a temp `CMM_CONFIG_DIR`) → `CONFIG=VALID`,
+  `WAVE_PROVIDER_COUNT=10`, `WAVE_PROVIDERS_ENABLED=0`.
+- `git diff --check` → clean (two "new blank line at EOF" warnings were found
+  during the run and fixed).
+- Secret scan over tracked + new files
+  (`git ls-files` + `git status` paths, patterns for `sk-…`, `Bearer …`,
+  `api_key: …`) → only two pre-existing test-double files
+  (`tests/http/production-composition.test.ts`, `tests/security/bearer-auth.test.ts`),
+  both unchanged from HEAD and containing injected test tokens, not real secrets.
+- `LIVE_ADMIN_CALLS=0`, `LIVE_INFERENCE_COUNT=0`: no provider was contacted; all
+  provider interaction used injected fixture transports.
+
+### Updated final marker block
+
+```text
+ROUTER_LINEAGE_AUDIT=PASS
+PROVIDER_EXPANSION_BASE=e993a234d8a91ae62203bf975a4f56999ce4fb25
+CAVOTI_HISTORY_SEARCH=PASS
+ACTIVE_WORKTREES_TOUCHED=NO
+CMM_ROUTERS_PROVIDER_WAVE=PASS
+EXISTING_SUBSCRIPTION_BRIDGES_REGRESSION=PASS
+QWEN_TOKEN_PLAN_PAYG_SEPARATION=PASS
+OPENAI_COMPATIBLE_GENERIC_PATH=PASS
+ADMIN_MODEL_DISCOVERY_NO_INFERENCE=PASS
+CAVOTI_HISTORICAL_RECOVERY=PASS
+CAVOTI_LIVE_CANARY=DEFERRED_BILLING_STATE
+COMMANDCODE_LIVE_CANARY=DEFERRED_USER_AUTHORIZATION
+OLLAMA_CLOUD_NOT_LOCAL=PASS
+CMM_USAGE_PROVIDER_METADATA_BRIDGE=PASS
+SECRETS_EXPOSED=0
+PUSH_PERFORMED=NO
+MERGE_PERFORMED=NO
+```
+
+## Commit replay instructions
+
+Every task's exact delta is in `.provider-wave-patches/*.patch`, in plan order.
+From the worktree root:
+
+```bash
+git apply .provider-wave-patches/01-normalize-provider-manifest-contract.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): normalize provider manifest contract"
+git apply .provider-wave-patches/02-expand-generic-openai-compatible-routing.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): expand generic OpenAI-compatible routing"
+git apply .provider-wave-patches/03-add-administrative-model-discovery.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add administrative model discovery"
+git apply .provider-wave-patches/04-add-qwen-subscription-and-payg-routes.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add Qwen subscription and PAYG routes"
+git apply .provider-wave-patches/05-add-deepseek-openrouter-and-zen.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add DeepSeek OpenRouter and Zen"
+git apply .provider-wave-patches/06-add-kira-ai.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add Kira AI"
+git apply .provider-wave-patches/07-add-nvidia-nim-activation-scope.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add NVIDIA NIM Kimi K3 route"
+git apply .provider-wave-patches/08-add-vikey.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add Vikey"
+git apply .provider-wave-patches/09-integrate-cavoti-ai.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): integrate Cavoti AI"
+git apply .provider-wave-patches/10-add-cline-api.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add Cline API"
+git apply .provider-wave-patches/11-add-ollama-cloud.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add Ollama Cloud"
+git apply .provider-wave-patches/12-add-commandcode-api.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): add CommandCode API"
+git apply .provider-wave-patches/13-integrate-expanded-provider-inventory.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): integrate expanded provider inventory"
+git apply .provider-wave-patches/14-ledger.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "docs(providers): record provider expansion wave ledger"
+```
+
+Notes: patches 03 and 04 were captured after both tasks, so the Task-4
+activation delta rides in patch 04 (documented above). `.provider-wave-patches/`
+and `dist/` are worktree-local artifacts and are not part of any commit; the
+`state/` snapshots are baselines used to compute the deltas, not deliverables.
