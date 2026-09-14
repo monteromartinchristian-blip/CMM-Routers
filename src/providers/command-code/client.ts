@@ -1286,4 +1286,3 @@ export function parseAnthropicStreamEvents(bodyText: string): AnthropicStreamSta
   }
   return state;
 }
-
