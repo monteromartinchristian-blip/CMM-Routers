@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { providerWaveManifest } from "../../src/providers/manifests.js";
 import { createProductionRegistry } from "../../src/index.js";
 import { loadConfig } from "../../src/config/load-config.js";
-import { catalogFetch, waveAdapter } from "../helpers/wave-fixtures.js";
+import { catalogFetch, TEST_SECRET, waveAdapter } from "../helpers/wave-fixtures.js";
 
 /** Vikey catalog fixture: ids with vendor prefixes and version tags. */
 const VIKEY_CATALOG = {
@@ -15,6 +15,18 @@ const VIKEY_CATALOG = {
     { id: "totally-unprefixed-id" },
   ],
 };
+
+/** Vikey's canonical OpenAI-compatible endpoint. */
+const VIKEY_BASE_URL = "https://api.vikey.ai/v1";
+
+/** Paths that would make administrative discovery a billable generation call. */
+const GENERATION_PATH_PATTERNS = [
+  /\/chat\/completions/,
+  /\/messages/,
+  /\/responses/,
+  /\/generate/,
+  /\/embeddings/,
+];
 
 describe("Vikey", () => {
   it("registers the Vikey identity with its own credential namespace", () => {
@@ -29,23 +41,21 @@ describe("Vikey", () => {
     expect(manifest.activation).toEqual({ mode: "all", models: [] });
   });
 
-  it("invents no endpoint: the base URL must come from configuration", () => {
-    expect(providerWaveManifest("vikey").baseUrl).toBeNull();
+  it("declares the canonical endpoint as its default base URL", () => {
+    expect(providerWaveManifest("vikey").baseUrl).toBe(VIKEY_BASE_URL);
   });
 
-  it("discovers through a configured endpoint with bearer auth and exact model ids", async () => {
+  it("discovers through the default endpoint with bearer auth and exact model ids", async () => {
     const { fetchFn, requests } = catalogFetch(VIKEY_CATALOG);
-    const adapter = waveAdapter("vikey", {
-      fetchFn,
-      baseUrl: "https://vikey.example-account.invalid/v1",
-    });
+    // No baseUrl passed: the manifest default must be the effective endpoint.
+    const adapter = waveAdapter("vikey", { fetchFn });
 
     const models = await adapter.discoverModels();
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.url).toBe("https://vikey.example-account.invalid/v1/models");
+    expect(requests[0]!.url).toBe(`${VIKEY_BASE_URL}/models`);
     expect(requests[0]!.method).toBe("GET");
-    expect(requests[0]!.headers.Authorization).toMatch(/^Bearer /);
+    expect(requests[0]!.headers.Authorization).toBe(`Bearer ${TEST_SECRET}`);
     expect(models.map((model) => model.upstreamModel)).toEqual([
       "vikey/prime-1.0",
       "vendor/model-x:2026-01",
@@ -56,6 +66,23 @@ describe("Vikey", () => {
       "vikey/vendor/model-x:2026-01",
       "vikey/totally-unprefixed-id",
     ]);
+  });
+
+  it("performs administrative model discovery only, never a generation call", async () => {
+    const { fetchFn, requests } = catalogFetch(VIKEY_CATALOG);
+    const adapter = waveAdapter("vikey", { fetchFn });
+
+    await adapter.discoverModels();
+
+    for (const request of requests) {
+      expect(request.method, request.url).toBe("GET");
+      expect(request.body, `${request.url} must carry no generation body`).toBeNull();
+      for (const pattern of GENERATION_PATH_PATTERNS) {
+        expect(request.url, `${request.url} must not be a generation path`).not.toMatch(
+          pattern,
+        );
+      }
+    }
   });
 
   it("publishes CHAT_ONLY until a tool-calling round-trip is proven for Vikey", () => {
@@ -98,30 +125,34 @@ describe("Vikey production composition", () => {
     );
   }
 
-  it("skips an enabled Vikey route that has no configured base URL", async () => {
+  it("registers and discovers from the canonical default endpoint", async () => {
     writeConfig({ vikey: { enabled: true } });
 
+    const discovery = catalogFetch(VIKEY_CATALOG);
     const composition = await createProductionRegistry(loadConfig(dir), {
-      fetchFn: catalogFetch(VIKEY_CATALOG).fetchFn,
+      fetchFn: discovery.fetchFn,
     });
 
-    expect(composition.registeredProviders).not.toContain("vikey");
-    const skipped = composition.skippedProviders.find((entry) => entry.id === "vikey");
-    expect(skipped?.reason).toContain("baseUrl");
+    expect(composition.registeredProviders).toContain("vikey");
+    expect(discovery.requests[0]!.url).toBe(`${VIKEY_BASE_URL}/models`);
+    expect(composition.registry.listModels().map((model) => model.id)).toContain(
+      "vikey/vikey/prime-1.0",
+    );
   });
 
-  it("registers and discovers once the operator supplies the endpoint", async () => {
+  it("lets an operator-supplied endpoint override the default", async () => {
     writeConfig({
       vikey: { enabled: true, baseUrl: "https://vikey.example-account.invalid/v1" },
     });
 
+    const discovery = catalogFetch(VIKEY_CATALOG);
     const composition = await createProductionRegistry(loadConfig(dir), {
-      fetchFn: catalogFetch(VIKEY_CATALOG).fetchFn,
+      fetchFn: discovery.fetchFn,
     });
 
     expect(composition.registeredProviders).toContain("vikey");
-    expect(composition.registry.listModels().map((model) => model.id)).toContain(
-      "vikey/vikey/prime-1.0",
+    expect(discovery.requests[0]!.url).toBe(
+      "https://vikey.example-account.invalid/v1/models",
     );
   });
 });

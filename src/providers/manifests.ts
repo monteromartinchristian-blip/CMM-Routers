@@ -21,16 +21,16 @@ import {
 
 /**
  * Qwen Token Plan: the subscription product. Dedicated `sk-sp-*` keys against
- * `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1`, unified
- * credit deduction, plan-scoped model allowlist. The region is account-specific
- * (repo evidence: the CMM Usage Qwen adapter notes in this repository's
- * history), so the base URL is configuration, not a guessed default.
+ * its own fixed dedicated endpoint, unified credit deduction, plan-scoped model
+ * allowlist. The Token Plan host is deterministically known and is NOT a PAYG
+ * host: it must stay isolated from Qwen Cloud PAYG at the base URL, credential
+ * namespace and billing class, so no route can silently cross over.
  */
 export const QWEN_TOKEN_PLAN_MANIFEST: ProviderManifest = defineProviderManifest({
   id: "qwen-token-plan",
   displayName: "Qwen Token Plan",
   billingClass: "subscription",
-  baseUrl: null,
+  baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
   auth: { scheme: "bearer", secretEnv: "QWEN_TOKEN_PLAN_API_KEY" },
   discovery: { method: "GET", path: "/models" },
   apiStyles: ["openai-chat-completions"],
@@ -40,11 +40,13 @@ export const QWEN_TOKEN_PLAN_MANIFEST: ProviderManifest = defineProviderManifest
 
 /**
  * Qwen Cloud PAYG (Alibaba Cloud Model Studio, post-paid): `sk-`/`sk-ws-` keys
- * against `https://dashscope.<region>.aliyuncs.com/compatible-mode/v1`, billed
- * per model token price. A different product, credential namespace, billing
- * class and usage account than Token Plan: the router must never mix them, and
- * no automatic PAYG fallback exists. Region is account-specific, so the base
- * URL is configuration.
+ * against the account's own workspace/region endpoint, billed per model token
+ * price. A different product, credential namespace, billing class and usage
+ * account than Token Plan: the router must never mix them, and no automatic
+ * PAYG fallback exists. The endpoint is workspace/region-specific, so
+ * `baseUrl` stays `null` (connection-required) rather than guessing a region:
+ * an unresolved PAYG route is skipped, never routed through the Token Plan host
+ * or through a legacy global DashScope host.
  */
 export const QWEN_CLOUD_MANIFEST: ProviderManifest = defineProviderManifest({
   id: "qwen-cloud",
@@ -140,12 +142,11 @@ export const KIRA_MANIFEST: ProviderManifest = openAiWaveManifest({
 
 /**
  * NVIDIA NIM: OpenAI-compatible NVIDIA-hosted inference at the documented NIM
- * API host. Discovery may expose the whole NVIDIA catalog, but the wave's
- * initial routing scope is a single planned model whose exact provider model id
- * is NOT deterministically known from repository evidence. The manifest
- * therefore declares `activation: none`: discovered routes stay visible to an
- * operator but are not routable until the exact id is confirmed in config
- * (`providers.nvidia-nim.activation = { mode: "allowlist", models: ["<exact>"] }`).
+ * API host. Discovery exposes the whole NVIDIA catalog, but the wave's routing
+ * scope is a single activated model: `moonshotai/kimi-k3`, stated exactly as the
+ * provider spells it. This is an allowlist, never discovery-driven: an id that
+ * merely appears in the discovered catalog is visible but not routable, so no
+ * unrelated NVIDIA model can spend.
  */
 export const NVIDIA_NIM_MANIFEST: ProviderManifest = openAiWaveManifest({
   id: "nvidia-nim",
@@ -153,21 +154,20 @@ export const NVIDIA_NIM_MANIFEST: ProviderManifest = openAiWaveManifest({
   billingClass: "api",
   baseUrl: "https://integrate.api.nvidia.com/v1",
   secretEnv: "NVIDIA_NIM_API_KEY",
-  activation: { mode: "none", models: [] },
+  activation: { mode: "allowlist", models: ["moonshotai/kimi-k3"] },
 });
 
 /**
- * Vikey: no canonical OpenAI-compatible host is established by the plan text or
- * by any repository evidence, so the manifest deliberately carries
- * `baseUrl: null` rather than guessing one. An operator must supply
- * `providers.vikey.baseUrl`; until then an enabled route is skipped with a
- * clear reason. Tool capability stays `CHAT_ONLY` until proven.
+ * Vikey: the provider's canonical OpenAI-compatible endpoint, which is
+ * deterministically known and declared here as the default. An operator may
+ * still override `providers.vikey.baseUrl` in config. Tool capability stays
+ * `CHAT_ONLY` until proven.
  */
 export const VIKEY_MANIFEST: ProviderManifest = openAiWaveManifest({
   id: "vikey",
   displayName: "Vikey",
   billingClass: "api",
-  baseUrl: null,
+  baseUrl: "https://api.vikey.ai/v1",
   secretEnv: "VIKEY_API_KEY",
   toolCapability: "CHAT_ONLY",
 });
