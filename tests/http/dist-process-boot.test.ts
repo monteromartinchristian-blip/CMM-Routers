@@ -27,6 +27,15 @@ function writeConfig(dir: string): void {
     }),
   );
   writeFileSync(join(dir, "local.json"), JSON.stringify({}));
+  writeFileSync(
+    join(dir, "usage.json"),
+    JSON.stringify({
+      version: 1,
+      apiCredentialRef: "env://CMM_DIST_E2E_USAGE_TOKEN",
+      databasePath: join(dir, "usage.sqlite3"),
+      integrations: [],
+    }),
+  );
 }
 
 async function waitForHealth(timeoutMs = 15000): Promise<void> {
@@ -55,6 +64,7 @@ describe("actual compiled router process over HTTP", () => {
         ...process.env,
         CMM_CONFIG_DIR: dir,
         CMM_DIST_E2E_TOKEN: TOKEN,
+        CMM_DIST_E2E_USAGE_TOKEN: "",
         CMM_TEST_PROVIDER: "scripted",
       },
       stdio: ["ignore", "pipe", "pipe"],
