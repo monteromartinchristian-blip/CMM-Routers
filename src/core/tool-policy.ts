@@ -180,6 +180,23 @@ export function enforceProviderToolPolicy(
     case "command-code":
     case "cavoti":
       return null;
+
+    // Approved provider wave: every one of these routes speaks OpenAI Chat
+    // Completions, where tool_choice and parallel_tool_calls are first-class
+    // request fields, so the canonical policy is forwarded byte-identically.
+    // Whether a specific upstream model honors tool calling is expressed
+    // per-provider by the published model capability, not by this mapping.
+    case "qwen-token-plan":
+    case "qwen-cloud":
+    case "deepseek":
+    case "kira":
+    case "openrouter":
+    case "opencode-zen":
+    case "nvidia-nim":
+    case "vikey":
+    case "cline":
+    case "ollama-cloud":
+      return null;
   }
 }
 

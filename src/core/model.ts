@@ -1,11 +1,28 @@
 import type { NormalizedToolChoice } from "./tool-policy.js";
 
+/**
+ * Route identity namespace. Subscription bridges first (ChatGPT Plus/Codex,
+ * Claude Pro/Claude Code, Google AI Pro/Antigravity), then the approved
+ * provider wave. `qwen-token-plan` and `qwen-cloud` are deliberately distinct
+ * identities: different credentials, billing classes and usage accounts, even
+ * when they expose identical model ids.
+ */
 export type ProviderId =
   | "chatgpt"
   | "claude"
   | "google"
   | "command-code"
-  | "cavoti";
+  | "qwen-token-plan"
+  | "qwen-cloud"
+  | "deepseek"
+  | "kira"
+  | "openrouter"
+  | "opencode-zen"
+  | "nvidia-nim"
+  | "vikey"
+  | "cavoti"
+  | "cline"
+  | "ollama-cloud";
 
 export type ProviderCapability =
   | "CHAT_AND_TOOLS"
