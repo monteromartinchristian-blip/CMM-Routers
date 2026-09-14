@@ -37,7 +37,7 @@ struct MainWindowView: View {
                     switch selection ?? .overview {
                     case .overview: OverviewSectionView()
                     case .quotas: QuotasSectionView()
-                    case .models: ModelsSectionView()
+                    case .models: ModelsSectionView(onAddProvider: { selection = .providers })
                     case .providers: ProvidersSectionView()
                     case .freePromo: FreePromoSectionView()
                     case .history: HistorySectionView()

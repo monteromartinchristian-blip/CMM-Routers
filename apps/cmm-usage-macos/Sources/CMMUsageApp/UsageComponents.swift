@@ -39,6 +39,48 @@ struct StatusBadge: View {
     }
 }
 
+extension AccessOfferKind {
+    var badgeTint: Color {
+        switch self {
+        case .free: return .green
+        case .promo: return .blue
+        case .included: return .secondary
+        case .trial: return .orange
+        case .payg: return .secondary
+        case .unknown: return .secondary
+        }
+    }
+}
+
+struct AccessOfferBadge: View {
+    let offer: AccessOfferSummary
+
+    var body: some View {
+        Text(offer.kind.rawValue)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(offer.kind.badgeTint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(offer.kind.badgeTint.opacity(0.1), in: Capsule())
+            .accessibilityLabel("Access: \(offer.kind.rawValue)")
+    }
+}
+
+extension CatalogQuotaSummary {
+    var compactRemainingText: String {
+        if let remaining {
+            if metric.kind == "currency", let currency = metric.currency {
+                return remaining.formatted(.currency(code: currency))
+            }
+            return "\(remaining.formatted(.number.precision(.fractionLength(0...2)))) \(unit)"
+        }
+        if metric.kind == "percentage", let remainingFraction {
+            return remainingFraction.formatted(.percent.precision(.fractionLength(0)))
+        }
+        return status.displayName
+    }
+}
+
 struct SurfaceCard<Content: View>: View {
     @ViewBuilder let content: Content
 

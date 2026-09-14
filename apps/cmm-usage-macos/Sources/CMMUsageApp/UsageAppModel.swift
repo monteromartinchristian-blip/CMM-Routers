@@ -175,11 +175,25 @@ final class UsageAppModel: ObservableObject {
     }
 
     func setRouteVisibility(routeId: String, state: CatalogVisibilityState) async throws {
-        _ = try await makeClient().setRouteVisibility(routeId: routeId, state: state)
-        let nextRoutes = try await makeClient().fetchCatalogRoutes()
-        let nextVisibility = try await makeClient().fetchVisibility()
+        try await setRoutesVisibility(routeIds: [routeId], state: state)
+    }
+
+    func setRoutesVisibility(routeIds: [String], state: CatalogVisibilityState) async throws {
+        let client = try makeClient()
+        var mutationError: Error?
+        for routeId in routeIds {
+            do {
+                _ = try await client.setRouteVisibility(routeId: routeId, state: state)
+            } catch {
+                mutationError = error
+                break
+            }
+        }
+        let nextRoutes = try await client.fetchCatalogRoutes()
+        let nextVisibility = try await client.fetchVisibility()
         catalogRoutes = nextRoutes
         visibilityPreferences = nextVisibility
+        if let mutationError { throw mutationError }
     }
 
     func connectionHint(for provider: CatalogProviderView) -> String {

@@ -155,6 +155,23 @@ func testProviderPresentationContract() throws {
     try expect(groups.available.map(\.directory.integrationType) == ["claude-subscription"], "supported disconnected providers must remain visible")
 }
 
+func testModelCatalogPresentationContract() throws {
+    let json = #"""
+    {"data":[
+      {"routeId":"anthropic-claude","provider":{"id":"anthropic","displayName":"Anthropic"},"product":{"id":"anthropic-pro","displayName":"Claude Max","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"},
+      {"routeId":"google-claude","provider":{"id":"google","displayName":"Google AI Pro"},"product":{"id":"google-pro","displayName":"AI Pro","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"},
+      {"routeId":"openrouter-claude","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"PAYG"},"quota":[],"availability":"available","visibility":"hidden"},
+      {"routeId":"openrouter-qwen","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"qwen","displayName":"Qwen Flash"},"offer":{"kind":"PROMO"},"quota":[],"availability":"available","visibility":"visible"}
+    ]}
+    """#
+    let routes = try JSONDecoder().decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(json.utf8)).data
+    try expect(ModelCatalogPresenter.visibleRoutes(routes).map(\.routeId) == ["anthropic-claude", "google-claude", "openrouter-qwen"], "route visibility must stay provider-route scoped")
+    let openRouter = ModelCatalogPresenter.groups(routes).first { $0.provider.id == "openrouter" }
+    try expect(openRouter?.selectionState == .mixed, "provider groups must expose mixed visibility")
+    try expect(ModelCatalogPresenter.filteredRoutes(routes, query: "Qwen", filter: .all).map(\.routeId) == ["openrouter-qwen"], "search must match friendly model names")
+    try expect(ModelCatalogPresenter.pickerRoutes(routes).map(\.routeId) == ModelCatalogPresenter.visibleRoutes(routes).map(\.routeId), "picker and editor must share the same visible catalog")
+}
+
 final class MemoryCredentialStore: UsageCredentialStore {
     var token: String?
 
@@ -347,6 +364,7 @@ do {
     try testCatalogDecodingContract()
     try testDemoCredentialModuleUsesOnlyPublicFixtureCredentials()
     try testProviderPresentationContract()
+    try testModelCatalogPresentationContract()
     try await testReadOnlyAPIClient()
     try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()
     try await testDashboardFetchAndSafePresentation()

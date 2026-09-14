@@ -53,51 +53,6 @@ struct OverviewSectionView: View {
     }
 }
 
-struct ModelsSectionView: View {
-    @EnvironmentObject private var model: UsageAppModel
-
-    var body: some View {
-        SectionShell {
-            if let dashboard = model.dashboard, !dashboard.models.isEmpty {
-                LazyVStack(spacing: 14) {
-                    ForEach(dashboard.models) { modelView in
-                        SurfaceCard {
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(modelView.model.canonicalName).font(.title3.weight(.semibold))
-                                        Text(modelView.model.vendor).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text("\(modelView.constraints.routes.count) route\(modelView.constraints.routes.count == 1 ? "" : "s")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                ForEach(modelView.constraints.routes) { route in
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        HStack {
-                                            Text(route.accessRouteId).font(.caption.monospaced()).foregroundStyle(.secondary)
-                                            Spacer()
-                                            StatusBadge(status: route.status)
-                                        }
-                                        ForEach(route.constraints) { constraint in
-                                            if let quota = model.quota(id: constraint.bucketId) {
-                                                QuotaDetailCard(quota: quota, compact: true)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                EmptyStateView(title: "No models", detail: "Models appear after provider discovery creates access routes.", systemImage: "cpu")
-            }
-        }
-    }
-}
-
 struct FreePromoSectionView: View {
     @EnvironmentObject private var model: UsageAppModel
 
