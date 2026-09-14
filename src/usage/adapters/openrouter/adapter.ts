@@ -49,7 +49,7 @@ interface KeyState {
   label: string;
   limit?: number;
   limitRemaining?: number;
-  limitReset?: string;
+  limitReset?: string | null;
   usage: number;
   usageDaily?: number;
   usageWeekly?: number;
@@ -90,8 +90,10 @@ function stablePart(value: string): string {
   return encodeURIComponent(value);
 }
 
-function windowPolicyForReset(limitReset: string | undefined): WindowPolicy {
+function windowPolicyForReset(limitReset: string | null | undefined): WindowPolicy {
   switch (limitReset) {
+    case null:
+      return { kind: "none" };
     case "daily":
       return { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" };
     case "weekly":
@@ -146,7 +148,7 @@ function parseKeyState(
   const usage = nonNegativeNumber(data.usage) ?? 0;
   const limit = nonNegativeNumber(data.limit);
   const limitRemaining = nonNegativeNumber(data.limit_remaining);
-  const limitReset = nonEmptyString(data.limit_reset);
+  const limitReset = data.limit_reset === null ? null : nonEmptyString(data.limit_reset);
   const usageDaily = nonNegativeNumber(data.usage_daily);
   const usageWeekly = nonNegativeNumber(data.usage_weekly);
   const usageMonthly = nonNegativeNumber(data.usage_monthly);
@@ -282,7 +284,7 @@ export class OpenRouterUsageAdapter implements UsageAdapter {
     if (!keyData) {
       throw new UsageAdapterError("protocol", "OpenRouter key response is invalid");
     }
-    const currentKey = parseKeyState(keyData, "API key");
+    const currentKey = parseKeyState(keyData, "current", "current");
 
     let credits: OrgCredits | undefined;
     let managementKeys: KeyState[] = [];

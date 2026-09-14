@@ -149,6 +149,39 @@ function adapter(
 }
 
 describe("OpenRouterUsageAdapter", () => {
+  it("keeps the provider-reported current-key label out of normalized identities", async () => {
+    const sensitiveLabel = "private-current-key-label";
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/api/v1/key") {
+        response.end(JSON.stringify({ data: { ...keyFixture.data, label: sensitiveLabel } }));
+        return;
+      }
+      if (request.url?.startsWith("/api/v1/models")) {
+        response.end(JSON.stringify(modelsFixture));
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing fake server port");
+
+    const value = adapter(`http://127.0.0.1:${address.port}/api/v1`);
+    const discovery = await value.discover();
+    const snapshots = await value.collectQuotaSnapshots();
+    expect(discovery.status).toBe("ok");
+    expect(snapshots.status).toBe("ok");
+    if (discovery.status !== "ok") throw new Error("expected discovery");
+
+    const serialized = JSON.stringify({ discovery, snapshots });
+    expect(serialized).not.toContain(sensitiveLabel);
+    expect((discovery.quotaBuckets ?? []).map((bucket) => bucket.providerKey)).toContain(
+      "key:current:usage",
+    );
+  });
+
   it("discovers model routes and per-key limit/usage buckets from the current key only", async () => {
     const seen: SeenRequest[] = [];
     const value = adapter(await fakeServer(route(seen, false)));
@@ -168,19 +201,19 @@ describe("OpenRouterUsageAdapter", () => {
     const buckets = new Map(
       (discovery.quotaBuckets ?? []).map((bucket) => [bucket.providerKey, bucket]),
     );
-    expect(buckets.get("key:Production API Key:limit")).toMatchObject({
+    expect(buckets.get("key:current:limit")).toMatchObject({
       metric: { kind: "currency", currency: "USD" },
       limitValue: 100,
       windowPolicy: { kind: "fixed_calendar", calendarUnit: "month", timezone: "UTC" },
       status: "healthy",
     });
-    expect(buckets.get("key:Production API Key:usage_daily")).toMatchObject({
+    expect(buckets.get("key:current:usage_daily")).toMatchObject({
       windowPolicy: { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" },
     });
-    expect(buckets.get("key:Production API Key:usage_weekly")).toMatchObject({
+    expect(buckets.get("key:current:usage_weekly")).toMatchObject({
       windowPolicy: { kind: "fixed_calendar", calendarUnit: "week", timezone: "UTC" },
     });
-    expect(buckets.get("key:Production API Key:usage")).toMatchObject({
+    expect(buckets.get("key:current:usage")).toMatchObject({
       windowPolicy: { kind: "none" },
     });
     expect(buckets.has("org:credits")).toBe(false);
@@ -200,7 +233,7 @@ describe("OpenRouterUsageAdapter", () => {
     if (snapshots.status !== "ok") throw new Error("expected snapshots");
     const byBucket = new Map(snapshots.values.map((snapshot) => [snapshot.quotaBucketId, snapshot]));
 
-    const limit = byBucket.get(buckets.get("key:Production API Key:limit")?.id ?? "");
+    const limit = byBucket.get(buckets.get("key:current:limit")?.id ?? "");
     expect(limit).toMatchObject({
       usedValue: 25.5,
       remainingValue: 74.5,
@@ -213,13 +246,13 @@ describe("OpenRouterUsageAdapter", () => {
     });
     expect(limit).not.toHaveProperty("resetAt");
 
-    const daily = byBucket.get(buckets.get("key:Production API Key:usage_daily")?.id ?? "");
+    const daily = byBucket.get(buckets.get("key:current:usage_daily")?.id ?? "");
     expect(daily).toMatchObject({ usedValue: 3.25 });
     expect(daily).not.toHaveProperty("resetAt");
     expect(daily).not.toHaveProperty("limitValue");
     expect(daily).not.toHaveProperty("usedFraction");
 
-    const lifetime = byBucket.get(buckets.get("key:Production API Key:usage")?.id ?? "");
+    const lifetime = byBucket.get(buckets.get("key:current:usage")?.id ?? "");
     expect(lifetime).toMatchObject({ usedValue: 25.5 });
   });
 
@@ -331,7 +364,7 @@ describe("OpenRouterUsageAdapter", () => {
     if (discovery.status !== "ok") throw new Error("expected discovery");
     const limitBucket = new Map(
       (discovery.quotaBuckets ?? []).map((bucket) => [bucket.providerKey, bucket]),
-    ).get("key:Production API Key:limit");
+    ).get("key:current:limit");
     expect(limitBucket?.limitValue).toBe(100);
   });
 
@@ -367,13 +400,50 @@ describe("OpenRouterUsageAdapter", () => {
     if (discovery.status !== "ok") throw new Error("expected discovery");
     const keys = (discovery.quotaBuckets ?? []).map((bucket) => bucket.providerKey);
     expect(keys).not.toContain("key:No cap:limit");
-    expect(keys).toContain("key:No cap:usage");
+    expect(keys).toContain("key:current:usage");
     const snapshots = await value.collectQuotaSnapshots();
     if (snapshots.status !== "ok") throw new Error("expected snapshots");
     for (const snapshot of snapshots.values) {
       expect(snapshot).not.toHaveProperty("limitValue");
       expect(snapshot).not.toHaveProperty("usedFraction");
     }
+  });
+
+  it("preserves an explicit never-reset spend cap as a no-reset window", async () => {
+    const server = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/api/v1/key") {
+        response.end(
+          JSON.stringify({
+            data: {
+              ...keyFixture.data,
+              limit: 100,
+              limit_remaining: 75,
+              limit_reset: null,
+            },
+          }),
+        );
+        return;
+      }
+      if (request.url?.startsWith("/api/v1/models")) {
+        response.end(JSON.stringify(modelsFixture));
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing fake server port");
+
+    const value = adapter(`http://127.0.0.1:${address.port}/api/v1`);
+    const discovery = await value.discover();
+    if (discovery.status !== "ok") throw new Error("expected discovery");
+    const limitBucket = (discovery.quotaBuckets ?? []).find(
+      (bucket) => bucket.providerKey === "key:current:limit",
+    );
+
+    expect(limitBucket?.windowPolicy).toEqual({ kind: "none" });
   });
 
   it("normalizes management-key rejection without losing the standard key surface", async () => {
@@ -405,7 +475,7 @@ describe("OpenRouterUsageAdapter", () => {
       (discovery.quotaBuckets ?? []).map((bucket) => [bucket.providerKey, bucket.id]),
     );
     expect(buckets.has("org:credits")).toBe(false);
-    expect(buckets.has("key:Production API Key:limit")).toBe(true);
+    expect(buckets.has("key:current:limit")).toBe(true);
   });
 
   it("reports unsupported capabilities it cannot honestly back", async () => {

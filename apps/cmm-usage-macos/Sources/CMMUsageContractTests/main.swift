@@ -208,11 +208,27 @@ func testClientRejectsNonLoopbackBaseURL() async throws {
     }
 }
 
+func testUnknownRollingResetPresentation() throws {
+    let json = #"{"data":[{"bucket":{"id":"bucket:5h","accountId":"account:example","productId":"product:example","displayName":"5-hour window","metric":{"kind":"provider_defined","providerKey":"window"},"windowPolicy":{"kind":"rolling_duration","durationSeconds":18000},"unit":"provider_units","enforcement":"hard","status":"healthy"},"bucketId":"bucket:5h","status":"healthy","reconciled":{"selected":{"id":"snapshot:5h","quotaBucketId":"bucket:5h","observedAt":"2026-09-14T06:00:00.000Z","usedValue":0,"remainingValue":14,"limitValue":14,"source":"provider_official_cli","confidence":"exact","stalenessAfter":"2026-09-14T06:01:00.000Z"},"stale":false},"forecast":{"willExhaustBeforeReset":false,"confidence":"unknown"}}]}"#
+    let response = try JSONDecoder().decode(UsageListResponse<QuotaUsageView>.self, from: Data(json.utf8))
+    guard let quota = response.data.first else { throw ContractFailure.expected("rolling quota should decode") }
+    try expect(quota.resetSummary == "Unknown", "rolling quota without a provider reset instant must remain Unknown")
+}
+
+func testNoResetPresentation() throws {
+    let json = #"{"data":[{"bucket":{"id":"bucket:lifetime","accountId":"account:example","productId":"product:example","displayName":"Lifetime cap","metric":{"kind":"currency","currency":"USD"},"windowPolicy":{"kind":"none"},"unit":"USD","enforcement":"hard","status":"healthy"},"bucketId":"bucket:lifetime","status":"healthy","reconciled":{"selected":{"id":"snapshot:lifetime","quotaBucketId":"bucket:lifetime","observedAt":"2026-09-14T06:00:00.000Z","usedValue":25,"remainingValue":75,"limitValue":100,"source":"provider_official_api","confidence":"exact","stalenessAfter":"2026-09-14T06:01:00.000Z"},"stale":false},"forecast":{"willExhaustBeforeReset":false,"confidence":"unknown"}}]}"#
+    let response = try JSONDecoder().decode(UsageListResponse<QuotaUsageView>.self, from: Data(json.utf8))
+    guard let quota = response.data.first else { throw ContractFailure.expected("no-reset quota should decode") }
+    try expect(quota.resetSummary == "No reset", "a provider-declared non-resetting quota must render as No reset")
+}
+
 do {
     try testProviderPressureDecoding()
     try await testReadOnlyAPIClient()
     try await testDashboardFetchAndSafePresentation()
     try await testClientRejectsNonLoopbackBaseURL()
+    try testUnknownRollingResetPresentation()
+    try testNoResetPresentation()
     print("CMMUsageContractTests: PASS")
 } catch {
     fputs("CMMUsageContractTests: FAIL: \(error)\n", stderr)

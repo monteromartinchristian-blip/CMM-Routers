@@ -47,7 +47,7 @@ public extension QuotaUsageView {
         if let providerResetText = snapshot.providerResetText, !providerResetText.isEmpty {
             return providerResetText
         }
-        return "No reset"
+        return bucket.windowPolicy.kind == "none" ? "No reset" : "Unknown"
     }
 
     var forecastSummary: String {

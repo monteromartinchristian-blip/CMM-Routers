@@ -24,9 +24,26 @@ describe("distribution build assets", () => {
       });
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
 
-      const migration = join(checkout, "dist", "usage", "storage", "schema", "001_initial.sql");
-      expect(existsSync(migration)).toBe(true);
-      expect(readFileSync(migration, "utf8")).toContain("CREATE TABLE");
+      const initialMigration = join(
+        checkout,
+        "dist",
+        "usage",
+        "storage",
+        "schema",
+        "001_initial.sql",
+      );
+      const privacyMigration = join(
+        checkout,
+        "dist",
+        "usage",
+        "storage",
+        "schema",
+        "002_scrub_legacy_openrouter_key_buckets.sql",
+      );
+      expect(existsSync(initialMigration)).toBe(true);
+      expect(readFileSync(initialMigration, "utf8")).toContain("CREATE TABLE");
+      expect(existsSync(privacyMigration)).toBe(true);
+      expect(readFileSync(privacyMigration, "utf8")).toContain("DELETE FROM quota_buckets");
     } finally {
       rmSync(checkout, { recursive: true, force: true });
     }

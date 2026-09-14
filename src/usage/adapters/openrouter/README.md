@@ -33,16 +33,17 @@ spend no credits:
   - `org:credits` — organization prepaid pool (limit = total_credits,
     used/remaining from total_usage), all-time window (`none`).
   - `key:<owner>:limit` — per-key spend cap with `limit_reset` mapped to an
-    ordinary `fixed_calendar` UTC day/week/month window; an unrecognized or
-    absent cadence (including `null` = never resets) uses
-    `windowPolicy: provider_reported` rather than fabricating a window — the
-    cap itself is still recorded exactly.
+    ordinary `fixed_calendar` UTC day/week/month window. An explicit `null`
+    means the provider says the cap never resets and maps to `windowPolicy:
+    none`; an absent or unrecognized cadence remains `provider_reported`
+    rather than fabricating a window. The cap itself is still recorded exactly.
   - `key:<owner>:usage[_daily|_weekly|_monthly]` — usage **counters**: no
     limit, no fraction, no reset invented; status stays `unknown`. These
     describe spend state, not quota ceilings.
-- `owner` is the key `hash` for management-listed keys (stable, non-secret
-  public identifier returned by the management API) and the key `label` for
-  the current-key surface (the only identity `GET /key` exposes).
+- `owner` is the key `hash` for management-listed keys (stable provider
+  identifier returned by the management API). The current-key surface always
+  uses the literal owner `current`; its provider-reported `label` is not emitted
+  as normalized identity or persisted quota metadata.
 - The same cap + pool buckets bind to every discovered model route through
   ordinary QuotaBindings — multiple models consuming one credit pool is the
   normal graph shape, no core branch.
@@ -60,9 +61,11 @@ spend no credits:
   so snapshots carry none.
 - Identity/secret hygiene: key material and credential references appear only
   in request headers. `creator_user_id`, `workspace_id`, and BYOK counter
-  fields are never emitted in normalized output; the management API's `hash`
-  and the current key's `label` (the only identity `GET /key` exposes) are
-  used as bucket owner tokens because they are non-secret listing identifiers.
+  fields are never emitted in normalized output. The management API's `hash`
+  may be used as a management-key owner token; the current key's `label` is
+  deliberately discarded. Storage migration 002 removes legacy OpenRouter
+  per-key buckets created before this rule so old labels cannot remain visible
+  after upgrade.
 
 ## Not represented
 

@@ -6,6 +6,13 @@ const migrations = [
     version: 1,
     sql: readFileSync(new URL("./schema/001_initial.sql", import.meta.url), "utf8"),
   },
+  {
+    version: 2,
+    sql: readFileSync(
+      new URL("./schema/002_scrub_legacy_openrouter_key_buckets.sql", import.meta.url),
+      "utf8",
+    ),
+  },
 ] as const;
 
 export function applyUsageMigrations(database: DatabaseSync): void {
