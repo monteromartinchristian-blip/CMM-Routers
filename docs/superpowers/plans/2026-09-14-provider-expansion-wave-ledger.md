@@ -565,9 +565,22 @@ git apply .provider-wave-patches/13-integrate-expanded-provider-inventory.patch
 git add -A -- src tests scripts config docs .env.example && git commit -m "feat(providers): integrate expanded provider inventory"
 git apply .provider-wave-patches/14-ledger.patch
 git add -A -- src tests scripts config docs .env.example && git commit -m "docs(providers): record provider expansion wave ledger"
+git apply .provider-wave-patches/15-eof-hygiene.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "style(providers): drop trailing blank line at EOF"
+git apply .provider-wave-patches/16-ledger-final.patch
+git add -A -- src tests scripts config docs .env.example && git commit -m "docs(providers): finalize provider expansion wave ledger"
 ```
 
+Patch-series verification: all 16 patches were replayed onto a pristine
+`git archive HEAD` extract inside `.provider-wave-patches/replay/`, applying in
+order without a single conflict, and the resulting tree is byte-identical to the
+wave's worktree for every changed or added file (35/35 files `SAME`, verified
+with `diff -q`). `15-eof-hygiene` exists because the trailing blank line left by
+patch `02` was cleaned up after that patch was captured, and `16-ledger-final`
+carries this section plus the final markers.
+
 Notes: patches 03 and 04 were captured after both tasks, so the Task-4
-activation delta rides in patch 04 (documented above). `.provider-wave-patches/`
-and `dist/` are worktree-local artifacts and are not part of any commit; the
-`state/` snapshots are baselines used to compute the deltas, not deliverables.
+activation delta rides in patch 04 (documented above). `.provider-wave-patches/`,
+`.mimosa/` (plugin state) and `dist/` are worktree-local artifacts and are not
+part of any commit; the `state/` snapshots are baselines used to compute the
+deltas, not deliverables.
