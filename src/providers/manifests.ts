@@ -121,6 +121,22 @@ export const OPENCODE_ZEN_MANIFEST: ProviderManifest = openAiWaveManifest({
   secretEnv: "OPENCODE_ZEN_API_KEY",
 });
 
+/**
+ * Kira AI: canonical endpoint supplied by the operator for this wave. Billing
+ * class stays the neutral `api` because the free-model expectations are
+ * discovery fixtures, not provider pricing metadata, and tool capability stays
+ * `CHAT_ONLY` until a Kira tool-calling round-trip is proven (an unproven
+ * capability must never unlock tools for the Qoder consumer).
+ */
+export const KIRA_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "kira",
+  displayName: "Kira AI",
+  billingClass: "api",
+  baseUrl: "https://kiraai.vn/api/v1",
+  secretEnv: "KIRA_API_KEY",
+  toolCapability: "CHAT_ONLY",
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -128,6 +144,7 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   DEEPSEEK_MANIFEST,
   OPENROUTER_MANIFEST,
   OPENCODE_ZEN_MANIFEST,
+  KIRA_MANIFEST,
 ];
 
 /**
