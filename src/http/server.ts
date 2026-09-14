@@ -14,6 +14,9 @@ import {
 import type { UsageService as CmmUsageService } from "../usage/service/usage-service.js";
 import { isUsageApiPath, verifyUsageBearer } from "../usage/api/usage-auth.js";
 import { registerUsageRoutes } from "../usage/api/usage-routes.js";
+import { registerCatalogRoutes } from "../usage/api/catalog-routes.js";
+import type { PresentationCatalogService } from "../usage/presentation/presentation-catalog-service.js";
+import type { VisibilityStore } from "../usage/presentation/visibility-store.js";
 import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
 
 export interface ServerOptions {
@@ -33,6 +36,10 @@ export interface ServerOptions {
   usageToken?: string;
   /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
   cmmUsageService?: CmmUsageService;
+  /** Product-facing safe catalog projection for CMM Usage and CMMChat. */
+  cmmUsageCatalog?: PresentationCatalogService;
+  /** Route-scoped visibility preferences exposed through read-only catalog API. */
+  cmmUsageVisibility?: VisibilityStore;
   /** Optional sink for normalized inference consumption metadata. */
   routerTelemetry?: RouterTelemetrySink;
 }
@@ -149,6 +156,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   if (options.cmmUsageService !== undefined) {
     registerUsageRoutes(fastify, options.cmmUsageService);
+  }
+  if (options.cmmUsageCatalog !== undefined && options.cmmUsageVisibility !== undefined) {
+    registerCatalogRoutes(fastify, options.cmmUsageCatalog, options.cmmUsageVisibility);
   }
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer

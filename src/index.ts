@@ -15,6 +15,8 @@ import {
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 import type { UsageService as CmmUsageService } from "./usage/service/usage-service.js";
 import { createProductionUsageRuntime } from "./usage/runtime/production-runtime.js";
+import type { PresentationCatalogService } from "./usage/presentation/presentation-catalog-service.js";
+import type { VisibilityStore } from "./usage/presentation/visibility-store.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -204,6 +206,8 @@ export async function createProductionRegistry(
 export interface ProductionUsageServerBinding {
   service: CmmUsageService;
   token: string;
+  catalog?: PresentationCatalogService;
+  visibility?: VisibilityStore;
 }
 
 export function createProductionServer(
@@ -219,7 +223,14 @@ export function createProductionServer(
     ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
-    ...(usage === undefined ? {} : { cmmUsageService: usage.service, usageToken: usage.token }),
+    ...(usage === undefined
+      ? {}
+      : {
+          cmmUsageService: usage.service,
+          usageToken: usage.token,
+          ...(usage.catalog === undefined ? {} : { cmmUsageCatalog: usage.catalog }),
+          ...(usage.visibility === undefined ? {} : { cmmUsageVisibility: usage.visibility }),
+        }),
   });
 }
 
@@ -263,7 +274,14 @@ async function main() {
     composition,
     bearerSecret,
     qoderSecret,
-    usageToken === undefined ? undefined : { service: cmmUsage.runtime.service, token: usageToken },
+    usageToken === undefined
+      ? undefined
+      : {
+          service: cmmUsage.runtime.service,
+          token: usageToken,
+          catalog: cmmUsage.presentationCatalog,
+          visibility: cmmUsage.visibility,
+        },
   );
 
   const shutdown = async () => {

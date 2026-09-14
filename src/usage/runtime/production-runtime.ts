@@ -9,6 +9,9 @@ import {
   type SecureCredentialResolver,
 } from "./integration-catalog.js";
 import type { UsageServiceOptions } from "../service/usage-service.js";
+import { createDefaultProviderDirectory } from "../presentation/provider-directory.js";
+import { PresentationCatalogService } from "../presentation/presentation-catalog-service.js";
+import { VisibilityStore } from "../presentation/visibility-store.js";
 
 export interface ProductionUsageRuntimeOptions {
   configDir?: string;
@@ -22,6 +25,8 @@ export interface ProductionUsageRuntime {
   config: LoadedUsageRuntimeConfig;
   store: SqliteUsageStore;
   runtime: ConfiguredUsageRuntime;
+  presentationCatalog: PresentationCatalogService;
+  visibility: VisibilityStore;
   resolveApiToken(): Promise<string | undefined>;
   close(): Promise<void>;
 }
@@ -55,11 +60,20 @@ export async function createProductionUsageRuntime(
     await store.close();
     throw error;
   }
+  const visibility = new VisibilityStore(store);
+  const presentationCatalog = new PresentationCatalogService(
+    store,
+    runtime.service.queries,
+    createDefaultProviderDirectory(config.integrations),
+    visibility,
+  );
 
   return {
     config,
     store,
     runtime,
+    presentationCatalog,
+    visibility,
     resolveApiToken: async () => resolver.resolve(config.apiCredentialRef),
     close: async () => {
       await runtime.service.stop();
