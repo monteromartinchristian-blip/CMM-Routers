@@ -57,10 +57,77 @@ export const QWEN_CLOUD_MANIFEST: ProviderManifest = defineProviderManifest({
   activation: { mode: "all", models: [] },
 });
 
+/**
+ * Factory for the OpenAI-compatible wave providers: every field that is the
+ * same for the whole wave (administrative GET discovery, chat-completions
+ * style, declared tool capability, discovery-driven activation) is stated once,
+ * and each provider still declares its identity, endpoint and credential
+ * namespace explicitly.
+ */
+function openAiWaveManifest(fields: {
+  id: ProviderManifest["id"];
+  displayName: string;
+  billingClass: ProviderManifest["billingClass"];
+  baseUrl: string | null;
+  secretEnv: string;
+  toolCapability?: ProviderManifest["toolCapability"];
+  activation?: ProviderManifest["activation"];
+}): ProviderManifest {
+  return defineProviderManifest({
+    id: fields.id,
+    displayName: fields.displayName,
+    billingClass: fields.billingClass,
+    baseUrl: fields.baseUrl,
+    auth: { scheme: "bearer", secretEnv: fields.secretEnv },
+    discovery: { method: "GET", path: "/models" },
+    apiStyles: ["openai-chat-completions"],
+    toolCapability: fields.toolCapability ?? "CHAT_AND_TOOLS",
+    activation: fields.activation ?? { mode: "all", models: [] },
+  });
+}
+
+/**
+ * DeepSeek API: post-paid OpenAI-compatible endpoint documented by the
+ * provider, and by this repository's own CMM Usage integration notes
+ * (`https://api.deepseek.com`, versioned OpenAI-compatible root `/v1`).
+ */
+export const DEEPSEEK_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "deepseek",
+  displayName: "DeepSeek API",
+  billingClass: "payg",
+  baseUrl: "https://api.deepseek.com/v1",
+  secretEnv: "DEEPSEEK_API_KEY",
+});
+
+/**
+ * OpenRouter: prepaid credit pool plus per-key caps, all metadata surfaces are
+ * authenticated GETs under `https://openrouter.ai/api/v1` (repo evidence: the
+ * CMM Usage OpenRouter notes), and `GET /models` is authoritative discovery.
+ */
+export const OPENROUTER_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "openrouter",
+  displayName: "OpenRouter",
+  billingClass: "payg",
+  baseUrl: "https://openrouter.ai/api/v1",
+  secretEnv: "OPENROUTER_API_KEY",
+});
+
+/** OpenCode Zen: OpenAI-compatible gateway at the product's own API host. */
+export const OPENCODE_ZEN_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "opencode-zen",
+  displayName: "OpenCode Zen",
+  billingClass: "payg",
+  baseUrl: "https://opencode.ai/zen/v1",
+  secretEnv: "OPENCODE_ZEN_API_KEY",
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
   QWEN_CLOUD_MANIFEST,
+  DEEPSEEK_MANIFEST,
+  OPENROUTER_MANIFEST,
+  OPENCODE_ZEN_MANIFEST,
 ];
 
 /**
