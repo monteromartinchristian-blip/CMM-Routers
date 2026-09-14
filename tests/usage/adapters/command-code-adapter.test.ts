@@ -232,6 +232,40 @@ describe("CommandCodeUsageAdapter", () => {
     expect(monthly).not.toHaveProperty("usedValue");
   });
 
+  it("keeps a provider reset sentinel of zero unknown instead of rendering the Unix epoch", async () => {
+    const baseUrl = await fakeServer((request, response) => {
+      const path = request.url ?? "";
+      const body = usageFixture(path);
+      if (body === undefined) {
+        response.writeHead(404).end();
+        return;
+      }
+      if (path.startsWith("/alpha/billing/credits")) {
+        const value = structuredClone(body) as {
+          windowLimits: { fiveHour: { resetAt?: number } };
+        };
+        value.windowLimits.fiveHour.resetAt = 0;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(value));
+        return;
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(body));
+    });
+    const value = adapter(baseUrl);
+    const discovery = await value.discover();
+    if (discovery.status !== "ok") throw new Error("expected discovery");
+    const snapshots = await value.collectQuotaSnapshots();
+    if (snapshots.status !== "ok") throw new Error("expected snapshots");
+    const bucketId = discovery.quotaBuckets?.find(
+      (bucket) => bucket.providerKey === "window:fiveHour",
+    )?.id;
+    const fiveHour = snapshots.values.find((snapshot) => snapshot.quotaBucketId === bucketId);
+
+    expect(fiveHour).toBeDefined();
+    expect(fiveHour).not.toHaveProperty("resetAt");
+  });
+
   it("uses only the four metadata GET endpoints and keeps credentials out of normalized output", async () => {
     const seen: SeenRequest[] = [];
     const value = adapter(await fixtureBaseUrl(seen));

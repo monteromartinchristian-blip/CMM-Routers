@@ -24,7 +24,7 @@ const routeSchema = z.object({
 const routesSchema = z.array(routeSchema).optional();
 
 const commandCodeSettings = z.object({
-  baseUrl: z.string().url().default("https://api.commandcode.ai/provider/v1"),
+  baseUrl: z.string().url().default("https://api.commandcode.ai"),
   routes: routesSchema,
 }).strict();
 

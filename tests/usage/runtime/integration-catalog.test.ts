@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDefaultUsageIntegrationCatalog,
   type SecureCredentialResolver,
 } from "../../../src/usage/runtime/integration-catalog.js";
 
 describe("default CMM Usage integration catalog", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("wires every completed canonical provider integration without resolving credentials at construction", () => {
     let resolutions = 0;
     const resolver: SecureCredentialResolver = {
@@ -47,5 +51,39 @@ describe("default CMM Usage integration catalog", () => {
     const catalog = createDefaultUsageIntegrationCatalog({ resolve: async () => undefined });
 
     expect(() => catalog.create({ id: "deepseek", type: "deepseek", enabled: true, settings: {} })).toThrow(/credential/i);
+  });
+
+  it("targets the current Command Code API root for metadata collection", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      seen.push(url.toString());
+      let body: unknown = {};
+      if (url.pathname.endsWith("/alpha/whoami")) body = { org: { id: "org-1" }, orgLimits: [] };
+      if (url.pathname.endsWith("/alpha/billing/credits")) body = { credits: {}, windowLimits: {} };
+      if (url.pathname.endsWith("/alpha/billing/subscriptions")) body = { data: {} };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    const catalog = createDefaultUsageIntegrationCatalog({ resolve: async () => "test-command-key" });
+    const adapter = catalog.create({
+      id: "command",
+      type: "command-code",
+      enabled: true,
+      credentialRef: "env://COMMAND",
+      settings: {},
+    });
+
+    expect((await adapter.discover()).status).toBe("ok");
+    expect(seen.map((value) => new URL(value).pathname)).toEqual([
+      "/alpha/whoami",
+      "/alpha/billing/credits",
+      "/alpha/billing/subscriptions",
+      "/alpha/usage/summary",
+    ]);
+    expect(seen.every((value) => new URL(value).origin === "https://api.commandcode.ai")).toBe(true);
   });
 });

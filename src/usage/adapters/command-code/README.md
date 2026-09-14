@@ -2,12 +2,14 @@
 
 Verified on 2026-09-13 against the installed Command Code CLI package `command-code@1.50.0`.
 
-The CLI's `/usage` surface loads account/billing metadata without making an inference request. Its bundled implementation uses authenticated `GET` calls to:
+The CLI's `/usage` surface loads account/billing metadata without making an inference request. Its bundled implementation uses `https://api.commandcode.ai` as the API root and authenticated `GET` calls to:
 
 - `/alpha/whoami?limits=1`
 - `/alpha/billing/credits?orgId=...`
 - `/alpha/billing/subscriptions?orgId=...`
 - `/alpha/usage/summary?orgId=...&since=...`
+
+Dogfooding on 2026-09-14 confirmed that the older `https://api.commandcode.ai/provider/v1` prefix now returns HTTP 404 while the root `/alpha/whoami` surface returns the expected authentication challenge. The adapter default therefore follows the current CLI API root rather than carrying the legacy prefix forward.
 
 The same bundle builds `Authorization: Bearer <Command Code auth key>` for Command API calls. The credits response is the source for `monthlyCredits`, `purchasedCredits`, `freeCredits`, and `windowLimits` (`fiveHour`, `weekly`). The whoami response exposes organization spend limits, including model-scoped limits where present. Subscription metadata supplies the current billing-period start/end.
 

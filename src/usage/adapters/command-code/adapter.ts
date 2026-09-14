@@ -97,6 +97,7 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function isoTimestamp(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
+    if (value <= 0) return undefined;
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   }
