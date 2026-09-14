@@ -107,4 +107,32 @@ describe("PresentationCatalogService", () => {
       directory: { state: "available", connectedInstanceCount: 0 },
     });
   });
+
+  it("returns opaque connected instance handles without provider secrets", async () => {
+    const store = new SqliteUsageStore(":memory:");
+    stores.push(store);
+    await store.initialize();
+    const visibility = new VisibilityStore(store);
+    const queries = new UsageQueryService(store);
+    const directory = createDefaultProviderDirectory([
+      {
+        id: "openrouter-primary",
+        type: "openrouter",
+        enabled: true,
+        credentialRef: "keychain://CMM%20Usage/openrouter-primary",
+        settings: { internal: "secretish" },
+      },
+    ]);
+    const catalog = new PresentationCatalogService(store, queries, directory, visibility);
+
+    const provider = (await catalog.listProviders()).find(
+      (entry) => entry.directory.integrationType === "openrouter",
+    );
+    expect(provider).toMatchObject({
+      directory: { state: "connected", connectedInstanceCount: 1 },
+      instanceIds: ["openrouter-primary"],
+    });
+    expect(JSON.stringify(provider)).not.toContain("credentialRef");
+    expect(JSON.stringify(provider)).not.toContain("secretish");
+  });
 });

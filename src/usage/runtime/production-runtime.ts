@@ -96,10 +96,11 @@ export async function createProductionUsageRuntime(
     throw error;
   }
   const visibility = new VisibilityStore(store);
+  const providerDirectory = createDefaultProviderDirectory(config.integrations);
   const presentationCatalog = new PresentationCatalogService(
     store,
     runtime.service.queries,
-    createDefaultProviderDirectory(config.integrations),
+    providerDirectory,
     visibility,
   );
   const managedConfigStore = demoFixture
@@ -113,6 +114,7 @@ export async function createProductionUsageRuntime(
     credentialWriter,
     runtime,
     visibility,
+    (updated) => providerDirectory.replaceDefinitions(updated.integrations),
   );
 
   return {

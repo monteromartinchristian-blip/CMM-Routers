@@ -142,17 +142,48 @@ const descriptors: readonly ProviderDescriptor[] = [
       pricingDiscovery: false,
     },
   },
+  {
+    integrationType: "openai-compatible",
+    displayName: "Custom Endpoint",
+    shortDescription: "Connect an OpenAI-compatible local or remote endpoint.",
+    category: "custom_endpoint",
+    connectionMethods: ["custom_endpoint"],
+    capabilities: {
+      modelDiscovery: true,
+      quotaDiscovery: false,
+      balanceDiscovery: false,
+      costDiscovery: false,
+      pricingDiscovery: false,
+    },
+  },
 ];
 
 export class ProviderDirectory {
-  private readonly entries: ProviderDirectoryEntry[];
+  private definitions: UsageIntegrationDefinition[];
 
   constructor(
     definitions: readonly UsageIntegrationDefinition[],
-    providerDescriptors: readonly ProviderDescriptor[] = descriptors,
+    private readonly providerDescriptors: readonly ProviderDescriptor[] = descriptors,
   ) {
-    this.entries = providerDescriptors.map((descriptor) => {
-      const instances = definitions.filter((definition) => definition.type === descriptor.integrationType);
+    this.definitions = [...definitions];
+  }
+
+  replaceDefinitions(definitions: readonly UsageIntegrationDefinition[]): void {
+    this.definitions = [...definitions];
+  }
+
+  instanceIds(integrationType: string): string[] {
+    return this.definitions
+      .filter((definition) => definition.type === integrationType)
+      .map((definition) => definition.id)
+      .sort();
+  }
+
+  list(): ProviderDirectoryEntry[] {
+    return this.providerDescriptors.map((descriptor) => {
+      const instances = this.definitions.filter(
+        (definition) => definition.type === descriptor.integrationType,
+      );
       const enabledCount = instances.filter((definition) => definition.enabled).length;
       return {
         ...descriptor,
@@ -162,16 +193,10 @@ export class ProviderDirectory {
             ? "disabled"
             : "connected",
         connectedInstanceCount: instances.length,
+        connectionMethods: [...descriptor.connectionMethods],
+        capabilities: { ...descriptor.capabilities },
       };
     });
-  }
-
-  list(): ProviderDirectoryEntry[] {
-    return this.entries.map((entry) => ({
-      ...entry,
-      connectionMethods: [...entry.connectionMethods],
-      capabilities: { ...entry.capabilities },
-    }));
   }
 
   get(integrationType: string): ProviderDirectoryEntry | undefined {

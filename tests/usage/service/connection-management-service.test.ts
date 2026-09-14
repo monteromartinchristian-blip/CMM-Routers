@@ -54,8 +54,15 @@ async function setup() {
   const runtime = new ConfiguredUsageRuntime(store, catalog);
   const configStore = new ManagedConfigStore(dir);
   const credentials = new MemoryCredentialWriter();
-  const service = new ConnectionManagementService(configStore, credentials, runtime);
-  return { dir, store, runtime, configStore, credentials, service, visibility: new VisibilityStore(store) };
+  const configChanges: string[][] = [];
+  const service = new ConnectionManagementService(
+    configStore,
+    credentials,
+    runtime,
+    undefined,
+    (config) => configChanges.push(config.integrations.map((entry) => entry.id)),
+  );
+  return { dir, store, runtime, configStore, credentials, service, visibility: new VisibilityStore(store), configChanges };
 }
 
 afterEach(async () => {
@@ -99,5 +106,20 @@ describe("ConnectionManagementService", () => {
     expect(runtime.adapters.isEnabled("openrouter-primary")).toBe(false);
     await service.enable("openrouter-primary");
     expect(runtime.adapters.isEnabled("openrouter-primary")).toBe(true);
+  });
+
+  it("notifies catalog presentation state after connection mutations", async () => {
+    const { service, configChanges } = await setup();
+    await service.connectWithApiKey("openrouter", "secret-value", { instanceId: "openrouter-primary" });
+    await service.disable("openrouter-primary");
+    await service.enable("openrouter-primary");
+    await service.disconnect("openrouter-primary");
+
+    expect(configChanges).toEqual([
+      ["openrouter-primary"],
+      ["openrouter-primary"],
+      ["openrouter-primary"],
+      [],
+    ]);
   });
 });

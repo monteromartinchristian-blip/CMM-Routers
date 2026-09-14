@@ -50,7 +50,7 @@ export class PresentationCatalogService {
   async listProviders(): Promise<CatalogProviderView[]> {
     return this.directory.list().map((entry) => ({
       directory: entry,
-      instanceIds: [],
+      instanceIds: this.directory.instanceIds(entry.integrationType),
     }));
   }
 

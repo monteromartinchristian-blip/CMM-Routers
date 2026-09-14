@@ -4,6 +4,7 @@ import type { VisibilityStore } from "../presentation/visibility-store.js";
 import type { ConfiguredUsageRuntime, UsageIntegrationDefinition } from "../runtime/configured-runtime.js";
 import type { CredentialWriter } from "../runtime/credential-writer.js";
 import type { ManagedConfigStore } from "../runtime/managed-config-store.js";
+import type { LoadedUsageRuntimeConfig } from "../runtime/config.js";
 
 export interface ConnectSecretOptions {
   instanceId?: string;
@@ -45,6 +46,7 @@ export class ConnectionManagementService {
     private readonly credentials: CredentialWriter,
     private readonly runtime: ConfiguredUsageRuntime,
     private readonly visibility?: VisibilityStore,
+    private readonly onConfigChanged?: (config: LoadedUsageRuntimeConfig) => void,
   ) {}
 
   private async replace(definition: UsageIntegrationDefinition): Promise<void> {
@@ -56,6 +58,7 @@ export class ConnectionManagementService {
       ],
     }));
     await this.runtime.applyConfig(config);
+    this.onConfigChanged?.(config);
   }
 
   private async connectSecret(
@@ -133,6 +136,7 @@ export class ConnectionManagementService {
     };
     await this.configStore.write(next);
     await this.runtime.applyConfig(next);
+    this.onConfigChanged?.(next);
     if (definition.credentialRef !== undefined) await this.credentials.remove(definition.credentialRef);
   }
 

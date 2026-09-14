@@ -70,4 +70,38 @@ describe("ProviderDirectory", () => {
     expect(JSON.stringify(entry)).not.toContain("baseUrl");
     expect(JSON.stringify(entry)).not.toContain("internalOnly");
   });
+
+  it("updates connected state and safe instance handles after runtime connection changes", () => {
+    const directory = createDefaultProviderDirectory([]);
+
+    expect(directory.instanceIds("openrouter")).toEqual([]);
+    directory.replaceDefinitions([
+      {
+        id: "openrouter-primary",
+        type: "openrouter",
+        enabled: true,
+        credentialRef: "keychain://CMM%20Usage/openrouter-primary",
+        settings: { baseUrl: "https://example.invalid", privateSetting: "do-not-expose" },
+      },
+    ]);
+
+    expect(directory.get("openrouter")).toMatchObject({ state: "connected", connectedInstanceCount: 1 });
+    expect(directory.instanceIds("openrouter")).toEqual(["openrouter-primary"]);
+    expect(JSON.stringify(directory.list())).not.toContain("credentialRef");
+    expect(JSON.stringify(directory.list())).not.toContain("privateSetting");
+
+    directory.replaceDefinitions([]);
+    expect(directory.get("openrouter")).toMatchObject({ state: "available", connectedInstanceCount: 0 });
+    expect(directory.instanceIds("openrouter")).toEqual([]);
+  });
+
+  it("includes generic OpenAI-compatible custom endpoints in the supported directory", () => {
+    const directory = createDefaultProviderDirectory([]);
+    expect(directory.get("openai-compatible")).toMatchObject({
+      displayName: "Custom Endpoint",
+      category: "custom_endpoint",
+      connectionMethods: ["custom_endpoint"],
+      state: "available",
+    });
+  });
 });
