@@ -137,6 +137,24 @@ export const KIRA_MANIFEST: ProviderManifest = openAiWaveManifest({
   toolCapability: "CHAT_ONLY",
 });
 
+/**
+ * NVIDIA NIM: OpenAI-compatible NVIDIA-hosted inference at the documented NIM
+ * API host. Discovery may expose the whole NVIDIA catalog, but the wave's
+ * initial routing scope is a single planned model whose exact provider model id
+ * is NOT deterministically known from repository evidence. The manifest
+ * therefore declares `activation: none`: discovered routes stay visible to an
+ * operator but are not routable until the exact id is confirmed in config
+ * (`providers.nvidia-nim.activation = { mode: "allowlist", models: ["<exact>"] }`).
+ */
+export const NVIDIA_NIM_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "nvidia-nim",
+  displayName: "NVIDIA NIM",
+  billingClass: "api",
+  baseUrl: "https://integrate.api.nvidia.com/v1",
+  secretEnv: "NVIDIA_NIM_API_KEY",
+  activation: { mode: "none", models: [] },
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -145,6 +163,7 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   OPENROUTER_MANIFEST,
   OPENCODE_ZEN_MANIFEST,
   KIRA_MANIFEST,
+  NVIDIA_NIM_MANIFEST,
 ];
 
 /**

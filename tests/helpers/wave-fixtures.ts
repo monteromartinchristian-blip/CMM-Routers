@@ -88,6 +88,7 @@ export function waveAdapter(
     secret?: string;
     timeoutMs?: number;
     baseUrl?: string;
+    activation?: ProviderManifest["activation"];
   } = {},
 ): OpenAiCompatibleAdapter {
   const manifest = providerWaveManifest(id);
@@ -97,6 +98,7 @@ export function waveAdapter(
   return new OpenAiCompatibleAdapter({
     manifest,
     baseUrl,
+    ...(options.activation !== undefined ? { activation: options.activation } : {}),
     client: new OpenAiCompatibleClient({
       baseUrl,
       secretEnv: manifest.auth.secretEnv,
