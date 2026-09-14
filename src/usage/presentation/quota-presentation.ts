@@ -59,6 +59,7 @@ export function projectQuotaSummary(input: ProjectQuotaSummaryInput): QuotaSumma
     displayName: bucket.displayName,
     metric: bucket.metric,
     unit: bucket.unit,
+    windowPolicy: bucket.windowPolicy,
     scope: quotaScope(bucket, input.affectedRouteIds),
     status: input.status,
     constraining: input.constraining,

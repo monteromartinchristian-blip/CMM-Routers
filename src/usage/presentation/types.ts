@@ -1,4 +1,4 @@
-import type { Confidence, Metric, QuotaStatus, Source } from "../domain/types.js";
+import type { Confidence, Metric, QuotaStatus, Source, WindowPolicy } from "../domain/types.js";
 
 export type AccessOfferKind = "FREE" | "PROMO" | "INCLUDED" | "TRIAL" | "PAYG" | "UNKNOWN";
 
@@ -26,6 +26,7 @@ export interface QuotaSummary {
   displayName: string;
   metric: Metric;
   unit: string;
+  windowPolicy: WindowPolicy;
   scope: QuotaScope;
   status: QuotaStatus;
   used?: number;

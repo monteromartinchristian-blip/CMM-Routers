@@ -141,6 +141,11 @@ public final class CMMUsageAPIClient {
         return response.data
     }
 
+    public func fetchCatalogQuotas() async throws -> [CatalogQuotaSummary] {
+        let response: UsageListResponse<CatalogQuotaSummary> = try await get("catalog/quotas")
+        return response.data
+    }
+
     public func fetchCatalogRoute(id: String) async throws -> CatalogRouteEntry {
         try await request("catalog/routes/\(pathSegment(id))", method: "GET", body: nil)
     }

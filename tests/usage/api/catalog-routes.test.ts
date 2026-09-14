@@ -135,6 +135,34 @@ describe("CMM Usage safe catalog API", () => {
     await server.close();
   });
 
+  it("returns every safe quota summary once, including unbound supplemental balances", async () => {
+    const { server } = await fixture();
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/usage/catalog/quotas",
+      headers: auth(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const serialized = response.body;
+    expect(serialized).not.toContain("credentialRef");
+    expect(serialized).not.toContain("keychain://");
+    const quotas = response.json().data as Array<{
+      bucketId: string;
+      constraining: boolean;
+      affectedRouteIds?: string[];
+      windowPolicy: { kind: string };
+    }>;
+    expect(quotas.filter((quota) => quota.bucketId === "bucket:openrouter:credits")).toHaveLength(1);
+    expect(quotas.find((quota) => quota.bucketId === "bucket:openrouter:credits")?.affectedRouteIds)
+      .toEqual(["route:openrouter:claude", "route:openrouter:qwen"]);
+    expect(quotas.find((quota) => quota.bucketId === "bucket:cc:free")).toMatchObject({
+      constraining: false,
+      windowPolicy: { kind: "none" },
+    });
+    await server.close();
+  });
+
   it("does not grant visibility mutation to the read-only usage credential", async () => {
     const { server } = await fixture();
     const response = await server.inject({

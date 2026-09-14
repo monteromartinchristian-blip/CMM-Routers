@@ -40,8 +40,13 @@ describe("PresentationCatalogService", () => {
     expect(percentageOnly).toMatchObject({
       usedFraction: 0.61,
       remainingFraction: 0.39,
+      windowPolicy: { kind: "provider_reported" },
     });
     expect(percentageOnly?.limit).toBeUndefined();
+    expect(quotas.find((quota) => quota.bucketId === "bucket:cc:five-hour")?.windowPolicy)
+      .toMatchObject({ kind: "rolling_duration", durationSeconds: 18_000 });
+    expect(quotas.find((quota) => quota.bucketId === "bucket:cc:free")?.windowPolicy)
+      .toEqual({ kind: "none" });
   });
 
   it("represents one shared pool once with all affected routes", async () => {

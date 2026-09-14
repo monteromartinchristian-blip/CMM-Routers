@@ -138,6 +138,8 @@ func testProviderPresentationContract() throws {
         UsageNavigationDestination.allCases.map(\.title) == ["Overview", "Quotas", "Models", "Providers", "Free & Promo", "History", "Costs", "Alerts", "Settings"],
         "primary navigation must use the frozen product destinations"
     )
+    try expect(ProviderDirectoryState.connected.displayName == "Connected", "connected provider state must have a friendly label")
+    try expect(ProviderDirectoryState.reauthRequired.displayName == "Reconnect", "reauth provider state must avoid raw enum vocabulary")
     try expect(ProviderCatalogPresenter.safeCredentialHint("sk-secret-value") == "Stored securely", "raw API keys must never become display hints")
     try expect(ProviderCatalogPresenter.safeCredentialHint("••••a4f1") == "••••a4f1", "safe masked hints should remain useful")
     try expect(ProviderCatalogPresenter.emptyStateDetail(for: .customEndpoints).contains("endpoint"), "empty provider states must remain actionable")
@@ -153,6 +155,17 @@ func testProviderPresentationContract() throws {
     let groups = ProviderCatalogPresenter.groups(for: .accounts, providers: providers)
     try expect(groups.connected.map(\.directory.integrationType) == ["chatgpt-subscription", "command-code"], "connected and degraded account providers must remain grouped as connected")
     try expect(groups.available.map(\.directory.integrationType) == ["claude-subscription"], "supported disconnected providers must remain visible")
+
+    let connectedRouteProvider = try JSONDecoder().decode(
+        CatalogRouteProvider.self,
+        from: Data(#"{"id":"provider:demo:chatgpt","displayName":"ChatGPT / Codex"}"#.utf8)
+    )
+    let disconnectedRouteProvider = try JSONDecoder().decode(
+        CatalogRouteProvider.self,
+        from: Data(#"{"id":"provider:demo:kira","displayName":"Kira AI"}"#.utf8)
+    )
+    try expect(ProviderCatalogPresenter.isConnected(connectedRouteProvider, among: providers), "promotion routes should recognize a connected provider")
+    try expect(!ProviderCatalogPresenter.isConnected(disconnectedRouteProvider, among: providers), "promotion routes without a connected provider must remain connectable opportunities")
 }
 
 func testModelCatalogPresentationContract() throws {
@@ -170,6 +183,34 @@ func testModelCatalogPresentationContract() throws {
     try expect(openRouter?.selectionState == .mixed, "provider groups must expose mixed visibility")
     try expect(ModelCatalogPresenter.filteredRoutes(routes, query: "Qwen", filter: .all).map(\.routeId) == ["openrouter-qwen"], "search must match friendly model names")
     try expect(ModelCatalogPresenter.pickerRoutes(routes).map(\.routeId) == ModelCatalogPresenter.visibleRoutes(routes).map(\.routeId), "picker and editor must share the same visible catalog")
+}
+
+func testQuotaPresentationContract() throws {
+    let json = #"""
+    {"data":[
+      {"bucketId":"percentage","displayName":"Weekly utilization","metric":{"kind":"percentage"},"unit":"fraction","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"p"},"status":"healthy","usedFraction":0.61,"remainingFraction":0.39,"constraining":false},
+      {"bucketId":"credits","displayName":"Monthly credits","metric":{"kind":"credits"},"unit":"credits","windowPolicy":{"kind":"billing_cycle","anchorDate":"2026-09-07","timezone":"UTC"},"scope":{"kind":"product","productId":"p"},"status":"healthy","remaining":35,"constraining":true,"affectedRouteIds":["r"]},
+      {"bucketId":"tokens","displayName":"Token pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"p"},"status":"warning","remaining":800000,"limit":2000000,"constraining":false,"affectedRouteIds":["r1","r2"]},
+      {"bucketId":"requests","displayName":"Daily requests","metric":{"kind":"requests"},"unit":"requests","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"r"},"status":"healthy","remaining":42,"limit":100,"constraining":false,"affectedRouteIds":["r"]},
+      {"bucketId":"currency","displayName":"Prepaid balance","metric":{"kind":"currency","currency":"USD"},"unit":"USD","windowPolicy":{"kind":"none"},"scope":{"kind":"shared_pool","productId":"p"},"status":"healthy","remaining":7.31,"constraining":false,"affectedRouteIds":["r1","r2"]},
+      {"bucketId":"native","displayName":"5-hour window","metric":{"kind":"provider_defined","providerKey":"window_units"},"unit":"provider units","windowPolicy":{"kind":"rolling_duration","durationSeconds":18000},"scope":{"kind":"product","productId":"p"},"status":"healthy","remaining":14,"limit":14,"constraining":true,"affectedRouteIds":["r"]},
+      {"bucketId":"supplemental","displayName":"Free credits","metric":{"kind":"credits"},"unit":"credits","windowPolicy":{"kind":"none"},"scope":{"kind":"product","productId":"p"},"status":"unknown","remaining":0,"constraining":false}
+    ]}
+    """#
+    let quotas = try JSONDecoder().decode(UsageListResponse<CatalogQuotaSummary>.self, from: Data(json.utf8)).data
+    try expect(quotas[0].primaryValueText == "61% used", "percentage-only quota must preserve provider percentage semantics")
+    try expect(quotas[1].primaryValueText == "35 credits remaining", "credits must remain credits")
+    try expect(quotas[2].primaryValueText == "800K tokens remaining", "token quotas need compact native units")
+    try expect(quotas[3].primaryValueText == "42 / 100 requests remaining", "request quotas need native numerator/denominator")
+    try expect(quotas[4].primaryValueText == "$7.31 balance remaining", "currency balance must remain currency")
+    try expect(quotas[5].primaryValueText == "14 / 14 provider units remaining", "provider-defined units must remain provider units")
+    try expect(abs((quotas[0].progressFraction ?? -1) - 0.61) < 0.0001, "provider-reported percentage may use its own native denominator")
+    try expect(quotas[1].progressFraction == nil, "absolute balance without a ceiling must not invent a percentage bar")
+    try expect(abs((quotas[2].progressFraction ?? -1) - 0.6) < 0.0001, "known token denominator should support real progress")
+    try expect(quotas[5].resetText == "Unknown reset", "rolling quota without provider reset instant must remain unknown")
+    try expect(quotas[6].resetText == "No reset", "non-resetting supplemental balance must say No reset")
+    try expect(quotas[6].isSupplementalBalance, "unbound non-resetting balance must be visually subordinate")
+    try expect(quotas.sortedForPresentation.first?.constraining == true && quotas.sortedForPresentation.last?.bucketId == "supplemental", "constraining quotas must lead and supplemental balances must trail")
 }
 
 final class MemoryCredentialStore: UsageCredentialStore {
@@ -261,6 +302,17 @@ func testCatalogReadsAndManagementMutationsUseSeparateCredentials() async throws
         return (response, Data(#"{"data":[]}"#.utf8))
     }
     _ = try await client.fetchCatalogProviders()
+
+    StubURLProtocol.handler = { request in
+        try expect(request.url?.path == "/v1/cmm/usage/catalog/quotas", "catalog quota reads must use the safe quota projection endpoint")
+        try expect(request.httpMethod == "GET", "catalog quota fetch must be GET")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer read-token", "catalog quota reads must use the read credential")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        let body = #"{"data":[{"bucketId":"bucket:demo","displayName":"5-hour window","metric":{"kind":"provider_defined","providerKey":"window_units"},"unit":"provider units","windowPolicy":{"kind":"rolling_duration","durationSeconds":18000},"scope":{"kind":"product","productId":"product:demo"},"status":"healthy","remaining":14,"limit":14,"constraining":true,"affectedRouteIds":["route:demo"]}]}"#
+        return (response, Data(body.utf8))
+    }
+    let quota = try await client.fetchCatalogQuotas().first
+    try expect(quota?.windowPolicy?.kind == "rolling_duration", "catalog quota window policy must decode without inference")
 
     StubURLProtocol.handler = { request in
         try expect(request.url?.path == "/v1/cmm/usage/catalog/visibility", "visibility mutation must use its privileged endpoint")
@@ -365,6 +417,7 @@ do {
     try testDemoCredentialModuleUsesOnlyPublicFixtureCredentials()
     try testProviderPresentationContract()
     try testModelCatalogPresentationContract()
+    try testQuotaPresentationContract()
     try await testReadOnlyAPIClient()
     try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()
     try await testDashboardFetchAndSafePresentation()

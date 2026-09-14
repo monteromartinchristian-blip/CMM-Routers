@@ -9,6 +9,7 @@ final class UsageAppModel: ObservableObject {
     @Published private(set) var dashboard: UsageDashboardSnapshot?
     @Published private(set) var catalogProviders: [CatalogProviderView] = []
     @Published private(set) var catalogRoutes: [CatalogRouteEntry] = []
+    @Published private(set) var catalogQuotas: [CatalogQuotaSummary] = []
     @Published private(set) var promotions: [CatalogRouteEntry] = []
     @Published private(set) var visibilityPreferences: [CatalogVisibilityPreference] = []
     @Published private(set) var isLoading = false
@@ -49,12 +50,14 @@ final class UsageAppModel: ObservableObject {
             let nextDashboard = try await client.fetchDashboard()
             let nextProviders = try await client.fetchCatalogProviders()
             let nextRoutes = try await client.fetchCatalogRoutes()
+            let nextQuotas = try await client.fetchCatalogQuotas()
             let nextPromotions = try await client.fetchPromotions()
             let nextVisibility = try await client.fetchVisibility()
 
             dashboard = nextDashboard
             catalogProviders = nextProviders
             catalogRoutes = nextRoutes
+            catalogQuotas = nextQuotas
             promotions = nextPromotions
             visibilityPreferences = nextVisibility
             lastUpdated = Date()
@@ -76,11 +79,13 @@ final class UsageAppModel: ObservableObject {
             let nextDashboard = try await client.fetchDashboard()
             let nextProviders = try await client.fetchCatalogProviders()
             let nextRoutes = try await client.fetchCatalogRoutes()
+            let nextQuotas = try await client.fetchCatalogQuotas()
             let nextPromotions = try await client.fetchPromotions()
             let nextVisibility = try await client.fetchVisibility()
             dashboard = nextDashboard
             catalogProviders = nextProviders
             catalogRoutes = nextRoutes
+            catalogQuotas = nextQuotas
             promotions = nextPromotions
             visibilityPreferences = nextVisibility
             lastUpdated = Date()
@@ -124,6 +129,7 @@ final class UsageAppModel: ObservableObject {
         dashboard = nil
         catalogProviders = []
         catalogRoutes = []
+        catalogQuotas = []
         promotions = []
         visibilityPreferences = []
         errorMessage = nil
@@ -248,6 +254,7 @@ final class UsageAppModel: ObservableObject {
             let client = try makeClient()
             catalogProviders = try await client.fetchCatalogProviders()
             catalogRoutes = try await client.fetchCatalogRoutes()
+            catalogQuotas = try await client.fetchCatalogQuotas()
             promotions = try await client.fetchPromotions()
             visibilityPreferences = try await client.fetchVisibility()
             dashboard = try await client.fetchDashboard()

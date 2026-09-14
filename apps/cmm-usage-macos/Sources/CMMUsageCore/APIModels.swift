@@ -155,6 +155,7 @@ public struct CatalogQuotaSummary: Decodable, Sendable, Identifiable {
     public let displayName: String
     public let metric: UsageMetric
     public let unit: String
+    public let windowPolicy: UsageWindowPolicy?
     public let scope: CatalogQuotaScope
     public let status: UsageStatus
     public let used: Double?

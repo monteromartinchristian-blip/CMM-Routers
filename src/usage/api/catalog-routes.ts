@@ -20,6 +20,10 @@ export function registerCatalogRoutes(
     redactObject({ data: await catalog.listRoutes() }),
   );
 
+  fastify.get("/v1/cmm/usage/catalog/quotas", async () =>
+    redactObject({ data: await catalog.listQuotaSummaries() }),
+  );
+
   fastify.get<{ Params: RouteParams }>("/v1/cmm/usage/catalog/routes/:id", async (request, reply) => {
     const route = await catalog.getRoute(request.params.id);
     if (route === undefined) {

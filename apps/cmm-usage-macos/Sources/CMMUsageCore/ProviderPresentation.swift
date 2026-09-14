@@ -55,6 +55,13 @@ public struct ProviderPresentationGroups: Sendable {
 }
 
 public enum ProviderCatalogPresenter {
+    private static let connectedStates: Set<ProviderDirectoryState> = [
+        .connected,
+        .connecting,
+        .degraded,
+        .reauthRequired,
+    ]
+
     public static func groups(
         for section: ProviderSettingsSection,
         providers: [CatalogProviderView]
@@ -73,16 +80,23 @@ public enum ProviderCatalogPresenter {
         let sorted = matching.sorted {
             $0.directory.displayName.localizedCaseInsensitiveCompare($1.directory.displayName) == .orderedAscending
         }
-        let connectedStates: Set<ProviderDirectoryState> = [
-            .connected,
-            .connecting,
-            .degraded,
-            .reauthRequired,
-        ]
         return ProviderPresentationGroups(
             connected: sorted.filter { connectedStates.contains($0.directory.state) },
             available: sorted.filter { !connectedStates.contains($0.directory.state) }
         )
+    }
+
+    public static func isConnected(
+        _ routeProvider: CatalogRouteProvider,
+        among providers: [CatalogProviderView]
+    ) -> Bool {
+        providers.contains { provider in
+            guard connectedStates.contains(provider.directory.state) else { return false }
+            let integrationType = provider.directory.integrationType
+            return routeProvider.displayName == provider.directory.displayName
+                || routeProvider.id == integrationType
+                || routeProvider.id.hasSuffix(":\(integrationType)")
+        }
     }
 
     public static func safeCredentialHint(_ hint: String?) -> String {
