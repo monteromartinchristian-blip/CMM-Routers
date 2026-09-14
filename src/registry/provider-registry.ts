@@ -17,6 +17,15 @@ export class ProviderRegistry {
     return this.providers.get(providerId);
   }
 
+  /**
+   * Registered provider route ids in registration order. Identity comes from
+   * the runtime registry (what is actually routable), never from a separate
+   * inventory list.
+   */
+  listProviderIds(): string[] {
+    return [...this.providers.keys()];
+  }
+
   async register(adapter: ProviderAdapter): Promise<void> {
     this.providers.set(adapter.id, adapter);
   }

@@ -1,7 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
 import type { UsageStore } from "../observability/usage-store.js";
+import type { ProviderId } from "../core/model.js";
+import { providerInventory } from "../providers/manifests.js";
 import { redactObject } from "../security/secret-redaction.js";
+
+/** Billing/identity metadata for a registered route, when it is a wave provider. */
+function billingMetadataFor(providerId: string) {
+  return providerInventory().find((entry) => entry.providerId === (providerId as ProviderId));
+}
 
 export function registerDiagnostics(
   fastify: FastifyInstance,
@@ -10,13 +17,29 @@ export function registerDiagnostics(
 ): void {
   fastify.get("/v1/cmm/providers", async () => {
     const models = registry.listModels();
-    const providers = new Set(models.map((m) => m.provider));
 
     return redactObject({
-      providers: Array.from(providers).map((id) => ({
-        id,
-        modelCount: models.filter((m) => m.provider === id).length,
-      })),
+      // Registered routes come from the runtime registry; billing class,
+      // credential namespace, tool capability and activation scope are
+      // PROJECTED from the single manifest catalog. No credit or balance figure
+      // is claimed: the router reports routability (catalog + activation), and
+      // money state lives in the provider's own billing surface.
+      providers: registry.listProviderIds().map((id) => {
+        const billing = billingMetadataFor(id);
+        return {
+          id,
+          modelCount: models.filter((model) => model.provider === id).length,
+          ...(billing === undefined
+            ? {}
+            : {
+                displayName: billing.displayName,
+                billingClass: billing.billingClass,
+                credentialEnv: billing.credentialEnv,
+                toolCapability: billing.toolCapability,
+                activationMode: billing.activationMode,
+              }),
+        };
+      }),
     });
   });
 
@@ -58,6 +81,9 @@ export function registerDiagnostics(
       averageLatencyMs: aggregates.averageLatencyMs,
       lastSuccessAt: aggregates.lastSuccessAt,
       quotaEvents: aggregates.quotaEvents,
+      // Account-state blocks are reported separately from spent-allowance
+      // (quota) and rate-limit events: only settlement clears a block.
+      billingBlockedEvents: aggregates.billingBlockedEvents,
       rateLimitEvents: aggregates.rateLimitEvents,
       timeoutEvents: aggregates.timeoutEvents,
       cancelledEvents: aggregates.cancelledEvents,

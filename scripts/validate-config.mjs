@@ -148,6 +148,35 @@ async function main() {
   emit(`AGY_PATH=${providers.google.agyPath ?? ""}`);
   emit(`COMMAND_CODE_SECRET_ENV=${providers["command-code"].secretEnv}`);
   emit(`CAVOTI_SECRET_ENV=${providers.cavoti.secretEnv}`);
+
+  // Approved provider wave. Status-safe: enabled flags, credential NAMES,
+  // configured base URLs and activation scope only. Secret VALUES are never
+  // read, printed or logged by this script.
+  const WAVE_PROVIDER_IDS = [
+    "qwen-token-plan",
+    "qwen-cloud",
+    "deepseek",
+    "kira",
+    "openrouter",
+    "opencode-zen",
+    "nvidia-nim",
+    "vikey",
+    "cline",
+    "ollama-cloud",
+  ];
+  emit(`WAVE_PROVIDER_COUNT=${WAVE_PROVIDER_IDS.length}`);
+  let waveEnabled = 0;
+  for (const id of WAVE_PROVIDER_IDS) {
+    const entry = providers[id] ?? {};
+    const prefix = `WAVE_${id.toUpperCase().replace(/-/g, "_")}`;
+    const enabled = entry.enabled === true;
+    if (enabled) waveEnabled += 1;
+    emit(`${prefix}_ENABLED=${enabled ? "1" : "0"}`);
+    emit(`${prefix}_SECRET_ENV=${entry.secretEnv ?? ""}`);
+    emit(`${prefix}_BASE_URL=${entry.baseUrl ?? ""}`);
+    emit(`${prefix}_ACTIVATION=${entry.activation?.mode ?? "manifest"}`);
+  }
+  emit(`WAVE_PROVIDERS_ENABLED=${waveEnabled}`);
   return 0;
 }
 

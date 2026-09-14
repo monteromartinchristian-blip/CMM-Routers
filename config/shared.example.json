@@ -22,6 +22,46 @@
       "baseUrl": "https://cavoti.com/v1",
       "secretEnv": "CAVOTI_API_KEY",
       "model": "deepseek-v4.1-flash"
+    },
+    "qwen-token-plan": {
+      "enabled": false,
+      "secretEnv": "QWEN_TOKEN_PLAN_API_KEY"
+    },
+    "qwen-cloud": {
+      "enabled": false,
+      "secretEnv": "QWEN_CLOUD_API_KEY"
+    },
+    "deepseek": {
+      "enabled": false,
+      "secretEnv": "DEEPSEEK_API_KEY"
+    },
+    "kira": {
+      "enabled": false,
+      "secretEnv": "KIRA_API_KEY"
+    },
+    "openrouter": {
+      "enabled": false,
+      "secretEnv": "OPENROUTER_API_KEY"
+    },
+    "opencode-zen": {
+      "enabled": false,
+      "secretEnv": "OPENCODE_ZEN_API_KEY"
+    },
+    "nvidia-nim": {
+      "enabled": false,
+      "secretEnv": "NVIDIA_NIM_API_KEY"
+    },
+    "vikey": {
+      "enabled": false,
+      "secretEnv": "VIKEY_API_KEY"
+    },
+    "cline": {
+      "enabled": false,
+      "secretEnv": "CLINE_API_KEY"
+    },
+    "ollama-cloud": {
+      "enabled": false,
+      "secretEnv": "OLLAMA_CLOUD_API_KEY"
     }
   }
 }

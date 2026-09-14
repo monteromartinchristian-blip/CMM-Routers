@@ -267,6 +267,33 @@ export const PROVIDER_WAVE_MANIFESTS: readonly ProviderManifest[] = [
 /** Subscription bridges: present and unchanged, not part of the HTTP wave. */
 export const SUBSCRIPTION_BRIDGE_IDS = ["chatgpt", "claude", "google"] as const;
 
+/**
+ * Billing/identity metadata for one approved provider route, derived from the
+ * manifest catalog. This is a PROJECTION of `PROVIDER_WAVE_MANIFESTS`, never a
+ * second provider list: adding a manifest is the only way to add an entry, and
+ * the router keeps one catalog of provider truth.
+ */
+export interface ProviderInventoryEntry {
+  providerId: ProviderId;
+  displayName: string;
+  billingClass: ProviderManifest["billingClass"];
+  /** Credential NAMESPACE (environment variable name), never a value. */
+  credentialEnv: string;
+  toolCapability: ProviderManifest["toolCapability"];
+  activationMode: ProviderManifest["activation"]["mode"];
+}
+
+export function providerInventory(): ProviderInventoryEntry[] {
+  return PROVIDER_WAVE_MANIFESTS.map((manifest) => ({
+    providerId: manifest.id,
+    displayName: manifest.displayName,
+    billingClass: manifest.billingClass,
+    credentialEnv: manifest.auth.secretEnv,
+    toolCapability: manifest.toolCapability,
+    activationMode: manifest.activation.mode,
+  }));
+}
+
 export function providerWaveManifest(id: ProviderId): ProviderManifest {
   const found = PROVIDER_WAVE_MANIFESTS.find((manifest) => manifest.id === id);
   if (found === undefined) {
