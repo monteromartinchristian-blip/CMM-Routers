@@ -192,6 +192,33 @@ export const CAVOTI_MANIFEST: ProviderManifest = defineProviderManifest({
   activation: { mode: "allowlist", models: [CAVOTI_PINNED_MODEL] },
 });
 
+/**
+ * Cline API / ClinePass: the subscription/credit API behind the Cline product,
+ * treated as its own API provider. It is NOT the promotional IDE/CLI free-model
+ * offering, so only the account's own `GET /models` catalog is exposed.
+ */
+export const CLINE_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "cline",
+  displayName: "Cline API / ClinePass",
+  billingClass: "payg",
+  baseUrl: "https://api.cline.bot/api/v1",
+  secretEnv: "CLINE_API_KEY",
+});
+
+/**
+ * Ollama Cloud: the hosted Ollama API, not a local runtime. A cloud provider
+ * route with API-key auth and its own credential namespace; the router adds no
+ * local-runtime support, no loopback base URL and no local-runtime environment
+ * variable handling.
+ */
+export const OLLAMA_CLOUD_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "ollama-cloud",
+  displayName: "Ollama Cloud",
+  billingClass: "payg",
+  baseUrl: "https://ollama.com/v1",
+  secretEnv: "OLLAMA_CLOUD_API_KEY",
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -202,6 +229,8 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   KIRA_MANIFEST,
   NVIDIA_NIM_MANIFEST,
   VIKEY_MANIFEST,
+  CLINE_MANIFEST,
+  OLLAMA_CLOUD_MANIFEST,
 ];
 
 /**
