@@ -69,6 +69,70 @@ func testProviderPressureDecoding() throws {
     try expect(response.data.first?.pressure.routes.first?.primaryConstraint?.remainingFraction == 0.08, "primary quota should remain independent")
 }
 
+func testCatalogDecodingContract() throws {
+    let offerKinds = ["FREE", "PROMO", "INCLUDED", "TRIAL", "PAYG", "UNKNOWN"]
+    let routes = offerKinds.enumerated().map { index, offer in
+        """
+        {
+          "routeId":"route:\(index)",
+          "provider":{"id":"provider:demo","displayName":"Demo"},
+          "product":{"id":"product:demo","displayName":"Demo","category":"api"},
+          "model":{"id":"model:\(index)","displayName":"Model \(index)"},
+          "offer":{"kind":"\(offer)"},
+          "quota":\(index == 0 ? """
+          [
+            {
+              "bucketId":"bucket:shared",
+              "displayName":"Shared pool",
+              "metric":{"kind":"currency","currency":"USD"},
+              "unit":"USD",
+              "scope":{"kind":"shared_pool","productId":"product:demo"},
+              "status":"healthy",
+              "remaining":7.31,
+              "constraining":false,
+              "stale":false,
+              "affectedRouteIds":["route:0","route:1"]
+            },
+            {
+              "bucketId":"bucket:native",
+              "displayName":"Provider units",
+              "metric":{"kind":"provider_defined","providerKey":"window_units"},
+              "unit":"provider units",
+              "scope":{"kind":"product","productId":"product:demo"},
+              "status":"unknown",
+              "constraining":false,
+              "stale":true,
+              "affectedRouteIds":["route:0"]
+            }
+          ]
+          """ : "[]"),
+          "availability":"available",
+          "visibility":"visible"
+        }
+        """
+    }.joined(separator: ",")
+    let response = try JSONDecoder().decode(
+        UsageListResponse<CatalogRouteEntry>.self,
+        from: Data("{\"data\":[\(routes)]}".utf8)
+    )
+
+    try expect(Set(response.data.map(\.offer.kind)) == Set(AccessOfferKind.allCases), "all six offer kinds must decode")
+    guard let shared = response.data.first?.quota.first(where: { $0.scope.kind == .sharedPool }) else {
+        throw ContractFailure.expected("shared pool must decode")
+    }
+    try expect(shared.affectedRouteIds == ["route:0", "route:1"], "shared pool must retain affected route ids")
+    try expect(shared.limit == nil && shared.resetAt == nil, "unknown quota limit/reset must stay optional")
+    try expect(response.data.first?.quota.last?.metric.kind == "provider_defined", "provider-native metrics must stay distinct")
+}
+
+func testDemoCredentialModuleUsesOnlyPublicFixtureCredentials() throws {
+    let stores = CMMUsageModule.credentialStores(environment: [CMMUsageModule.demoFixtureEnvironmentKey: "1"])
+    let readToken = try stores.read.readToken()
+    let managementToken = try stores.management.readToken()
+    try expect(readToken == CMMUsageModule.demoReadToken, "demo read credential must be public fixture data")
+    try expect(managementToken == CMMUsageModule.demoManagementToken, "demo management credential must be separate public fixture data")
+}
+
 final class MemoryCredentialStore: UsageCredentialStore {
     var token: String?
 
@@ -135,6 +199,40 @@ func testReadOnlyAPIClient() async throws {
         return (response, Data("[]".utf8))
     }
     _ = try await client.refreshAll()
+}
+
+func testCatalogReadsAndManagementMutationsUseSeparateCredentials() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let readCredentials = MemoryCredentialStore(token: "read-token")
+    let managementCredentials = MemoryCredentialStore(token: "management-token")
+    let client = CMMUsageAPIClient(
+        baseURL: URL(string: "http://127.0.0.1:8790")!,
+        credentialStore: readCredentials,
+        managementCredentialStore: managementCredentials,
+        session: session
+    )
+
+    StubURLProtocol.handler = { request in
+        try expect(request.url?.path == "/v1/cmm/usage/catalog/providers", "catalog provider reads must use the safe catalog endpoint")
+        try expect(request.httpMethod == "GET", "catalog provider fetch must be GET")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer read-token", "catalog reads must use the read credential")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        return (response, Data(#"{"data":[]}"#.utf8))
+    }
+    _ = try await client.fetchCatalogProviders()
+
+    StubURLProtocol.handler = { request in
+        try expect(request.url?.path == "/v1/cmm/usage/catalog/visibility", "visibility mutation must use its privileged endpoint")
+        try expect(request.httpMethod == "PATCH", "visibility mutation must be PATCH")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer management-token", "mutations must use the management credential")
+        try expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json", "visibility mutation body must be JSON")
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        return (response, Data(#"{"routeId":"route:demo","state":"hidden"}"#.utf8))
+    }
+    let visibility = try await client.setRouteVisibility(routeId: "route:demo", state: .hidden)
+    try expect(visibility.state == .hidden, "visibility mutation response should decode")
 }
 
 func testDashboardFetchAndSafePresentation() async throws {
@@ -224,7 +322,10 @@ func testNoResetPresentation() throws {
 
 do {
     try testProviderPressureDecoding()
+    try testCatalogDecodingContract()
+    try testDemoCredentialModuleUsesOnlyPublicFixtureCredentials()
     try await testReadOnlyAPIClient()
+    try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()
     try await testDashboardFetchAndSafePresentation()
     try await testClientRejectsNonLoopbackBaseURL()
     try testUnknownRollingResetPresentation()

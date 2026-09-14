@@ -160,4 +160,102 @@ final class UsageDecodingTests: XCTestCase {
         XCTAssertEqual(response.data.first?.billingAmount, 20)
         XCTAssertEqual(response.data.first?.billingCurrency, "USD")
     }
+
+    func testDecodesCatalogOffersNativeQuotasUnknownsAndSharedPool() throws {
+        let offers = ["FREE", "PROMO", "INCLUDED", "TRIAL", "PAYG", "UNKNOWN"]
+        let routes = offers.enumerated().map { index, offer in
+            """
+            {
+              "routeId": "route:\(index)",
+              "provider": { "id": "provider:demo", "displayName": "Demo" },
+              "product": { "id": "product:demo", "displayName": "Demo Plan", "category": "subscription" },
+              "model": { "id": "model:\(index)", "displayName": "Model \(index)" },
+              "offer": { "kind": "\(offer)", "source": "provider_official_api", "confidence": "exact" },
+              "quota": \(index == 0 ? """
+                [
+                  {
+                    "bucketId": "bucket:credits",
+                    "displayName": "Credits",
+                    "metric": { "kind": "credits" },
+                    "unit": "credits",
+                    "scope": { "kind": "product", "productId": "product:demo" },
+                    "status": "healthy",
+                    "remaining": 35,
+                    "constraining": true,
+                    "source": "provider_official_api",
+                    "confidence": "exact",
+                    "stale": false,
+                    "affectedRouteIds": ["route:0"]
+                  },
+                  {
+                    "bucketId": "bucket:shared",
+                    "displayName": "Shared pool",
+                    "metric": { "kind": "currency", "currency": "USD" },
+                    "unit": "USD",
+                    "scope": { "kind": "shared_pool", "productId": "product:demo" },
+                    "status": "healthy",
+                    "remaining": 7.31,
+                    "constraining": false,
+                    "source": "provider_official_api",
+                    "confidence": "exact",
+                    "stale": false,
+                    "affectedRouteIds": ["route:0", "route:1"]
+                  },
+                  {
+                    "bucketId": "bucket:tokens",
+                    "displayName": "Tokens",
+                    "metric": { "kind": "tokens" },
+                    "unit": "tokens",
+                    "scope": { "kind": "route", "routeId": "route:0" },
+                    "status": "healthy",
+                    "remaining": 800000,
+                    "limit": 2000000,
+                    "constraining": false,
+                    "stale": false,
+                    "affectedRouteIds": ["route:0"]
+                  },
+                  {
+                    "bucketId": "bucket:requests",
+                    "displayName": "Requests",
+                    "metric": { "kind": "requests" },
+                    "unit": "requests",
+                    "scope": { "kind": "route", "routeId": "route:0" },
+                    "status": "healthy",
+                    "remaining": 42,
+                    "limit": 100,
+                    "constraining": false,
+                    "stale": false,
+                    "affectedRouteIds": ["route:0"]
+                  },
+                  {
+                    "bucketId": "bucket:native",
+                    "displayName": "Provider units",
+                    "metric": { "kind": "provider_defined", "providerKey": "window_units" },
+                    "unit": "provider units",
+                    "scope": { "kind": "product", "productId": "product:demo" },
+                    "status": "unknown",
+                    "constraining": false,
+                    "stale": true,
+                    "affectedRouteIds": ["route:0"]
+                  }
+                ]
+              """ : "[]"),
+              "availability": "available",
+              "visibility": "visible"
+            }
+            """
+        }.joined(separator: ",")
+        let json = "{\"data\":[\(routes)]}"
+
+        let response = try decoder.decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(json.utf8))
+
+        XCTAssertEqual(Set(response.data.map(\.offer.kind)), Set(AccessOfferKind.allCases))
+        let first = try XCTUnwrap(response.data.first)
+        XCTAssertEqual(Set(first.quota.map(\.metric.kind)), Set(["credits", "currency", "tokens", "requests", "provider_defined"]))
+        let shared = try XCTUnwrap(first.quota.first { $0.scope.kind == .sharedPool })
+        XCTAssertEqual(shared.affectedRouteIds, ["route:0", "route:1"])
+        XCTAssertNil(shared.limit)
+        XCTAssertNil(shared.resetAt)
+        XCTAssertFalse(Mirror(reflecting: first).children.compactMap(\.label).contains("credentialRef"))
+    }
 }

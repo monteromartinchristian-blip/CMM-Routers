@@ -7,6 +7,46 @@ public protocol UsageCredentialStore: AnyObject {
     func deleteToken() throws
 }
 
+public extension UsageCredentialStore {
+    func readTokenOffMainThread() async throws -> String? {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try self.readToken())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func saveTokenOffMainThread(_ token: String) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try self.saveToken(token)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func deleteTokenOffMainThread() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try self.deleteToken()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
 public enum UsageCredentialStoreError: Error, LocalizedError {
     case unexpectedStatus(OSStatus)
     case invalidStoredValue
@@ -23,7 +63,9 @@ public enum UsageCredentialStoreError: Error, LocalizedError {
 
 public final class KeychainUsageCredentialStore: UsageCredentialStore {
     public static let defaultService = "CMM Usage"
-    public static let defaultAccount = "local-api"
+    public static let defaultReadAccount = "local-api"
+    public static let defaultManagementAccount = "local-management-api"
+    public static let defaultAccount = defaultReadAccount
 
     private let service: String
     private let account: String
@@ -85,5 +127,32 @@ public final class KeychainUsageCredentialStore: UsageCredentialStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+    }
+}
+
+public final class MemoryUsageCredentialStore: UsageCredentialStore {
+    private let lock = NSLock()
+    private var token: String?
+
+    public init(token: String? = nil) {
+        self.token = token
+    }
+
+    public func readToken() throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return token
+    }
+
+    public func saveToken(_ token: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.token = token
+    }
+
+    public func deleteToken() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        token = nil
     }
 }

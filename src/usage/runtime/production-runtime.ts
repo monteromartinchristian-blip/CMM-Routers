@@ -18,6 +18,15 @@ import {
   type CredentialWriter,
 } from "./credential-writer.js";
 import { ConnectionManagementService } from "../service/connection-management-service.js";
+import {
+  PUBLIC_SAFE_DEMO_CONFIG,
+  PUBLIC_SAFE_DEMO_MANAGEMENT_TOKEN,
+  PUBLIC_SAFE_DEMO_READ_TOKEN,
+  PublicSafeDemoCredentialWriter,
+  PublicSafeDemoManagedConfigStore,
+  createPublicSafeDemoIntegrationCatalog,
+  seedPublicSafeCatalogFixture,
+} from "../demo/public-safe-catalog-fixture.js";
 
 export interface ProductionUsageRuntimeOptions {
   configDir?: string;
@@ -55,17 +64,33 @@ export function defaultUsageDatabasePath(): string {
 export async function createProductionUsageRuntime(
   options: ProductionUsageRuntimeOptions = {},
 ): Promise<ProductionUsageRuntime> {
-  const config = loadUsageRuntimeConfig(options.configDir);
+  const demoFixture = process.env.CMM_USAGE_DEMO_FIXTURE === "1";
+  const config = demoFixture ? PUBLIC_SAFE_DEMO_CONFIG : loadUsageRuntimeConfig(options.configDir);
   const store = new SqliteUsageStore(
-    options.databasePath ?? config.databasePath ?? defaultUsageDatabasePath(),
+    demoFixture
+      ? ":memory:"
+      : options.databasePath ?? config.databasePath ?? defaultUsageDatabasePath(),
   );
   await store.initialize();
 
-  const resolver = options.credentialResolver ?? new LocalSecureCredentialResolver();
-  const catalog = options.catalog ?? createDefaultUsageIntegrationCatalog(resolver);
+  const resolver: SecureCredentialResolver = demoFixture
+    ? {
+        resolve(reference: string) {
+          if (reference === PUBLIC_SAFE_DEMO_CONFIG.apiCredentialRef) return PUBLIC_SAFE_DEMO_READ_TOKEN;
+          if (reference === PUBLIC_SAFE_DEMO_CONFIG.managementApiCredentialRef) {
+            return PUBLIC_SAFE_DEMO_MANAGEMENT_TOKEN;
+          }
+          return undefined;
+        },
+      }
+    : options.credentialResolver ?? new LocalSecureCredentialResolver();
+  const catalog = demoFixture
+    ? createPublicSafeDemoIntegrationCatalog()
+    : options.catalog ?? createDefaultUsageIntegrationCatalog(resolver);
   const runtime = new ConfiguredUsageRuntime(store, catalog, options.service);
   try {
     await runtime.applyConfig(config);
+    if (demoFixture) await seedPublicSafeCatalogFixture(store);
   } catch (error) {
     await store.close();
     throw error;
@@ -77,8 +102,12 @@ export async function createProductionUsageRuntime(
     createDefaultProviderDirectory(config.integrations),
     visibility,
   );
-  const managedConfigStore = options.managedConfigStore ?? new ManagedConfigStore(options.configDir);
-  const credentialWriter = options.credentialWriter ?? new LocalSecureCredentialWriter();
+  const managedConfigStore = demoFixture
+    ? new PublicSafeDemoManagedConfigStore(config)
+    : options.managedConfigStore ?? new ManagedConfigStore(options.configDir);
+  const credentialWriter = demoFixture
+    ? new PublicSafeDemoCredentialWriter()
+    : options.credentialWriter ?? new LocalSecureCredentialWriter();
   const connections = new ConnectionManagementService(
     managedConfigStore,
     credentialWriter,
