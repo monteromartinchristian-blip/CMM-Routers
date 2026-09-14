@@ -219,6 +219,26 @@ export const OLLAMA_CLOUD_MANIFEST: ProviderManifest = openAiWaveManifest({
   secretEnv: "OLLAMA_CLOUD_API_KEY",
 });
 
+/**
+ * Command Code (GOAT plan): keeps its dedicated adapter, which is justified by
+ * demonstrated provider differences rather than style — two upstream wires
+ * (OpenAI Chat plus Anthropic Messages), a machine-local spend acknowledgement,
+ * and plan-entitlement metadata on the catalog. The manifest records the same
+ * identity/billing/credential facts the runtime uses; the base URL default is
+ * unchanged (config may override it) per the wave ledger ruling R8.
+ */
+export const COMMAND_CODE_MANIFEST: ProviderManifest = defineProviderManifest({
+  id: "command-code",
+  displayName: "Command Code",
+  billingClass: "subscription",
+  baseUrl: "https://api.commandcode.ai/provider/v1",
+  auth: { scheme: "bearer", secretEnv: "COMMAND_CODE_SECRET" },
+  discovery: { method: "GET", path: "/models" },
+  apiStyles: ["openai-chat-completions", "anthropic-messages"],
+  toolCapability: "CHAT_AND_TOOLS",
+  activation: { mode: "all", models: [] },
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -240,6 +260,7 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
  */
 export const PROVIDER_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   ...GENERIC_WAVE_MANIFESTS,
+  COMMAND_CODE_MANIFEST,
   CAVOTI_MANIFEST,
 ];
 
