@@ -15,6 +15,15 @@ const projectRoot = resolve(import.meta.dirname, "../..");
 const pushScript = join(projectRoot, "scripts/publication/push-publication.sh");
 const roots: string[] = [];
 
+/**
+ * The wrapper cases below install a `git` shim and therefore pay for extra
+ * subprocess spawns on top of the git fixture (measured 2.6s serial against a
+ * 5000 ms default) and they run inside nested publication verification, where
+ * they failed on the default budget before. The budget is widened; no
+ * assertion is relaxed.
+ */
+const GIT_WRAPPER_TEST_TIMEOUT_MS = 60_000;
+
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, {
     cwd,
@@ -214,7 +223,7 @@ describe("push-publication", () => {
     expect(remoteHead(fixture.remote)).toBe(fixture.predecessor);
   });
 
-  it("treats a push command error as success only when remote already reached expected head", async () => {
+  it("treats a push command error as success only when remote already reached expected head", { timeout: GIT_WRAPPER_TEST_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makePreparedPublic(root);
     const wrapper = join(root, "wrapper");
@@ -262,7 +271,7 @@ exec "$REAL_GIT" "$@"
     expect((await readFile(countFile, "utf8")).trim()).toBe("1");
   });
 
-  it("never retries an errored push when the remote did not change", async () => {
+  it("never retries an errored push when the remote did not change", { timeout: GIT_WRAPPER_TEST_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makePreparedPublic(root);
     const wrapper = join(root, "wrapper");

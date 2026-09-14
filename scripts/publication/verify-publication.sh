@@ -99,7 +99,9 @@ echo "PUBLIC_FRESH_CLONE_PRIVACY_SCAN=PASS"
   npm run build
   echo "PUBLIC_FRESH_CLONE_BUILD=PASS"
 
-  CMM_ROUTERS_PUBLICATION_FRESH_CLONE_VERIFY=1 npx vitest run
+  # Deterministic serial verification: same shared command as
+  # prepare-publication.sh so both publication flows verify identically.
+  CMM_ROUTERS_PUBLICATION_FRESH_CLONE_VERIFY=1 npm run test:serial
   echo "PUBLIC_FRESH_CLONE_TESTS=PASS"
 
   npm run typecheck

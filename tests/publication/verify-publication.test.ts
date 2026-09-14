@@ -10,7 +10,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { acquirePublicationMetaTestLock } from "./meta-test-lock.js";
+import {
+  acquirePublicationMetaTestLock,
+  PUBLICATION_META_TEST_LOCK_WAIT_MS,
+} from "./meta-test-lock.js";
+import { SERIAL_NESTED_VERIFICATION_BUDGET_MS } from "./publication-budgets.js";
 const projectRoot = resolve(import.meta.dirname, "../..");
 const verifyScript = join(
   projectRoot,
@@ -18,6 +22,16 @@ const verifyScript = join(
 );
 const treeCli = join(projectRoot, "scripts/publication/lib/tree.mjs");
 const roots: string[] = [];
+
+/**
+ * Every case here builds a real repository fixture (git clone/init/commit/push)
+ * and runs the publication script, then deletes the resulting trees. Measured
+ * 3-4s once the nested verification suite has just run and 7-28s under host
+ * load, against vitest's 5000 ms default; the cleanup hook alone exceeded its
+ * 10s default. Budgets are widened; no assertion is relaxed.
+ */
+const PUBLICATION_FIXTURE_TIMEOUT_MS = 60_000;
+const PUBLICATION_CLEANUP_HOOK_TIMEOUT_MS = 120_000;
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, {
@@ -106,7 +120,7 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
-});
+}, PUBLICATION_CLEANUP_HOOK_TIMEOUT_MS);
 
 const describeVerifyPublication =
   process.env.CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY === "1" ||
@@ -120,7 +134,7 @@ describeVerifyPublication("verify-publication", () => {
   beforeAll(async () => {
     releasePublicationMetaTestLock =
       await acquirePublicationMetaTestLock();
-  }, 310_000);
+  }, PUBLICATION_META_TEST_LOCK_WAIT_MS + 20_000);
 
   afterAll(async () => {
     await releasePublicationMetaTestLock?.();
@@ -150,9 +164,12 @@ describeVerifyPublication("verify-publication", () => {
     expect(await readFile(`${report}.sha256`, "utf8")).toMatch(
       /^[0-9a-f]{64}\s+/,
     );
-  }, 120_000);
+  },
+  // Runs a full fresh-clone verification: npm ci, build, deterministic serial
+  // suite, typecheck, and security audit. Measured nested suite: 202-315s serial.
+  SERIAL_NESTED_VERIFICATION_BUDGET_MS);
 
-  it("fails closed when remote main is not the expected head", async () => {
+  it("fails closed when remote main is not the expected head", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makeSanitizedPublic(root);
 
@@ -168,7 +185,7 @@ describeVerifyPublication("verify-publication", () => {
     );
   });
 
-  it("fails closed on non-noreply public history", async () => {
+  it("fails closed on non-noreply public history", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makeSanitizedPublic(root);
 
@@ -187,7 +204,7 @@ describeVerifyPublication("verify-publication", () => {
     );
   });
 
-  it("fails closed on a merge commit in public history", async () => {
+  it("fails closed on a merge commit in public history", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makeSanitizedPublic(root);
 
@@ -221,7 +238,7 @@ describeVerifyPublication("verify-publication", () => {
     );
   });
 
-  it("fails closed on an unsanitized macOS home path in tracked content", async () => {
+  it("fails closed on an unsanitized macOS home path in tracked content", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const fixture = await makeSanitizedPublic(root);
 

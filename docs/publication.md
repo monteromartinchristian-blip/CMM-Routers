@@ -143,6 +143,8 @@ The preparation and fresh-clone verifier tests are themselves end-to-end publica
 
 Inside a sanitized candidate or fresh-clone verification, the publication meta-tests themselves are skipped to prevent recursive publication-from-publication. Router, provider, HTTP, security, configuration, and all other non-recursive tests continue to run.
 
+Nested verification runs through `npm run test:serial` (`vitest run --no-file-parallelism --maxWorkers 1`), defined once in `package.json` and used by both `prepare-publication.sh` and `verify-publication.sh`. A parallel nested suite schedules every file across all CPUs while `npm ci`, the build, and the outer meta-test already compete for them; tests whose only budget is the 5000 ms default then fail nondeterministically depending on which file lands at the load peak. Serial execution makes nested verification reproducible, which means it takes 200-320s instead of ~50s — the outer meta-test budget and the meta-test lock budgets are sized for that. Verification therefore requires the tree under verification to define `test:serial`; if it is missing, verification fails closed rather than falling back to a nondeterministic command.
+
 ## Evidence
 
 The scripts write machine-readable evidence reports and SHA-256 files. `CMM_ROUTERS_EVIDENCE_DIR` may be set to choose the evidence directory.
