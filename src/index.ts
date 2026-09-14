@@ -1,4 +1,9 @@
 import { ensureSharedConfigFromExample, loadConfig, type RouterConfig } from "./config/load-config.js";
+import {
+  WAVE_PROVIDER_IDS,
+  waveProviderConfig,
+  type WaveProviderId,
+} from "./config/schema.js";
 import { ProviderRegistry } from "./registry/provider-registry.js";
 import { buildServer } from "./http/server.js";
 import { UsageStore } from "./observability/usage-store.js";
@@ -12,6 +17,16 @@ import {
   defaultCavotiAckPath,
   requireCavotiSpendAcknowledgement,
 } from "./providers/cavoti/spend-guard.js";
+import {
+  assertProviderWaveInventory,
+  GENERIC_WAVE_MANIFESTS,
+  resolveEffectiveActivation,
+} from "./providers/manifests.js";
+import {
+  OpenAiCompatibleAdapter,
+  type ProviderFetchFn,
+} from "./providers/openai-compatible/adapter.js";
+import { resolveProviderBaseUrl, type ProviderManifest } from "./providers/manifest.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 
 export interface ProductionComposition {
@@ -26,6 +41,71 @@ export interface ProductionComposition {
    * explicitly; never a per-adapter instance in production.
    */
   toolBroker: DeferredToolBroker;
+}
+
+export interface ProductionCompositionOptions {
+  /**
+   * Injected HTTP transport for the OpenAI-compatible wave. Deterministic
+   * tests must pass a fixture transport so no live provider call happens;
+   * production omits it and the adapters use the real `fetch`.
+   */
+  fetchFn?: ProviderFetchFn | undefined;
+}
+
+function isWaveProviderId(id: string): id is WaveProviderId {
+  return (WAVE_PROVIDER_IDS as readonly string[]).includes(id);
+}
+
+/**
+ * Registers one approved-wave provider from its manifest plus its config entry.
+ * Fails closed at every step: an unknown base URL, an absent credential or an
+ * unsupported api style skips the provider with a reason instead of guessing.
+ */
+function registerWaveProvider(
+  manifest: ProviderManifest,
+  config: RouterConfig,
+  options: ProductionCompositionOptions,
+  registeredProviders: string[],
+  skippedProviders: Array<{ id: string; reason: string }>,
+): OpenAiCompatibleAdapter | null {
+  if (!isWaveProviderId(manifest.id)) {
+    throw new Error(`Provider ${manifest.id} is not a wave provider id`);
+  }
+  const configured = waveProviderConfig(config.providers, manifest.id);
+  if (!configured.enabled) {
+    skippedProviders.push({ id: manifest.id, reason: "disabled in config" });
+    return null;
+  }
+  const baseUrl = resolveProviderBaseUrl(manifest, configured.baseUrl);
+  if (baseUrl === null) {
+    skippedProviders.push({
+      id: manifest.id,
+      reason:
+        "base URL is not deterministically known for this account/region; " +
+        `set providers.${manifest.id}.baseUrl in config`,
+    });
+    return null;
+  }
+  if (!process.env[configured.secretEnv]) {
+    skippedProviders.push({
+      id: manifest.id,
+      reason: `secret env ${configured.secretEnv} absent`,
+    });
+    return null;
+  }
+  // Config activation is an override; an absent one inherits the manifest
+  // scope, so a manifest-level `none` is never silently widened.
+  const activation = resolveEffectiveActivation(manifest, configured.activation);
+  const adapter = new OpenAiCompatibleAdapter({
+    manifest,
+    baseUrl,
+    secretEnv: configured.secretEnv,
+    discoveryPath: configured.discoveryPath,
+    activation,
+    ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
+  });
+  registeredProviders.push(adapter.id);
+  return adapter;
 }
 
 function isCommandCodeAckValid(): boolean {
@@ -71,6 +151,7 @@ export function isTestProviderEnabled(): boolean {
 
 export async function createProductionRegistry(
   config?: RouterConfig,
+  options: ProductionCompositionOptions = {},
 ): Promise<ProductionComposition> {
   // Fresh-clone bootstrap: a clean checkout ships only
   // config/shared.example.json. Install it as shared.json (never
@@ -79,6 +160,9 @@ export async function createProductionRegistry(
   const configDir = process.env.CMM_CONFIG_DIR;
   if (!config) ensureSharedConfigFromExample(configDir);
   const resolved = config ?? loadConfig(configDir);
+  // Inventory invariant before anything is registered: unique route ids and
+  // unique credential namespaces across the approved wave.
+  assertProviderWaveInventory();
   const registry = new ProviderRegistry();
   const usageStore = new UsageStore();
   const toolBroker = new DeferredToolBroker();
@@ -192,6 +276,18 @@ export async function createProductionRegistry(
     }
   } else {
     skippedProviders.push({ id: "cavoti", reason: "disabled in config" });
+  }
+
+  // Approved provider wave: one generic OpenAI-compatible adapter per manifest.
+  for (const manifest of GENERIC_WAVE_MANIFESTS) {
+    const adapter = registerWaveProvider(
+      manifest,
+      resolved,
+      options,
+      registeredProviders,
+      skippedProviders,
+    );
+    if (adapter !== null) await registry.register(adapter);
   }
 
   await registry.refresh();

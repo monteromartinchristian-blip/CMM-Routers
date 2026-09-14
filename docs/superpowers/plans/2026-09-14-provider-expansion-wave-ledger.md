@@ -149,6 +149,33 @@ authoritative and no model catalog is hardcoded; `none` is what R6 needs for
 Kimi K3. Cost if wrong: none observed — the config refinement makes an
 allowlist without ids (or ids without allowlist mode) a validation error.
 
+## Commit gate status (whole wave)
+
+The Mimosa L3 pre-commit hook denies `git commit` in this session over **36 high
++ 5 medium pre-existing repository findings** in files this wave does not touch
+(`tests/security/redaction.test.ts` fake fixture credentials,
+`tests/helpers/fake-agy-multistep.js` local test double,
+`scripts/live-canary/canary-driver.ts` fixture tokens). Evidence that the
+findings are not wave-local:
+
+- `git status --porcelain` is empty for every reported file (unmodified from HEAD).
+- The wave's staged file set contains none of them.
+- The repository's own authoritative gate passes: `bash scripts/security-audit.sh`
+  → `SECURITY_AUDIT=PASS`.
+- The session's own findings for `src/providers/manifest.ts` (three
+  `RegExp.exec`-shaped false positives) are recorded `static_verified` after the
+  rewrite, i.e. the gate's finding ledger is not the blocker.
+
+Investigated remedies that are NOT available from inside this session: no native
+git hook is installed (shared hooks dir has no `pre-commit`, `core.hooksPath`
+unset, worktree hooks dir absent), `mimosa policy` covers threat-model/network/
+command/path/data only (no scan scope or severity threshold), `mimosa
+git-gate status` reports only ZCode-side gate stages, and the plugin README
+states hook/MCP configuration is snapshotted at task startup — so lifting the
+gate requires a new task. Per the user's decision ("allow wave commits"), each
+task's exact delta is preserved as a replayable patch series under
+`.provider-wave-patches/` (see the replay instructions at the end of this file).
+
 ## Task log
 
 ### Task 1 — Normalize the provider manifest/config contract
@@ -178,6 +205,97 @@ allowlist without ids (or ids without allowlist mode) a validation error.
 - Note: `node scripts/validate-config.mjs` returns `CONFIG=MISSING` (rc=3) in
   this worktree because `config/shared.json` is gitignored and absent — expected.
 - Commit: `feat(providers): normalize provider manifest contract`.
+
+### Task 2 — Expand the generic OpenAI-compatible execution path
+
+- RED: `npx vitest run ... tests/providers/openai-compatible-execution.test.ts`
+  → `Cannot find module '../../src/providers/openai-compatible/adapter.js'` (0 tests).
+- GREEN: same command → `Tests 13 passed (13)`.
+- Files: `src/core/sse.ts` (SSE framing extracted from command-code into one
+  shared module; `command-code/client.ts` now imports and re-exports it, so the
+  existing `MAX_PROVIDER_SSE_FRAME_BYTES` / `parseSseDataLine` / `splitSseChunks`
+  import sites are unchanged), `src/providers/openai-compatible/client.ts`
+  (transport: bearer auth, chat completions, SSE records, timeout/abort race,
+  normalized status mapping), `src/providers/openai-compatible/adapter.ts`
+  (generic adapter: declared-tool ACL, usage mapping, activation gate,
+  capability from the manifest), `scripts/security-audit.sh` (declared-tool ACL
+  now asserted for the generic adapter and Cavoti too).
+- Covered by test: bearer auth header, exact model id on the wire, streaming
+  text deltas, tool-call passthrough + undeclared-name fail-closed, unchanged
+  `tool_choice`/`parallel_tool_calls`/`max_tokens` forwarding, usage numbers,
+  status→error-category mapping (401/402/429/404/500), activation fail-closed
+  with no upstream request, cross-provider model id refusal, `provider_timeout`
+  on a stalled upstream, silent stop on caller abort, one adapter class for two
+  different manifests, refusal of a manifest without the
+  openai-chat-completions style, and no credential value in error text.
+- Regression: command-code SSE/adapter/fragmented-stream/body-coverage suites →
+  35 passed; typecheck clean; `SECURITY_AUDIT=PASS`.
+- Commit: `feat(providers): expand generic OpenAI-compatible routing`.
+
+### Task 3 — Administrative model discovery
+
+- RED: `npx vitest run ... tests/providers/openai-compatible-discovery.test.ts`
+  → 3 failed / 5 passed: `display_name` tolerance missing (displayName fell back
+  to the raw id), duplicates were listed twice, and one test-double bug
+  (`secret: undefined` did not mean "no credential").
+- GREEN: same command → `Tests 8 passed (8)`, including
+  `ADMIN_MODEL_DISCOVERY_GET_ONLY=PASS` and
+  `ADMIN_MODEL_DISCOVERY_NO_INFERENCE=PASS` printed from the test body.
+- Files: `src/providers/openai-compatible/adapter.ts` (`displayNameOf`
+  tolerance for `name`/`display_name`/`displayName`; first-occurrence-wins
+  de-duplication matching the existing command-code policy).
+- Covered by test: exactly one `GET` to `<baseUrl><discovery path>`, no request
+  body, no URL containing a generation path, exact id preservation
+  (`vendor/model:tag`), route ids namespaced per provider, capability published
+  from the manifest, de-duplication, skipping entries with no usable id,
+  rejection of malformed payloads (non-JSON, `{models: []}`, bare array,
+  `{data: {}}`), configured discovery-path override, no request at all when no
+  route is activated, and auth/transport/timeout failure categories.
+- Commit: `feat(providers): add administrative model discovery`.
+
+### Task 4 — Qwen Token Plan and Qwen Cloud PAYG
+
+- RED: `npx vitest run ... tests/providers/qwen-route-separation.test.ts`
+  → `Cannot find module '../../src/providers/manifests.js'` (0 tests).
+- GREEN: same command → `Tests 8 passed (8)`.
+- Files: `src/providers/manifests.ts` (Qwen manifests + wave inventory
+  accessors + `resolveEffectiveActivation`), `src/config/schema.ts`
+  (`activation` is now an optional override with no defaults, so it can never
+  widen a manifest-level `none`; typed `waveProviderConfig` accessor),
+  `src/providers/openai-compatible/adapter.ts` (effective activation),
+  `src/index.ts` (`ProductionCompositionOptions.fetchFn` injection + wave
+  registration loop with per-provider fail-closed skip reasons).
+- Ruling R11 (new): both Qwen base URLs are `null` in the manifest (region is
+  account-specific, proven by the repo's own Qwen notes) and an enabled Qwen
+  route without `providers.<id>.baseUrl` is skipped with reason
+  "base URL is not deterministically known …" — never registered against a
+  guessed region. Cost if wrong: the operator must set one config field before
+  the route can be enabled (fail closed, no silent misroute).
+- Covered by test: distinct ids/credential namespaces/billing classes
+  (`subscription` vs `payg`), identical upstream model ids resolving to two
+  independent provider routes, both routes visible in the catalog, activation
+  inheritance vs override, unique-inventory assertion, and production
+  composition skipping/registering the two routes with an injected fixture
+  transport (no live call).
+- Capture note: patches `03`/`04` were taken after both tasks, so the
+  `adapter.ts` activation delta for Task 4 rides in patch `04`; the RED/GREEN
+  evidence above is per task.
+- Commit: `feat(providers): add Qwen subscription and PAYG routes`.
+
+self-review (SPEC, tasks 2-4): the plan asks for a generic OpenAI-compatible
+execution path, administrative discovery that never touches a generation
+endpoint, and two Qwen identities with separate namespaces, billing classes and
+routes for identical model ids — all delivered, with the existing bridges
+untouched. PASS.
+
+self-review (QUALITY, tasks 2-4): one transport implementation + one adapter +
+manifests (no per-provider subclasses); SSE framing now has a single definition;
+credentials are read from env names only and never appear in messages; the
+timeout/abort path races the fetch promise so a signal-ignoring transport cannot
+hang the router; activation gates both discovery and `run`. Findings: none
+Critical/Important. Minor deferred: `stream_options.include_usage` is NOT sent
+(providers that reject unknown request fields would 400); usage is recorded only
+when the upstream emits it in-stream.
 
 self-review (SPEC): the plan asks for a provider definition that can express
 provider ID, display name, billing class, base URL, auth scheme, discovery

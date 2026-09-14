@@ -50,21 +50,29 @@ const cavotiProviderSchema = providerConfigSchema
  * catalog, `allowlist` routes only the exact provider model ids listed, and
  * `none` keeps discovered routes visible but non-routable until an operator
  * states the exact ids. The allowlist is never a pattern and never inferred.
+ *
+ * Both fields are optional on purpose: an absent activation means "inherit the
+ * provider manifest", which is what keeps a manifest-level `none` (an
+ * unconfirmed exact model id) from being silently widened by a config default.
  */
 const providerActivationSchema = z
   .object({
-    mode: z.enum(["all", "allowlist", "none"]).default("all"),
-    models: z.array(z.string().min(1)).default([]),
+    mode: z.enum(["all", "allowlist", "none"]).optional(),
+    models: z.array(z.string().min(1)).optional(),
   })
   .strict()
   .refine(
-    (activation) =>
-      activation.mode === "allowlist"
-        ? activation.models.length > 0
-        : activation.models.length === 0,
+    (activation) => {
+      if (activation.mode === undefined) return activation.models === undefined;
+      if (activation.mode === "allowlist") {
+        return activation.models !== undefined && activation.models.length > 0;
+      }
+      return activation.models === undefined || activation.models.length === 0;
+    },
     {
       message:
-        "activation.models is exactly the allowlist and is only valid in allowlist mode",
+        "activation.mode is required when activation.models is set, and models is " +
+        "exactly the non-empty allowlist for mode 'allowlist'",
     },
   );
 
@@ -97,7 +105,7 @@ export const openAiCompatibleProviderSchema = providerConfigSchema
       .array(z.enum(PROVIDER_API_STYLES))
       .min(1)
       .default(["openai-chat-completions"]),
-    activation: providerActivationSchema.default({ mode: "all", models: [] }),
+    activation: providerActivationSchema.optional(),
   })
   .strict();
 
@@ -175,6 +183,44 @@ export const sharedConfigSchema = z.object({
 }).strict();
 
 export type SharedConfig = z.infer<typeof sharedConfigSchema>;
+
+/** Configuration entry shape shared by every provider in the approved wave. */
+export type WaveProviderConfig = z.infer<typeof openAiCompatibleProviderSchema>;
+
+/** Optional activation override carried by a wave provider config entry. */
+export type WaveProviderActivationConfig = z.infer<typeof providerActivationSchema>;
+
+/** Wave provider ids, in the order they appear in the providers block. */
+export const WAVE_PROVIDER_IDS = [
+  "qwen-token-plan",
+  "qwen-cloud",
+  "deepseek",
+  "kira",
+  "openrouter",
+  "opencode-zen",
+  "nvidia-nim",
+  "vikey",
+  "cline",
+  "ollama-cloud",
+] as const;
+
+export type WaveProviderId = (typeof WAVE_PROVIDER_IDS)[number];
+
+/**
+ * Typed accessor for one wave provider's config entry. The index signature is
+ * confined here so the composition root never casts config shapes itself, and
+ * a missing entry is a programming error rather than a silent `undefined`.
+ */
+export function waveProviderConfig(
+  providers: SharedConfig["providers"],
+  id: WaveProviderId,
+): WaveProviderConfig {
+  const entry = (providers as unknown as Record<string, WaveProviderConfig | undefined>)[id];
+  if (entry === undefined) {
+    throw new Error(`Wave provider ${id} is missing from the parsed providers block`);
+  }
+  return entry;
+}
 
 export const localConfigSchema = z
   .object({
