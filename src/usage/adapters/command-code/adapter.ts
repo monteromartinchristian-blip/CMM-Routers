@@ -500,6 +500,7 @@ export class CommandCodeUsageAdapter implements UsageAdapter {
     const routeByModel = new Map(routes.map((route) => [route.providerModelId, route]));
     for (const bucket of buckets) {
       const key = bucket.providerKey;
+      if (key === "credits:purchased" || key === "credits:free") continue;
       if (key?.startsWith("org-limit:model:")) {
         const model = key.slice("org-limit:model:".length);
         const route = routeByModel.get(model);

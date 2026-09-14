@@ -232,6 +232,40 @@ describe("CommandCodeUsageAdapter", () => {
     expect(monthly).not.toHaveProperty("usedValue");
   });
 
+  it("keeps supplemental credit balances observable without binding them as route constraints", async () => {
+    const seen: SeenRequest[] = [];
+    const value = adapter(await fixtureBaseUrl(seen));
+
+    const discovery = await value.discover();
+    const snapshots = await value.collectQuotaSnapshots();
+
+    expect(discovery.status).toBe("ok");
+    expect(snapshots.status).toBe("ok");
+    if (discovery.status !== "ok" || snapshots.status !== "ok") {
+      throw new Error("expected Command Code quota data");
+    }
+
+    const buckets = new Map(
+      (discovery.quotaBuckets ?? []).map((bucket) => [bucket.providerKey, bucket]),
+    );
+    const bindings = discovery.quotaBindings ?? [];
+    const byBucket = new Map(snapshots.values.map((snapshot) => [snapshot.quotaBucketId, snapshot]));
+
+    for (const [key, remaining] of [
+      ["credits:purchased", 12],
+      ["credits:free", 3],
+    ] as const) {
+      const bucket = buckets.get(key);
+      expect(bucket).toBeDefined();
+      expect(byBucket.get(bucket?.id ?? "")).toMatchObject({
+        remainingValue: remaining,
+        source: "provider_official_cli",
+        confidence: "exact",
+      });
+      expect(bindings.filter((binding) => binding.quotaBucketId === bucket?.id)).toEqual([]);
+    }
+  });
+
   it("keeps a provider reset sentinel of zero unknown instead of rendering the Unix epoch", async () => {
     const baseUrl = await fakeServer((request, response) => {
       const path = request.url ?? "";
