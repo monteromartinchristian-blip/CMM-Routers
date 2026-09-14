@@ -316,6 +316,30 @@ describe("SqliteUsageStore", () => {
     expect(snapshots).toEqual([snapshot()]);
   });
 
+  it("persists global route visibility across reopen without changing accounting history", async () => {
+    const path = tempDb();
+    const first = new SqliteUsageStore(path);
+    await first.initialize();
+    await seedGraph(first);
+    await first.appendQuotaSnapshots([snapshot()]);
+    await first.upsertVisibilityPreference({
+      scope: "global",
+      routeId: "route:example",
+      state: "hidden",
+    });
+    await first.close();
+
+    const second = new SqliteUsageStore(path);
+    await second.initialize();
+    expect(await second.listVisibilityPreferences("global")).toEqual([
+      { scope: "global", routeId: "route:example", state: "hidden" },
+    ]);
+    const graph = await second.getRouteGraph("route:example");
+    expect(graph.bindings).toEqual([binding()]);
+    expect(graph.quotaStates[0]?.snapshot).toEqual(snapshot());
+    await second.close();
+  });
+
   it("enforces foreign keys for graph entities", async () => {
     const store = new SqliteUsageStore(tempDb());
     await store.initialize();

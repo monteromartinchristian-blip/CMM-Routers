@@ -14,6 +14,7 @@ import type {
   SubscriptionPeriod,
   UsageEvent,
 } from "../domain/types.js";
+import type { VisibilityPreference } from "../presentation/types.js";
 
 export interface UsageStore {
   initialize(): Promise<void>;
@@ -51,4 +52,6 @@ export interface UsageStore {
   getRouteGraph(accessRouteId: string): Promise<RouteGraph>;
   listUsageEvents(limit?: number): Promise<UsageEvent[]>;
   listCostEvents(limit?: number): Promise<CostEvent[]>;
+  upsertVisibilityPreference(value: VisibilityPreference): Promise<void>;
+  listVisibilityPreferences(scope?: VisibilityPreference["scope"]): Promise<VisibilityPreference[]>;
 }

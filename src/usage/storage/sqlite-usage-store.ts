@@ -18,6 +18,7 @@ import type {
   SubscriptionPeriod,
   UsageEvent,
 } from "../domain/types.js";
+import type { VisibilityPreference } from "../presentation/types.js";
 import { applyUsageMigrations } from "./migrations.js";
 import type { UsageStore } from "./usage-store.js";
 
@@ -69,6 +70,15 @@ function decode<T>(row: PayloadRow | undefined): T | undefined {
 
 function decodeAll<T>(rows: readonly PayloadRow[]): T[] {
   return rows.map((row) => JSON.parse(row.payload_json) as T);
+}
+
+function visibilityPreferenceId(value: VisibilityPreference): string {
+  return [
+    value.scope,
+    value.providerId ?? "*",
+    value.productId ?? "*",
+    value.routeId ?? "*",
+  ].join("|");
 }
 
 export class SqliteUsageStore implements UsageStore {
@@ -359,5 +369,39 @@ export class SqliteUsageStore implements UsageStore {
       .prepare("SELECT payload_json FROM cost_events ORDER BY occurred_at DESC, id DESC LIMIT ?")
       .all(limit) as PayloadRow[];
     return decodeAll<CostEvent>(rows);
+  }
+
+  async upsertVisibilityPreference(value: VisibilityPreference): Promise<void> {
+    const id = visibilityPreferenceId(value);
+    this.db()
+      .prepare(`
+        INSERT INTO visibility_preferences(id, scope, provider_id, product_id, route_id, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          scope=excluded.scope,
+          provider_id=excluded.provider_id,
+          product_id=excluded.product_id,
+          route_id=excluded.route_id,
+          payload_json=excluded.payload_json
+      `)
+      .run(
+        id,
+        value.scope,
+        value.providerId ?? null,
+        value.productId ?? null,
+        value.routeId ?? null,
+        encode(value),
+      );
+  }
+
+  async listVisibilityPreferences(
+    scope?: VisibilityPreference["scope"],
+  ): Promise<VisibilityPreference[]> {
+    const rows = (scope === undefined
+      ? this.db().prepare("SELECT payload_json FROM visibility_preferences ORDER BY id").all()
+      : this.db()
+          .prepare("SELECT payload_json FROM visibility_preferences WHERE scope = ? ORDER BY id")
+          .all(scope)) as PayloadRow[];
+    return decodeAll<VisibilityPreference>(rows);
   }
 }

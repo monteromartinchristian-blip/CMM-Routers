@@ -13,6 +13,10 @@ const migrations = [
       "utf8",
     ),
   },
+  {
+    version: 3,
+    sql: readFileSync(new URL("./schema/003_catalog_visibility.sql", import.meta.url), "utf8"),
+  },
 ] as const;
 
 export function applyUsageMigrations(database: DatabaseSync): void {
