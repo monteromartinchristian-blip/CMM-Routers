@@ -1,28 +1,16 @@
 import SwiftUI
 import CMMUsageCore
 
-enum UsageSection: String, CaseIterable, Identifiable {
-    case overview = "Overview"
-    case providers = "Providers"
-    case models = "Models"
-    case quotas = "Quotas"
-    case history = "History"
-    case costs = "Costs"
-    case subscriptions = "Subscriptions"
-    case alerts = "Alerts"
-    case settings = "Settings"
-
-    var id: String { rawValue }
-
+private extension UsageNavigationDestination {
     var symbol: String {
         switch self {
         case .overview: return "square.grid.2x2"
-        case .providers: return "building.2"
-        case .models: return "cpu"
         case .quotas: return "gauge.with.dots.needle.67percent"
+        case .models: return "cpu"
+        case .providers: return "bolt.horizontal.circle"
+        case .freePromo: return "sparkles"
         case .history: return "clock.arrow.circlepath"
         case .costs: return "banknote"
-        case .subscriptions: return "creditcard"
         case .alerts: return "bell"
         case .settings: return "gearshape"
         }
@@ -31,15 +19,16 @@ enum UsageSection: String, CaseIterable, Identifiable {
 
 struct MainWindowView: View {
     @EnvironmentObject private var model: UsageAppModel
-    @State private var selection: UsageSection? = .overview
+    @State private var selection: UsageNavigationDestination? = .overview
 
     var body: some View {
         NavigationSplitView {
-            List(UsageSection.allCases, selection: $selection) { section in
-                Label(section.rawValue, systemImage: section.symbol)
+            List(UsageNavigationDestination.allCases, selection: $selection) { section in
+                Label(section.title, systemImage: section.symbol)
                     .tag(section)
             }
             .navigationTitle("CMM Usage")
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
         } detail: {
             VStack(spacing: 0) {
                 header
@@ -47,12 +36,12 @@ struct MainWindowView: View {
                 Group {
                     switch selection ?? .overview {
                     case .overview: OverviewSectionView()
-                    case .providers: ProvidersSectionView()
-                    case .models: ModelsSectionView()
                     case .quotas: QuotasSectionView()
+                    case .models: ModelsSectionView()
+                    case .providers: ProvidersSectionView()
+                    case .freePromo: FreePromoSectionView()
                     case .history: HistorySectionView()
                     case .costs: CostsSectionView()
-                    case .subscriptions: SubscriptionsSectionView()
                     case .alerts: AlertsSectionView()
                     case .settings: SettingsSectionView()
                     }
@@ -65,7 +54,7 @@ struct MainWindowView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text((selection ?? .overview).rawValue)
+                Text((selection ?? .overview).title)
                     .font(.title2.weight(.semibold))
                 if let error = model.errorMessage {
                     Text(error)

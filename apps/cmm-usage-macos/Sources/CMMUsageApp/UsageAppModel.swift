@@ -7,27 +7,35 @@ final class UsageAppModel: ObservableObject {
     static let defaultBaseURL = "http://127.0.0.1:8790"
 
     @Published private(set) var dashboard: UsageDashboardSnapshot?
+    @Published private(set) var catalogProviders: [CatalogProviderView] = []
+    @Published private(set) var catalogRoutes: [CatalogRouteEntry] = []
+    @Published private(set) var promotions: [CatalogRouteEntry] = []
+    @Published private(set) var visibilityPreferences: [CatalogVisibilityPreference] = []
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var credentialStored = false
+    @Published private(set) var managementCredentialStored = false
     @Published private(set) var baseURLString: String
+    @Published private(set) var connectionHints: [String: String] = [:]
 
     private let defaults: UserDefaults
     private let credentialStore: UsageCredentialStore
+    private let managementCredentialStore: UsageCredentialStore
     private let baseURLKey = "cmmUsage.baseURL"
 
     init(
         defaults: UserDefaults = .standard,
-        credentialStore: UsageCredentialStore = KeychainUsageCredentialStore()
+        credentialStores: UsageCredentialStores = CMMUsageModule.credentialStores()
     ) {
         self.defaults = defaults
-        self.credentialStore = credentialStore
+        self.credentialStore = credentialStores.read
+        self.managementCredentialStore = credentialStores.management
         self.baseURLString = defaults.string(forKey: baseURLKey) ?? Self.defaultBaseURL
-        self.credentialStored = ((try? credentialStore.readToken()) ?? nil) != nil
     }
 
     func loadIfNeeded() async {
+        await refreshCredentialState()
         guard dashboard == nil, !isLoading else { return }
         await load()
     }
@@ -37,13 +45,24 @@ final class UsageAppModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            dashboard = try await makeClient().fetchDashboard()
+            let client = try makeClient()
+            let nextDashboard = try await client.fetchDashboard()
+            let nextProviders = try await client.fetchCatalogProviders()
+            let nextRoutes = try await client.fetchCatalogRoutes()
+            let nextPromotions = try await client.fetchPromotions()
+            let nextVisibility = try await client.fetchVisibility()
+
+            dashboard = nextDashboard
+            catalogProviders = nextProviders
+            catalogRoutes = nextRoutes
+            promotions = nextPromotions
+            visibilityPreferences = nextVisibility
             lastUpdated = Date()
             errorMessage = nil
-            credentialStored = true
+            await refreshCredentialState()
         } catch {
             errorMessage = error.localizedDescription
-            credentialStored = ((try? credentialStore.readToken()) ?? nil) != nil
+            await refreshCredentialState()
         }
     }
 
@@ -52,12 +71,24 @@ final class UsageAppModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await makeClient().refreshAll()
-            dashboard = try await makeClient().fetchDashboard()
+            let client = try makeClient()
+            _ = try await client.refreshAll()
+            let nextDashboard = try await client.fetchDashboard()
+            let nextProviders = try await client.fetchCatalogProviders()
+            let nextRoutes = try await client.fetchCatalogRoutes()
+            let nextPromotions = try await client.fetchPromotions()
+            let nextVisibility = try await client.fetchVisibility()
+            dashboard = nextDashboard
+            catalogProviders = nextProviders
+            catalogRoutes = nextRoutes
+            promotions = nextPromotions
+            visibilityPreferences = nextVisibility
             lastUpdated = Date()
             errorMessage = nil
+            await refreshCredentialState()
         } catch {
             errorMessage = error.localizedDescription
+            await refreshCredentialState()
         }
     }
 
@@ -72,19 +103,92 @@ final class UsageAppModel: ObservableObject {
         }
 
         if let token, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            try credentialStore.saveToken(token.trimmingCharacters(in: .whitespacesAndNewlines))
+            try await credentialStore.saveTokenOffMainThread(token.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         defaults.set(trimmedURL, forKey: baseURLKey)
         baseURLString = trimmedURL
-        credentialStored = ((try? credentialStore.readToken()) ?? nil) != nil
+        await refreshCredentialState()
         await load()
     }
 
-    func clearCredential() throws {
-        try credentialStore.deleteToken()
-        credentialStored = false
+    func saveManagementCredential(_ token: String) async throws {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try await managementCredentialStore.saveTokenOffMainThread(trimmed)
+        await refreshCredentialState()
+    }
+
+    func clearCredential() async throws {
+        try await credentialStore.deleteTokenOffMainThread()
+        await refreshCredentialState()
         dashboard = nil
+        catalogProviders = []
+        catalogRoutes = []
+        promotions = []
+        visibilityPreferences = []
         errorMessage = nil
+    }
+
+    func clearManagementCredential() async throws {
+        try await managementCredentialStore.deleteTokenOffMainThread()
+        await refreshCredentialState()
+    }
+
+    func connectAccount(provider: CatalogProviderView, secret: String) async throws {
+        let result = try await makeClient().connectAccount(
+            integrationType: provider.directory.integrationType,
+            secret: secret
+        )
+        rememberHint(result)
+        await loadAfterMutation()
+    }
+
+    func connectAPIKey(provider: CatalogProviderView, secret: String) async throws {
+        let result = try await makeClient().connectWithAPIKey(
+            integrationType: provider.directory.integrationType,
+            secret: secret
+        )
+        rememberHint(result)
+        await loadAfterMutation()
+    }
+
+    func addCustomEndpoint(_ input: CustomEndpointConnectionInput) async throws -> UsageConnectionView {
+        let result = try await makeClient().addCustomEndpoint(input)
+        rememberHint(result)
+        await loadAfterMutation()
+        return result
+    }
+
+    func setConnectionEnabled(instanceId: String, enabled: Bool) async throws {
+        _ = try await makeClient().setConnectionEnabled(id: instanceId, enabled: enabled)
+        await loadAfterMutation()
+    }
+
+    func disconnect(instanceId: String) async throws {
+        try await makeClient().disconnectConnection(id: instanceId)
+        connectionHints.removeValue(forKey: instanceId)
+        await loadAfterMutation()
+    }
+
+    func testConnection(instanceId: String) async throws -> UsageConnectionTestResult {
+        try await makeClient().testConnection(id: instanceId)
+    }
+
+    func setRouteVisibility(routeId: String, state: CatalogVisibilityState) async throws {
+        _ = try await makeClient().setRouteVisibility(routeId: routeId, state: state)
+        let nextRoutes = try await makeClient().fetchCatalogRoutes()
+        let nextVisibility = try await makeClient().fetchVisibility()
+        catalogRoutes = nextRoutes
+        visibilityPreferences = nextVisibility
+    }
+
+    func connectionHint(for provider: CatalogProviderView) -> String {
+        for id in provider.instanceIds {
+            if let hint = connectionHints[id] {
+                return ProviderCatalogPresenter.safeCredentialHint(hint)
+            }
+        }
+        return provider.directory.connectedInstanceCount > 0 ? "Stored securely" : "Add key"
     }
 
     func quota(id: String?) -> QuotaUsageView? {
@@ -104,7 +208,40 @@ final class UsageAppModel: ObservableObject {
         guard let baseURL = URL(string: baseURLString) else {
             throw CMMUsageAPIError.invalidBaseURL
         }
-        return CMMUsageAPIClient(baseURL: baseURL, credentialStore: credentialStore)
+        return CMMUsageAPIClient(
+            baseURL: baseURL,
+            credentialStore: credentialStore,
+            managementCredentialStore: managementCredentialStore
+        )
+    }
+
+    private func refreshCredentialState() async {
+        credentialStored = ((try? await credentialStore.readTokenOffMainThread()) ?? nil) != nil
+        managementCredentialStored = ((try? await managementCredentialStore.readTokenOffMainThread()) ?? nil) != nil
+    }
+
+    private func rememberHint(_ connection: UsageConnectionView) {
+        if let hint = connection.hint {
+            connectionHints[connection.id] = ProviderCatalogPresenter.safeCredentialHint(hint)
+        }
+    }
+
+    private func loadAfterMutation() async {
+        let wasLoading = isLoading
+        if !wasLoading { isLoading = true }
+        defer { if !wasLoading { isLoading = false } }
+        do {
+            let client = try makeClient()
+            catalogProviders = try await client.fetchCatalogProviders()
+            catalogRoutes = try await client.fetchCatalogRoutes()
+            promotions = try await client.fetchPromotions()
+            visibilityPreferences = try await client.fetchVisibility()
+            dashboard = try await client.fetchDashboard()
+            lastUpdated = Date()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 

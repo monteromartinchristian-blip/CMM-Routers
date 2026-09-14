@@ -53,57 +53,6 @@ struct OverviewSectionView: View {
     }
 }
 
-struct ProvidersSectionView: View {
-    @EnvironmentObject private var model: UsageAppModel
-
-    var body: some View {
-        SectionShell {
-            if let dashboard = model.dashboard, !dashboard.providers.isEmpty {
-                LazyVStack(spacing: 14) {
-                    ForEach(dashboard.providers) { provider in
-                        SurfaceCard {
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(provider.provider.displayName).font(.title3.weight(.semibold))
-                                        Text(dashboard.products(for: provider.provider.id).map(\.displayName).joined(separator: " · "))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    StatusBadge(status: provider.pressure.status)
-                                }
-                                ForEach(provider.pressure.routes) { route in
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        HStack {
-                                            Text("Access route").font(.caption.weight(.semibold))
-                                            Spacer()
-                                            StatusBadge(status: route.status)
-                                        }
-                                        if route.constraints.isEmpty {
-                                            Text("No quota constraints reported for this route.")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        } else {
-                                            ForEach(route.constraints) { constraint in
-                                                if let quota = model.quota(id: constraint.bucketId) {
-                                                    QuotaDetailCard(quota: quota, compact: true)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                EmptyStateView(title: "No providers", detail: "Enabled integrations will appear here after discovery.", systemImage: "building.2")
-            }
-        }
-    }
-}
-
 struct ModelsSectionView: View {
     @EnvironmentObject private var model: UsageAppModel
 
@@ -144,6 +93,43 @@ struct ModelsSectionView: View {
                 }
             } else {
                 EmptyStateView(title: "No models", detail: "Models appear after provider discovery creates access routes.", systemImage: "cpu")
+            }
+        }
+    }
+}
+
+struct FreePromoSectionView: View {
+    @EnvironmentObject private var model: UsageAppModel
+
+    var body: some View {
+        SectionShell {
+            if model.promotions.isEmpty {
+                EmptyStateView(
+                    title: "No free or promotional access yet",
+                    detail: "New free routes, trials and promotions reported by providers will appear here.",
+                    systemImage: "sparkles"
+                )
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(model.promotions) { route in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(route.model.displayName).font(.subheadline.weight(.semibold))
+                                Text("\(route.provider.displayName) · \(route.product.displayName)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(route.offer.kind.rawValue)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(.quaternary, in: Capsule())
+                        }
+                        .padding(.vertical, 10)
+                        if route.id != model.promotions.last?.id { Divider() }
+                    }
+                }
             }
         }
     }
@@ -314,6 +300,7 @@ struct SettingsSectionView: View {
     @EnvironmentObject private var model: UsageAppModel
     @State private var baseURL = UsageAppModel.defaultBaseURL
     @State private var token = ""
+    @State private var managementToken = ""
     @State private var saveError: String?
     @State private var didSeed = false
 
@@ -333,17 +320,19 @@ struct SettingsSectionView: View {
                             .textFieldStyle(.roundedBorder)
 
                         HStack {
-                            Label(model.credentialStored ? "Credential stored in Keychain" : "No Usage credential stored", systemImage: model.credentialStored ? "checkmark.shield" : "lock.slash")
+                            Label(model.credentialStored ? "Read access configured" : "Read access not configured", systemImage: model.credentialStored ? "checkmark.shield" : "lock.slash")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button("Remove Credential", role: .destructive) {
-                                do {
-                                    try model.clearCredential()
-                                    token = ""
-                                    saveError = nil
-                                } catch {
-                                    saveError = error.localizedDescription
+                                Task {
+                                    do {
+                                        try await model.clearCredential()
+                                        token = ""
+                                        saveError = nil
+                                    } catch {
+                                        saveError = error.localizedDescription
+                                    }
                                 }
                             }
                             .disabled(!model.credentialStored)
@@ -364,6 +353,53 @@ struct SettingsSectionView: View {
                             Label(saveError, systemImage: "exclamationmark.triangle")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                SurfaceCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Connection management").font(.headline)
+                        Text("Provider changes use a separate local credential from read-only Usage access.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        SecureField(
+                            model.managementCredentialStored ? "Leave blank to keep existing management token" : "Connection-management token",
+                            text: $managementToken
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Label(
+                                model.managementCredentialStored ? "Provider changes enabled" : "Provider changes locked",
+                                systemImage: model.managementCredentialStored ? "checkmark.shield" : "lock"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                Task {
+                                    do {
+                                        try await model.clearManagementCredential()
+                                        managementToken = ""
+                                        saveError = nil
+                                    } catch {
+                                        saveError = error.localizedDescription
+                                    }
+                                }
+                            }
+                            .disabled(!model.managementCredentialStored)
+                            Button("Save") {
+                                Task {
+                                    do {
+                                        try await model.saveManagementCredential(managementToken)
+                                        managementToken = ""
+                                        saveError = nil
+                                    } catch {
+                                        saveError = error.localizedDescription
+                                    }
+                                }
+                            }
+                            .disabled(managementToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                 }

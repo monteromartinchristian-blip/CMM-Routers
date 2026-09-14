@@ -133,6 +133,28 @@ func testDemoCredentialModuleUsesOnlyPublicFixtureCredentials() throws {
     try expect(managementToken == CMMUsageModule.demoManagementToken, "demo management credential must be separate public fixture data")
 }
 
+func testProviderPresentationContract() throws {
+    try expect(
+        UsageNavigationDestination.allCases.map(\.title) == ["Overview", "Quotas", "Models", "Providers", "Free & Promo", "History", "Costs", "Alerts", "Settings"],
+        "primary navigation must use the frozen product destinations"
+    )
+    try expect(ProviderCatalogPresenter.safeCredentialHint("sk-secret-value") == "Stored securely", "raw API keys must never become display hints")
+    try expect(ProviderCatalogPresenter.safeCredentialHint("••••a4f1") == "••••a4f1", "safe masked hints should remain useful")
+    try expect(ProviderCatalogPresenter.emptyStateDetail(for: .customEndpoints).contains("endpoint"), "empty provider states must remain actionable")
+
+    let json = #"""
+    {"data":[
+      {"directory":{"integrationType":"command-code","displayName":"Command Code","category":"subscription","connectionMethods":["account"],"state":"degraded","connectedInstanceCount":1,"capabilities":{"modelDiscovery":true,"quotaDiscovery":true,"balanceDiscovery":true,"costDiscovery":false,"pricingDiscovery":false}},"instanceIds":["cc"]},
+      {"directory":{"integrationType":"chatgpt-subscription","displayName":"ChatGPT / Codex","category":"subscription","connectionMethods":["account"],"state":"connected","connectedInstanceCount":1,"capabilities":{"modelDiscovery":true,"quotaDiscovery":true,"balanceDiscovery":false,"costDiscovery":false,"pricingDiscovery":false}},"instanceIds":["chatgpt"]},
+      {"directory":{"integrationType":"claude-subscription","displayName":"Claude","category":"subscription","connectionMethods":["account"],"state":"available","connectedInstanceCount":0,"capabilities":{"modelDiscovery":true,"quotaDiscovery":true,"balanceDiscovery":false,"costDiscovery":false,"pricingDiscovery":false}},"instanceIds":[]}
+    ]}
+    """#
+    let providers = try JSONDecoder().decode(UsageListResponse<CatalogProviderView>.self, from: Data(json.utf8)).data
+    let groups = ProviderCatalogPresenter.groups(for: .accounts, providers: providers)
+    try expect(groups.connected.map(\.directory.integrationType) == ["chatgpt-subscription", "command-code"], "connected and degraded account providers must remain grouped as connected")
+    try expect(groups.available.map(\.directory.integrationType) == ["claude-subscription"], "supported disconnected providers must remain visible")
+}
+
 final class MemoryCredentialStore: UsageCredentialStore {
     var token: String?
 
@@ -324,6 +346,7 @@ do {
     try testProviderPressureDecoding()
     try testCatalogDecodingContract()
     try testDemoCredentialModuleUsesOnlyPublicFixtureCredentials()
+    try testProviderPresentationContract()
     try await testReadOnlyAPIClient()
     try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()
     try await testDashboardFetchAndSafePresentation()
