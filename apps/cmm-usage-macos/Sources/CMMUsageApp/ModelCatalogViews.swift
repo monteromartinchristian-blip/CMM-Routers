@@ -37,7 +37,7 @@ struct ModelsSectionView: View {
                 )
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         if let actionError {
                             Label(actionError, systemImage: "exclamationmark.triangle")
                                 .font(.caption)
@@ -56,7 +56,7 @@ struct ModelsSectionView: View {
                         .padding(.top, 2)
                     }
                     .padding(.horizontal, 22)
-                    .padding(.vertical, 16)
+                    .padding(.vertical, 12)
                     .frame(maxWidth: 820, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
@@ -94,6 +94,7 @@ struct ModelsSectionView: View {
                 }
             }
             .frame(width: 130)
+            .controlSize(.small)
 
             Spacer()
 
@@ -146,20 +147,20 @@ private struct ProviderModelGroupView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(.quinary.opacity(0.26))
+            .padding(.vertical, 6)
+            .background(.quinary.opacity(0.12))
 
             ForEach(Array(group.products.enumerated()), id: \.element.id) { productIndex, product in
                 if productIndex > 0 { Divider() }
                 ProductModelGroupView(product: product, onSetVisibility: onSetVisibility)
             }
         }
-        .background(.quinary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(.quinary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(.quaternary, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(.quaternary.opacity(0.8), lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 
@@ -179,7 +180,7 @@ private struct ProductModelGroupView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .padding(.vertical, 5)
 
             Divider().padding(.leading, 14)
 
@@ -247,7 +248,7 @@ private struct ModelRouteRow: View {
             .accessibilityValue(route.visibility == .visible ? "Visible" : "Hidden")
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 }
 
@@ -300,7 +301,7 @@ struct CompactModelPickerPreview: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search models", text: $query)
@@ -311,7 +312,7 @@ struct CompactModelPickerPreview: View {
             .background(.quinary.opacity(0.4), in: RoundedRectangle(cornerRadius: 7))
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 7) {
                     ForEach(groups) { group in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(group.provider.displayName)
@@ -331,7 +332,7 @@ struct CompactModelPickerPreview: View {
                                     AccessOfferBadge(offer: route.offer)
                                 }
                                 .padding(.horizontal, 7)
-                                .padding(.vertical, 5)
+                                .padding(.vertical, 4)
                             }
                         }
                     }
@@ -345,7 +346,7 @@ struct CompactModelPickerPreview: View {
             }
             .buttonStyle(.borderless)
         }
-        .padding(10)
+        .padding(9)
         .frame(width: 340)
     }
 }

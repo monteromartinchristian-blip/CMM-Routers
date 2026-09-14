@@ -36,6 +36,9 @@ private struct ProviderStateBadge: View {
                 .font(.caption2.weight(.medium))
         }
         .foregroundStyle(state.tint)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(state.tint.opacity(0.10), in: Capsule())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Connection status: \(state.label)")
     }
@@ -54,10 +57,10 @@ private struct ProviderListSection<Content: View>: View {
             VStack(spacing: 0) {
                 content
             }
-            .background(.quinary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(.quinary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.quaternary, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(.quaternary.opacity(0.8), lineWidth: 1)
             }
         }
     }
@@ -77,10 +80,11 @@ struct ProvidersSectionView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 430)
+                .controlSize(.small)
                 Spacer()
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 12)
+            .padding(.vertical, 9)
 
             Divider()
 
@@ -97,7 +101,7 @@ struct ProvidersSectionView: View {
                 }
                 .environmentObject(model)
                 .padding(.horizontal, 22)
-                .padding(.vertical, 18)
+                .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
@@ -114,7 +118,7 @@ private struct AccountProvidersView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Label("Connect an account", systemImage: "key.horizontal")
                     .font(.headline)
@@ -216,7 +220,7 @@ private struct AccountProvidersView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
     }
 
     private func mutate(_ operation: @escaping () async throws -> Void) {
@@ -241,7 +245,7 @@ private struct APIKeyProvidersView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("API providers").font(.headline)
                 Text("Keys are stored in secure credential storage. Only a masked hint is shown here.")
@@ -296,9 +300,11 @@ private struct APIKeyProvidersView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 20)
-            Text(model.connectionHint(for: provider))
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            if provider.directory.connectedInstanceCount > 0 {
+                Text(model.connectionHint(for: provider))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
             Button(provider.directory.connectedInstanceCount > 0 ? "Reconnect" : "Add key") {
                 connectProvider = provider
             }
@@ -328,7 +334,7 @@ private struct APIKeyProvidersView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .contain)
     }
 
@@ -442,7 +448,7 @@ private struct CustomEndpointsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 7) {
                     Label("Custom Endpoints", systemImage: "server.rack")
@@ -477,7 +483,7 @@ private struct CustomEndpointsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
+                        .padding(.vertical, 7)
                         if index < customRoutes.count - 1 { Divider().padding(.leading, 14) }
                     }
                 }
@@ -539,11 +545,11 @@ private struct CustomEndpointsView: View {
                     .disabled(!canSave || isSaving || !model.managementCredentialStored)
                 }
             }
-            .padding(14)
-            .background(.quinary.opacity(0.2), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(12)
+            .background(.quinary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(.quaternary, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(.quaternary.opacity(0.8), lineWidth: 1)
             }
         }
     }

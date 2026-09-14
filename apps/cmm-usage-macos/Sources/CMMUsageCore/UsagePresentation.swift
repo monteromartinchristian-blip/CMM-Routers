@@ -131,7 +131,9 @@ public extension CatalogQuotaSummary {
     }
 
     var resetText: String {
-        if let resetAt, !resetAt.isEmpty { return resetAt }
+        if let resetAt, !resetAt.isEmpty {
+            return UsagePresentationDateFormatter.resetText(resetAt) ?? resetAt
+        }
         if let providerResetText, !providerResetText.isEmpty { return providerResetText }
         return windowPolicy?.kind == "none" ? "No reset" : "Unknown reset"
     }
@@ -205,6 +207,52 @@ public extension CatalogQuotaSummary {
         default: return "\(code.uppercased()) \(amount)"
         }
     }
+}
+
+public extension AccessOfferSummary {
+    var validUntilText: String? {
+        guard let validUntil, !validUntil.isEmpty else { return nil }
+        return UsagePresentationDateFormatter.validUntilText(validUntil) ?? validUntil
+    }
+}
+
+private enum UsagePresentationDateFormatter {
+    static func resetText(_ value: String) -> String? {
+        guard let date = parse(value) else { return nil }
+        return resetFormatter.string(from: date)
+    }
+
+    static func validUntilText(_ value: String) -> String? {
+        guard let date = parse(value) else { return nil }
+        return validUntilFormatter.string(from: date)
+    }
+
+    private static func parse(_ value: String) -> Date? {
+        if let date = fractionalISO8601.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    private static let fractionalISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let resetFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "'Resets' d MMM, HH:mm 'UTC'"
+        return formatter
+    }()
+
+    private static let validUntilFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "'Until' d MMM yyyy"
+        return formatter
+    }()
 }
 
 public extension Array where Element == CatalogQuotaSummary {

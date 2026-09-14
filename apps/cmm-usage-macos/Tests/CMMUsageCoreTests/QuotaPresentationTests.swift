@@ -32,15 +32,25 @@ final class QuotaPresentationTests: XCTestCase {
         [
           {"bucketId":"supplemental","displayName":"Free credits","metric":{"kind":"credits"},"unit":"credits","windowPolicy":{"kind":"none"},"scope":{"kind":"product","productId":"p"},"status":"unknown","remaining":0,"constraining":false},
           {"bucketId":"rolling","displayName":"5-hour window","metric":{"kind":"provider_defined","providerKey":"window_units"},"unit":"provider units","windowPolicy":{"kind":"rolling_duration","durationSeconds":18000},"scope":{"kind":"product","productId":"p"},"status":"healthy","remaining":14,"limit":14,"constraining":true,"affectedRouteIds":["r"]},
-          {"bucketId":"shared","displayName":"Shared pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"p"},"status":"warning","remaining":800000,"limit":2000000,"constraining":false,"affectedRouteIds":["r1","r2"]}
+          {"bucketId":"shared","displayName":"Shared pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"p"},"status":"warning","remaining":800000,"limit":2000000,"resetAt":"2026-09-15T00:00:00.000Z","constraining":false,"affectedRouteIds":["r1","r2"]}
         ]
         """#)
 
         XCTAssertEqual(quotas[0].resetText, "No reset")
         XCTAssertEqual(quotas[1].resetText, "Unknown reset")
+        XCTAssertEqual(quotas[2].resetText, "Resets 15 Sep, 00:00 UTC")
         XCTAssertTrue(quotas[0].isSupplementalBalance)
         XCTAssertFalse(quotas[2].isSupplementalBalance)
         XCTAssertEqual(quotas.sortedForPresentation.map(\.bucketId), ["rolling", "shared", "supplemental"])
+    }
+
+    func testOfferExpiryUsesFriendlyProductDate() throws {
+        let route = try decoder.decode(
+            CatalogRouteEntry.self,
+            from: Data(#"{"routeId":"r","provider":{"id":"provider","displayName":"Provider"},"product":{"id":"product","displayName":"Promo","category":"api"},"model":{"id":"model","displayName":"Model"},"offer":{"kind":"PROMO","validUntil":"2026-09-30T23:59:59.000Z"},"quota":[],"availability":"available","visibility":"visible","freshness":{"stale":false}}"#.utf8)
+        )
+
+        XCTAssertEqual(route.offer.validUntilText, "Until 30 Sep 2026")
     }
 
     private func decodeQuotas(_ array: String) throws -> [CatalogQuotaSummary] {

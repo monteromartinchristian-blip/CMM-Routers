@@ -37,7 +37,7 @@ struct OverviewSectionView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 15) {
                 summaryStrip
 
                 if !attentionProviders.isEmpty || !attentionQuotas.isEmpty {
@@ -102,13 +102,13 @@ struct OverviewSectionView: View {
                                 Spacer()
                                 AccessOfferBadge(offer: route.offer)
                             }
-                            .padding(.vertical, 9)
+                            .padding(.vertical, 7)
                         }
                     }
                 }
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 18)
+            .padding(.vertical, 14)
             .frame(maxWidth: 880, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
         }
@@ -133,11 +133,11 @@ struct OverviewSectionView: View {
             Divider().frame(height: 40)
             summaryMetric("Free & promo", "\(model.promotions.count)", "sparkles")
         }
-        .padding(.vertical, 11)
-        .background(.quinary.opacity(0.18), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.vertical, 7)
+        .background(.quinary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(.quaternary, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(.quaternary.opacity(0.8), lineWidth: 1)
         }
     }
 
@@ -203,7 +203,7 @@ private struct AvailableProviderOverviewRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
     }
 }
@@ -213,11 +213,11 @@ private struct QuietList<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) { content }
-            .padding(.horizontal, 13)
-            .background(.quinary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .padding(.horizontal, 12)
+            .background(.quinary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(.quaternary, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(.quaternary.opacity(0.8), lineWidth: 1)
             }
     }
 }
@@ -242,7 +242,7 @@ private struct ProviderAttentionRow: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
     }
 }
 
@@ -265,7 +265,7 @@ private struct ConnectedProviderOverviewRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
     }
 }
@@ -289,7 +289,7 @@ private struct OverviewQuotaRow: View {
                 Text(quota.resetText).font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 7)
     }
 }
 

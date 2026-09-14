@@ -209,6 +209,12 @@ func testQuotaPresentationContract() throws {
     try expect(abs((quotas[2].progressFraction ?? -1) - 0.6) < 0.0001, "known token denominator should support real progress")
     try expect(quotas[5].resetText == "Unknown reset", "rolling quota without provider reset instant must remain unknown")
     try expect(quotas[6].resetText == "No reset", "non-resetting supplemental balance must say No reset")
+
+    let dated = try JSONDecoder().decode(
+        CatalogQuotaSummary.self,
+        from: Data(#"{"bucketId":"dated","displayName":"Daily requests","metric":{"kind":"requests"},"unit":"requests","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"r"},"status":"healthy","remaining":42,"limit":100,"resetAt":"2026-09-15T00:00:00.000Z","constraining":true}"#.utf8)
+    )
+    try expect(dated.resetText == "Resets 15 Sep, 00:00 UTC", "absolute reset instants must render as friendly product copy")
     try expect(quotas[6].isSupplementalBalance, "unbound non-resetting balance must be visually subordinate")
     try expect(quotas.sortedForPresentation.first?.constraining == true && quotas.sortedForPresentation.last?.bucketId == "supplemental", "constraining quotas must lead and supplemental balances must trail")
 }

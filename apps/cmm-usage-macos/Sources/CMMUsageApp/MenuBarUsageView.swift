@@ -55,7 +55,7 @@ struct MenuBarUsageView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(height: productListHeight)
             } else {
                 EmptyStateView(
                     title: "No usage data yet",
@@ -203,5 +203,12 @@ struct MenuBarUsageView: View {
     private var lastUpdatedText: String {
         guard let date = model.lastUpdated else { return "Not refreshed yet" }
         return "Updated \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var productListHeight: CGFloat {
+        let estimated = productSummaries.prefix(5).reduce(CGFloat.zero) { partial, product in
+            partial + 58 + CGFloat(min(product.quotaLines.count, 3)) * 34
+        }
+        return min(max(estimated, 84), 360)
     }
 }

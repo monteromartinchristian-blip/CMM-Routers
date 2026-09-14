@@ -11,7 +11,7 @@ struct QuotasSectionView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 15) {
                 if quotas.isEmpty {
                     EmptyStateView(
                         title: "No quotas reported",
@@ -34,7 +34,7 @@ struct QuotasSectionView: View {
                 }
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 18)
+            .padding(.vertical, 14)
             .frame(maxWidth: 900, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
         }
@@ -59,9 +59,9 @@ struct QuotasSectionView: View {
                 if index < values.count - 1 { Divider().padding(.leading, 14) }
             }
         }
-        .background(.quinary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(.quinary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.quaternary, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.quaternary.opacity(0.8), lineWidth: 1)
         }
     }
 
@@ -98,16 +98,11 @@ private struct CatalogQuotaRow: View {
     let hiddenRouteCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 7) {
                         Text(quota.displayName).font(.subheadline.weight(.semibold))
-                        if quota.constraining {
-                            Text("Constraining")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                        }
                         if quota.scope.kind == .sharedPool {
                             Text("Shared")
                                 .font(.caption2.weight(.semibold))
@@ -126,17 +121,26 @@ private struct CatalogQuotaRow: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(quota.resetText).font(.caption.weight(.medium))
-                    Text("\(quota.scopeText) · \(quota.freshnessText)")
+                    Text(quota.freshnessText == "Stale" ? "Stale data" : quota.freshnessText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
 
             if let progress = quota.progressFraction {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .accessibilityLabel("\(quota.displayName) used")
-                    .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("Used")
+                        Spacer()
+                        Text(progress.formatted(.percent.precision(.fractionLength(0))))
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .accessibilityLabel("\(quota.displayName) used")
+                        .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+                }
             }
 
             if !affectedRoutes.isEmpty {
@@ -147,7 +151,7 @@ private struct CatalogQuotaRow: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, quota.isSupplementalBalance ? 9 : 12)
+        .padding(.vertical, quota.isSupplementalBalance ? 7 : 9)
         .opacity(quota.isSupplementalBalance ? 0.76 : 1)
     }
 

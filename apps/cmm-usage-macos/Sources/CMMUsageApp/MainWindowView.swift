@@ -85,6 +85,6 @@ struct MainWindowView: View {
             .disabled(model.isLoading || !model.credentialStored)
         }
         .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.vertical, 10)
     }
 }

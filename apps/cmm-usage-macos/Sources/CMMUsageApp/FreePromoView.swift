@@ -50,7 +50,7 @@ struct FreePromoSectionView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 15) {
                 if model.promotions.isEmpty {
                     EmptyStateView(
                         title: "No provider-reported free access yet",
@@ -78,13 +78,10 @@ struct FreePromoSectionView: View {
                     if !exhausted.isEmpty {
                         section("Exhausted until reset", detail: "Promotional routes whose reported allowance is currently exhausted.", routes: exhausted)
                     }
-                    Text("CMM Usage does not infer promotions from provider or model names.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, 22)
-            .padding(.vertical, 18)
+            .padding(.vertical, 14)
             .frame(maxWidth: 860, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .top)
         }
@@ -96,7 +93,7 @@ struct FreePromoSectionView: View {
         routes: [CatalogRouteEntry],
         connected: Bool = true
     ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.headline)
                 Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -107,9 +104,9 @@ struct FreePromoSectionView: View {
                     if index < routes.count - 1 { Divider().padding(.leading, 14) }
                 }
             }
-            .background(.quinary.opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(.quinary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.quaternary, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.quaternary.opacity(0.8), lineWidth: 1)
             }
         }
     }
@@ -133,8 +130,8 @@ private struct PromotionRouteRow: View {
                 Text("\(route.provider.displayName) · \(route.product.displayName)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let validUntil = route.offer.validUntil {
-                    Text("Valid until \(validUntil)")
+                if let validUntil = route.offer.validUntilText {
+                    Text(validUntil)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -149,7 +146,7 @@ private struct PromotionRouteRow: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, 8)
     }
 
     private var accessText: String {
