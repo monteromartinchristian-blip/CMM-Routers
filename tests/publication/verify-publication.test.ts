@@ -53,6 +53,8 @@ async function makeSanitizedPublic(root: string) {
       "node_modules/",
       "--exclude",
       "dist/",
+      "--exclude",
+      ".build/",
       `${projectRoot}/`,
       `${raw}/`,
     ],
