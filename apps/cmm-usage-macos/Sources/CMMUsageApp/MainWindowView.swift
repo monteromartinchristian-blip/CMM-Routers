@@ -19,11 +19,19 @@ private extension UsageNavigationDestination {
 
 struct MainWindowView: View {
     @EnvironmentObject private var model: UsageAppModel
-    @State private var selection: UsageNavigationDestination? = .overview
+
+    private var selection: Binding<UsageNavigationDestination?> {
+        Binding(
+            get: { model.navigationDestination },
+            set: { destination in
+                if let destination { model.navigate(to: destination) }
+            }
+        )
+    }
 
     var body: some View {
         NavigationSplitView {
-            List(UsageNavigationDestination.allCases, selection: $selection) { section in
+            List(UsageNavigationDestination.allCases, selection: selection) { section in
                 Label(section.title, systemImage: section.symbol)
                     .tag(section)
             }
@@ -34,10 +42,10 @@ struct MainWindowView: View {
                 header
                 Divider()
                 Group {
-                    switch selection ?? .overview {
+                    switch model.navigationDestination {
                     case .overview: OverviewSectionView()
                     case .quotas: QuotasSectionView()
-                    case .models: ModelsSectionView(onAddProvider: { selection = .providers })
+                    case .models: ModelsSectionView(onAddProvider: { model.navigate(to: .providers) })
                     case .providers: ProvidersSectionView()
                     case .freePromo: FreePromoSectionView()
                     case .history: HistorySectionView()
@@ -54,7 +62,7 @@ struct MainWindowView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text((selection ?? .overview).title)
+                Text(model.navigationDestination.title)
                     .font(.title2.weight(.semibold))
                 if let error = model.errorMessage {
                     Text(error)

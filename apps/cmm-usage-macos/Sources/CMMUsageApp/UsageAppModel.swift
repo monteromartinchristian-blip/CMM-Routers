@@ -19,6 +19,7 @@ final class UsageAppModel: ObservableObject {
     @Published private(set) var managementCredentialStored = false
     @Published private(set) var baseURLString: String
     @Published private(set) var connectionHints: [String: String] = [:]
+    @Published private(set) var navigationDestination: UsageNavigationDestination = .overview
 
     private let defaults: UserDefaults
     private let credentialStore: UsageCredentialStore
@@ -182,6 +183,17 @@ final class UsageAppModel: ObservableObject {
 
     func setRouteVisibility(routeId: String, state: CatalogVisibilityState) async throws {
         try await setRoutesVisibility(routeIds: [routeId], state: state)
+    }
+
+    func navigate(to destination: UsageNavigationDestination) {
+        navigationDestination = destination
+    }
+
+    @discardableResult
+    func handleDeepLink(_ url: URL) -> Bool {
+        guard let destination = UsageNavigationDestination.fromDeepLink(url) else { return false }
+        navigationDestination = destination
+        return true
     }
 
     func setRoutesVisibility(routeIds: [String], state: CatalogVisibilityState) async throws {

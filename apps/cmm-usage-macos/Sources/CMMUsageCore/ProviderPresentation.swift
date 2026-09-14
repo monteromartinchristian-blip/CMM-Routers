@@ -26,6 +26,24 @@ public enum UsageNavigationDestination: String, CaseIterable, Identifiable, Send
         case .settings: return "Settings"
         }
     }
+
+    public static func fromDeepLink(_ url: URL) -> UsageNavigationDestination? {
+        guard url.scheme?.lowercased() == "cmm-usage" else { return nil }
+        let value = (url.host?.isEmpty == false ? url.host : url.path.split(separator: "/").first.map(String.init))?
+            .lowercased()
+        switch value {
+        case "overview": return .overview
+        case "quotas": return .quotas
+        case "models": return .models
+        case "providers": return .providers
+        case "free-promo", "freepromo": return .freePromo
+        case "history": return .history
+        case "costs": return .costs
+        case "alerts": return .alerts
+        case "settings": return .settings
+        default: return nil
+        }
+    }
 }
 
 public enum ProviderSettingsSection: String, CaseIterable, Identifiable, Sendable {

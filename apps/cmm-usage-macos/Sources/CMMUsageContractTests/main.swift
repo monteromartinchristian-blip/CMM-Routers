@@ -213,6 +213,32 @@ func testQuotaPresentationContract() throws {
     try expect(quotas.sortedForPresentation.first?.constraining == true && quotas.sortedForPresentation.last?.bucketId == "supplemental", "constraining quotas must lead and supplemental balances must trail")
 }
 
+func testMenuBarPresentationContract() throws {
+    let routesJSON = #"""
+    {"data":[
+      {"routeId":"route:goat","provider":{"id":"provider:command","displayName":"Command Code"},"product":{"id":"product:goat","displayName":"individual-goat","category":"subscription"},"model":{"id":"model:command","displayName":"Command Code"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"}
+    ]}
+    """#
+    let quotasJSON = #"""
+    {"data":[
+      {"bucketId":"credits","displayName":"Monthly plan credits","metric":{"kind":"credits"},"unit":"credits","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","remaining":35,"constraining":true,"affectedRouteIds":["route:goat"]},
+      {"bucketId":"weekly","displayName":"Weekly usage","metric":{"kind":"percentage"},"unit":"fraction","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","usedFraction":0.61,"constraining":false,"affectedRouteIds":["route:goat"]}
+    ]}
+    """#
+    let routes = try JSONDecoder().decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(routesJSON.utf8)).data
+    let quotas = try JSONDecoder().decode(UsageListResponse<CatalogQuotaSummary>.self, from: Data(quotasJSON.utf8)).data
+    let products = MenuBarPresenter.productSummaries(routes: routes, quotas: quotas)
+    guard let goat = products.first else { throw ContractFailure.expected("menu bar should project the GOAT product") }
+    try expect(goat.productName == "GOAT", "menu bar must use a friendly GOAT product identity")
+    try expect(goat.quotaLines.map(\.valueText) == ["35 credits remaining", "61% used"], "heterogeneous menu quotas must keep their native values")
+    try expect(goat.quotaLines.allSatisfy { $0.resetText == "Unknown reset" }, "missing provider reset instants must remain Unknown reset")
+    try expect(goat.quotaLines.count == 2, "menu bar must not collapse heterogeneous quotas into a universal percentage")
+    try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://models")!) == .models, "models deep link must map to Models")
+    try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://providers")!) == .providers, "providers deep link must map to Providers")
+    try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://quotas")!) == .quotas, "quotas deep link must map to Quotas")
+    try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://free-promo")!) == .freePromo, "free-promo deep link must map to Free & Promo")
+}
+
 final class MemoryCredentialStore: UsageCredentialStore {
     var token: String?
 
@@ -418,6 +444,7 @@ do {
     try testProviderPresentationContract()
     try testModelCatalogPresentationContract()
     try testQuotaPresentationContract()
+    try testMenuBarPresentationContract()
     try await testReadOnlyAPIClient()
     try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()
     try await testDashboardFetchAndSafePresentation()

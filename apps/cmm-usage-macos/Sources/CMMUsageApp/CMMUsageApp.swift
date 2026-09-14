@@ -19,6 +19,9 @@ struct CMMUsageDesktopApp: App {
                 .environmentObject(model)
                 .frame(minWidth: 980, minHeight: 640)
                 .task { await model.loadIfNeeded() }
+                .onOpenURL { url in
+                    _ = model.handleDeepLink(url)
+                }
         }
         .defaultSize(width: 1180, height: 760)
     }
