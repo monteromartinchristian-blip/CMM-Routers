@@ -155,6 +155,22 @@ export const NVIDIA_NIM_MANIFEST: ProviderManifest = openAiWaveManifest({
   activation: { mode: "none", models: [] },
 });
 
+/**
+ * Vikey: no canonical OpenAI-compatible host is established by the plan text or
+ * by any repository evidence, so the manifest deliberately carries
+ * `baseUrl: null` rather than guessing one. An operator must supply
+ * `providers.vikey.baseUrl`; until then an enabled route is skipped with a
+ * clear reason. Tool capability stays `CHAT_ONLY` until proven.
+ */
+export const VIKEY_MANIFEST: ProviderManifest = openAiWaveManifest({
+  id: "vikey",
+  displayName: "Vikey",
+  billingClass: "api",
+  baseUrl: null,
+  secretEnv: "VIKEY_API_KEY",
+  toolCapability: "CHAT_ONLY",
+});
+
 /** Providers served by the generic OpenAI-compatible adapter. */
 export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   QWEN_TOKEN_PLAN_MANIFEST,
@@ -164,6 +180,7 @@ export const GENERIC_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   OPENCODE_ZEN_MANIFEST,
   KIRA_MANIFEST,
   NVIDIA_NIM_MANIFEST,
+  VIKEY_MANIFEST,
 ];
 
 /**
