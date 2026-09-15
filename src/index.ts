@@ -656,6 +656,14 @@ export function createProductionServer(composition: ProductionComposition, beare
     registry: composition.registry,
     usageStore: composition.usageStore,
     runtimeBridge: composition.runtimeBridge,
+    catalogProjectionInput: {
+      directory: composition.providerDirectory,
+      accounts: composition.accounts,
+      products: composition.products,
+      connections: composition.providerConnections,
+      modelIdentities: composition.modelIdentities,
+      routeCatalog: composition.routeCatalog,
+    },
   });
 }
 

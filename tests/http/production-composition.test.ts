@@ -12,6 +12,15 @@ describe("production composition root", () => {
     dir = mkdtempSync(join(tmpdir(), "cmm-prod-"));
     process.env = { ...savedEnv };
     delete process.env.COMMAND_CODE_SECRET;
+    delete process.env.CMM_TEST_PROVIDER;
+    for (const key of [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
+    ]) {
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
@@ -95,6 +104,38 @@ describe("production composition root", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json() as { data: unknown[] };
     expect(body.data.length).toBeGreaterThan(0);
+  });
+
+  it("wires the live production catalog into the management endpoint", async () => {
+    process.env.CMM_TEST_PROVIDER = "scripted";
+    writeConfig();
+    const { loadConfig } = await import("../../src/config/load-config.js");
+    const composition = await createProductionRegistry(loadConfig(dir));
+    const server = createProductionServer(composition, "composition-test-secret");
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: { authorization: "Bearer composition-test-secret" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.providers).toContainEqual({
+      providerId: "chatgpt",
+      displayName: "ChatGPT / Codex",
+    });
+    expect(body.accounts).toContainEqual({
+      accountId: "account:chatgpt:default",
+      providerId: "chatgpt",
+      label: "ChatGPT / Codex default account",
+    });
+    expect(body.routes).toHaveLength(1);
+    expect(body.routes[0]).toMatchObject({
+      providerId: "chatgpt",
+      providerModelId: "scripted-test-model",
+      routable: true,
+    });
   });
 
   it("/ready reflects provider health", { timeout: 60000 }, async () => {
