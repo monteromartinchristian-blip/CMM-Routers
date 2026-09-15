@@ -144,4 +144,54 @@ describe("production shared catalog composition", () => {
     expect(transport.requests.every((request) => request.method === "GET")).toBe(true);
     expect(transport.requests.every((request) => /\/models$/.test(request.url))).toBe(true);
   });
+
+  it("uses effective configured activation for catalog routability", async () => {
+    const config = deterministicConfig();
+    config.providers["qwen-token-plan"].activation = {
+      mode: "allowlist",
+      models: ["qwen3.8-max"],
+    };
+    config.providers["nvidia-nim"].activation = {
+      mode: "allowlist",
+      models: ["provider-extra-model"],
+    };
+    config.providers.deepseek.activation = { mode: "none" };
+
+    const transport = catalogFetch({
+      data: [
+        { id: "qwen3.8-max" },
+        { id: "moonshotai/kimi-k3" },
+        { id: "provider-extra-model" },
+      ],
+    });
+
+    const composition = await createProductionRegistry(config, {
+      fetchFn: transport.fetchFn,
+    });
+
+    const qwenPlanRoutes = composition.routeCatalog
+      .list()
+      .filter((route) => route.providerId === "qwen-token-plan");
+    expect(qwenPlanRoutes.find((route) => route.providerModelId === "qwen3.8-max")?.routable).toBe(
+      true,
+    );
+    expect(
+      qwenPlanRoutes.find((route) => route.providerModelId === "provider-extra-model")?.routable,
+    ).toBe(false);
+
+    const nimRoutes = composition.routeCatalog
+      .list()
+      .filter((route) => route.providerId === "nvidia-nim");
+    expect(
+      nimRoutes.find((route) => route.providerModelId === "provider-extra-model")?.routable,
+    ).toBe(true);
+    expect(
+      nimRoutes.find((route) => route.providerModelId === "moonshotai/kimi-k3")?.routable,
+    ).toBe(false);
+
+    expect(composition.registeredProviders).toContain("deepseek");
+    expect(
+      composition.routeCatalog.list().some((route) => route.providerId === "deepseek"),
+    ).toBe(false);
+  });
 });

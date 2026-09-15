@@ -273,9 +273,19 @@ function stableOpaqueRef(value: string): string {
   return encodeURIComponent(value).replace(/'/gu, "%27");
 }
 
-function routeIsActivated(providerId: string, modelId: string): boolean {
+function routeIsActivated(providerId: string, modelId: string, config: RouterConfig): boolean {
   if ((SUBSCRIPTION_BRIDGE_IDS as readonly string[]).includes(providerId)) return true;
-  return isActivatedModel(providerWaveManifest(providerId as ProviderId), modelId);
+  const manifest = providerWaveManifest(providerId as ProviderId);
+  const configured = isWaveProviderId(providerId)
+    ? waveProviderConfig(config.providers, providerId)
+    : undefined;
+  return isActivatedModel(
+    {
+      ...manifest,
+      activation: resolveEffectiveActivation(manifest, configured?.activation),
+    },
+    modelId,
+  );
 }
 
 function composeSharedCatalog(
@@ -424,7 +434,7 @@ function composeSharedCatalog(
       executionProfile: "default",
       capabilities: modelCapabilities(model),
       billingClass: connectionFacts(model.provider, config).billingClass,
-      routable: routeIsActivated(model.provider, model.upstreamModel),
+      routable: routeIsActivated(model.provider, model.upstreamModel, config),
       visibility: {
         visibleOn:
           model.capability === "CHAT_ONLY"
