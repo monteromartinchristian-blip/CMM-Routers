@@ -171,6 +171,37 @@ describe("ModelIdentityStore", () => {
     ).toThrow(/already bound/i);
   });
 
+  it("does not replace a binding after its provisional identity becomes explicit", () => {
+    const store = new ModelIdentityStore();
+    const model = discoveredModel();
+    const provisional = store.resolveProviderModel(
+      model.providerId,
+      model.connectionId,
+      model.providerModelId,
+    );
+    store.upsertExplicit(provisional);
+
+    const otherExplicit = explicitIdentity("Claude Opus");
+    store.upsertExplicit(otherExplicit);
+
+    expect(() =>
+      store.bindProviderModel(
+        binding(otherExplicit.modelIdentityId, {
+          providerId: model.providerId,
+          connectionId: model.connectionId,
+          providerModelId: model.providerModelId,
+        }),
+      ),
+    ).toThrow(/already bound/i);
+    expect(
+      store.resolveProviderModel(
+        model.providerId,
+        model.connectionId,
+        model.providerModelId,
+      ),
+    ).toEqual(provisional);
+  });
+
   it("retains identity history when later discovery omits an older model", () => {
     const store = new ModelIdentityStore();
     const historical = store.resolveProviderModel(

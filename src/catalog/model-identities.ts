@@ -95,6 +95,7 @@ export class ModelIdentityStore {
     const snapshot = snapshotIdentity(identity);
     this.identities.set(snapshot.modelIdentityId, snapshot);
     this.explicitIdentityIds.add(snapshot.modelIdentityId);
+    this.provisionalIdentityIds.delete(snapshot.modelIdentityId);
   }
 
   bindProviderModel(binding: ProviderModelIdentityBinding): void {
