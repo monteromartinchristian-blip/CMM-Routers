@@ -25,6 +25,9 @@ export interface CatalogRuntimeBridgeOptions {
 }
 
 interface ResolvedExecutionAdapter extends ProviderAdapter {
+  readonly executionCapabilities: {
+    readonly exactResolvedRoute: true;
+  };
   runWithResolvedExecution(
     request: RouterRequest,
     signal: AbortSignal,
@@ -34,10 +37,11 @@ interface ResolvedExecutionAdapter extends ProviderAdapter {
   ): AsyncIterable<RouterEvent>;
 }
 
-function supportsResolvedExecution(
+export function supportsExactResolvedRouteExecution(
   adapter: ProviderAdapter,
 ): adapter is ResolvedExecutionAdapter {
   return (
+    adapter.executionCapabilities?.exactResolvedRoute === true &&
     typeof (adapter as Partial<ResolvedExecutionAdapter>).runWithResolvedExecution ===
     "function"
   );
@@ -80,7 +84,7 @@ class RouteBoundAdapter implements ProviderAdapter {
     }
 
     const delegate = this.delegate;
-    if (!supportsResolvedExecution(delegate)) {
+    if (!supportsExactResolvedRouteExecution(delegate)) {
       yield {
         type: "error",
         error: new RouterError("unknown_model", "Unknown or unavailable route"),

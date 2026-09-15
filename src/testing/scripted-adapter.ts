@@ -5,6 +5,9 @@ import type {
 } from "../core/provider.js";
 import type { DiscoveredModel } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
+import { RouterError } from "../core/errors.js";
+import type { ProviderConnection } from "../catalog/types.js";
+import type { ResolvedSecret } from "../catalog/secure-credential-resolver.js";
 
 /**
  * Scripted in-process test double for the compiled-process E2E only.
@@ -14,6 +17,7 @@ import type { RouterEvent } from "../core/events.js";
  */
 export class ScriptedTestAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private active = new Set<string>();
 
   async discoverModels(): Promise<DiscoveredModel[]> {
@@ -43,6 +47,27 @@ export class ScriptedTestAdapter implements ProviderAdapter {
     } finally {
       this.active.delete(request.requestId);
     }
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    if (
+      connection.providerId !== this.id ||
+      executionProfile.length === 0 ||
+      credential.value.length === 0
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+    yield* this.run(request, signal);
   }
 
   async cancel(requestId: string): Promise<void> {

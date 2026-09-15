@@ -42,7 +42,10 @@ import { CredentialBindingStore } from "./catalog/credential-bindings.js";
 import { ProviderConnectionService } from "./catalog/provider-connections.js";
 import { ModelIdentityStore } from "./catalog/model-identities.js";
 import { RouteCatalog } from "./catalog/route-catalog.js";
-import { CatalogRuntimeBridge } from "./catalog/runtime-bridge.js";
+import {
+  CatalogRuntimeBridge,
+  supportsExactResolvedRouteExecution,
+} from "./catalog/runtime-bridge.js";
 import {
   buildConnectionId,
   buildModelIdentityId,
@@ -398,6 +401,9 @@ function composeSharedCatalog(
   for (const model of registry.listModels()) {
     const connection = connectionByProvider.get(model.provider);
     if (connection === undefined) continue;
+    const adapter = registry.getAdapter(model.provider);
+    const exactRouteExecutable =
+      adapter !== undefined && supportsExactResolvedRouteExecution(adapter);
     const canonicalName = canonicalModelIdentityName(model.provider, model.upstreamModel);
     const modelIdentityId = buildModelIdentityId({ canonicalName });
     modelIdentities.upsertExplicit({
@@ -425,6 +431,8 @@ function composeSharedCatalog(
       // catalog route by rewriting or guessing the provider-native model id.
       continue;
     }
+    const routable =
+      exactRouteExecutable && routeIsActivated(model.provider, model.upstreamModel, config);
     routeCatalog.upsert({
       routeId,
       modelIdentityId,
@@ -434,12 +442,13 @@ function composeSharedCatalog(
       executionProfile: "default",
       capabilities: modelCapabilities(model),
       billingClass: connectionFacts(model.provider, config).billingClass,
-      routable: routeIsActivated(model.provider, model.upstreamModel, config),
+      routable,
       visibility: {
-        visibleOn:
-          model.capability === "CHAT_ONLY"
+        visibleOn: routable
+          ? model.capability === "CHAT_ONLY"
             ? ["cmmchat_model_picker", "admin_console"]
-            : ["cmmchat_model_picker", "cmmcode_model_picker", "admin_console"],
+            : ["cmmchat_model_picker", "cmmcode_model_picker", "admin_console"]
+          : ["admin_console"],
       },
     });
   }

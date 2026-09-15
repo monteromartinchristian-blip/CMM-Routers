@@ -7,8 +7,14 @@ export interface ProviderHealth {
   detail?: string;
 }
 
+export interface ProviderExecutionCapabilities {
+  /** Adapter can honor an exact catalog-resolved route binding. */
+  readonly exactResolvedRoute: boolean;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
+  readonly executionCapabilities?: ProviderExecutionCapabilities;
   discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]>;
   health(signal?: AbortSignal): Promise<ProviderHealth>;
   run(

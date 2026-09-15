@@ -111,6 +111,7 @@ function displayNameOf(record: Record<string, unknown>): string | undefined {
  */
 export class OpenAiCompatibleAdapter implements ProviderAdapter {
   readonly id: ProviderManifest["id"];
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private readonly manifest: ProviderManifest;
   private readonly client: OpenAiCompatibleClient;
   private readonly discoveryPath: string;

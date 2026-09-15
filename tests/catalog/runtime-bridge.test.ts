@@ -46,6 +46,16 @@ class TrackingAdapter implements ProviderAdapter {
   async cancel(): Promise<void> {}
 }
 
+class UndeclaredResolvedExecutionAdapter extends TrackingAdapter {
+  async *runWithResolvedExecution() {
+    yield { type: "completed" as const, finishReason: "stop" as const };
+  }
+}
+
+class CapabilityOnlyAdapter extends TrackingAdapter {
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
+}
+
 function providerDefinition(providerId: "openrouter" | "deepseek"): ProviderDefinition {
   return {
     providerId,
@@ -248,6 +258,88 @@ describe("CatalogRuntimeBridge", () => {
       error: { code: "unknown_model" },
     });
     expect(state.openrouter.runCalls).toEqual([]);
+    expect(state.resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit exact-route capability even when the adapter exposes a matching method", async () => {
+    const state = setup();
+    const model = identity();
+    const accessRoute = route(model.modelIdentityId);
+    addExecutionReadyConnection(state.bindings, state.connections);
+    addRoute(state.modelIdentities, state.catalog, accessRoute, model);
+    await state.registry.register(new UndeclaredResolvedExecutionAdapter("openrouter"));
+    await state.registry.register(state.deepseek);
+    const bridge = new CatalogRuntimeBridge({
+      catalog: state.catalog,
+      connections: state.connections,
+      registry: state.registry,
+    });
+    const resolved = await bridge.resolve(accessRoute.routeId, SURFACE);
+
+    const request: RouterRequest = {
+      requestId: "route-capability-must-be-explicit",
+      model: {
+        id: `route:${accessRoute.routeId}`,
+        provider: "openrouter",
+        upstreamModel: accessRoute.providerModelId,
+        displayName: accessRoute.providerModelId,
+        capability: "CHAT_ONLY",
+      },
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      stream: false,
+    };
+    const events = [];
+    for await (const event of resolved.adapter.run(request, new AbortController().signal)) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "error",
+      error: { code: "unknown_model" },
+    });
+    expect(state.resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when exact-route capability is declared without the execution contract", async () => {
+    const state = setup();
+    const model = identity();
+    const accessRoute = route(model.modelIdentityId);
+    addExecutionReadyConnection(state.bindings, state.connections);
+    addRoute(state.modelIdentities, state.catalog, accessRoute, model);
+    await state.registry.register(new CapabilityOnlyAdapter("openrouter"));
+    await state.registry.register(state.deepseek);
+    const bridge = new CatalogRuntimeBridge({
+      catalog: state.catalog,
+      connections: state.connections,
+      registry: state.registry,
+    });
+    const resolved = await bridge.resolve(accessRoute.routeId, SURFACE);
+
+    const request: RouterRequest = {
+      requestId: "route-capability-without-contract-fail-closed",
+      model: {
+        id: `route:${accessRoute.routeId}`,
+        provider: "openrouter",
+        upstreamModel: accessRoute.providerModelId,
+        displayName: accessRoute.providerModelId,
+        capability: "CHAT_ONLY",
+      },
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      stream: false,
+    };
+    const events = [];
+    for await (const event of resolved.adapter.run(request, new AbortController().signal)) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "error",
+      error: { code: "unknown_model" },
+    });
     expect(state.resolveSecret).not.toHaveBeenCalled();
   });
 
