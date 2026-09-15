@@ -655,6 +655,7 @@ export function createProductionServer(composition: ProductionComposition, beare
     ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
+    runtimeBridge: composition.runtimeBridge,
   });
 }
 

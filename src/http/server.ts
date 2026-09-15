@@ -11,6 +11,7 @@ import {
   CONSUMER_QODER,
   type ConsumerId,
 } from "../core/consumer-capability.js";
+import type { CatalogRuntimeBridge } from "../catalog/runtime-bridge.js";
 
 export interface ServerOptions {
   host: string;
@@ -18,6 +19,7 @@ export interface ServerOptions {
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
+  runtimeBridge?: CatalogRuntimeBridge;
   /**
    * Optional second bearer token bound to the Qoder consumer. When absent
    * there is no Qoder consumer and every authenticated client is CMMChat
@@ -116,10 +118,20 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer
   // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
-  registerChatCompletions(fastify, options.registry, options.usageStore);
+  registerChatCompletions(
+    fastify,
+    options.registry,
+    options.usageStore,
+    options.runtimeBridge,
+  );
 
   // OpenAI-compatible responses API
-  registerResponsesApi(fastify, options.registry, options.usageStore);
+  registerResponsesApi(
+    fastify,
+    options.registry,
+    options.usageStore,
+    options.runtimeBridge,
+  );
 
   return fastify;
 }
