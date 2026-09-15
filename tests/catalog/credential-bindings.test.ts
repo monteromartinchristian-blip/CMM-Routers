@@ -5,10 +5,8 @@ import type {
   SecretMaterialRef,
 } from "../../src/catalog/types.js";
 import { CredentialBindingStore } from "../../src/catalog/credential-bindings.js";
-import {
-  InMemorySecureCredentialResolver,
-  type SecureCredentialResolver,
-} from "../../src/catalog/secure-credential-resolver.js";
+import type { SecureCredentialResolver } from "../../src/catalog/secure-credential-resolver.js";
+import { InMemorySecureCredentialResolver } from "../support/in-memory-secure-credential-resolver.js";
 
 const executionBinding = (
   overrides: Partial<ExecutionCredentialBinding> = {},
@@ -55,6 +53,30 @@ describe("CredentialBindingStore", () => {
 
     expect(store.getExecution(binding.bindingId)).toEqual(binding);
     expect(store.getObservability(binding.bindingId)).toBeUndefined();
+  });
+
+  it("rejects a forged observability binding passed to addExecution at runtime", () => {
+    const store = new CredentialBindingStore();
+    const forged = observabilityBinding({
+      bindingId: "forged-execution",
+    }) as unknown as ExecutionCredentialBinding;
+
+    expect(() => store.addExecution(forged)).toThrow(
+      /expected an execution credential binding/i,
+    );
+    expect(store.getExecution(forged.bindingId)).toBeUndefined();
+  });
+
+  it("rejects a forged execution binding passed to addObservability at runtime", () => {
+    const store = new CredentialBindingStore();
+    const forged = executionBinding({
+      bindingId: "forged-observability",
+    }) as unknown as ObservabilityCredentialBinding;
+
+    expect(() => store.addObservability(forged)).toThrow(
+      /expected an observability credential binding/i,
+    );
+    expect(store.getObservability(forged.bindingId)).toBeUndefined();
   });
 
   it("allows one physical secret reference to have two explicit bindings", () => {
@@ -129,6 +151,48 @@ describe("CredentialBindingStore", () => {
     expect(storedObservability).not.toHaveProperty("token");
     expect(JSON.stringify(storedExecution)).not.toContain(rawSecret);
     expect(JSON.stringify(storedObservability)).not.toContain(rawSecret);
+  });
+
+  it("snapshots execution registration input and get results", () => {
+    const store = new CredentialBindingStore();
+    const input = executionBinding();
+    store.addExecution(input);
+
+    input.providerId = "mutated-provider";
+    input.accountId = "mutated-account";
+    input.secretRef = "keychain://mutated/reference";
+    input.enabled = false;
+
+    const returned = store.getExecution(input.bindingId)!;
+    returned.providerId = "mutated-from-get";
+    returned.accountId = "mutated-from-get";
+    returned.secretRef = "keychain://mutated/from-get";
+    returned.enabled = false;
+
+    expect(store.getExecution(input.bindingId)).toEqual(
+      executionBinding(),
+    );
+  });
+
+  it("snapshots observability registration input and get results", () => {
+    const store = new CredentialBindingStore();
+    const input = observabilityBinding();
+    store.addObservability(input);
+
+    input.providerId = "mutated-provider";
+    input.productId = "mutated-product";
+    input.secretRef = "keychain://mutated/reference";
+    input.enabled = false;
+
+    const returned = store.getObservability(input.bindingId)!;
+    returned.providerId = "mutated-from-get";
+    returned.productId = "mutated-from-get";
+    returned.secretRef = "keychain://mutated/from-get";
+    returned.enabled = false;
+
+    expect(store.getObservability(input.bindingId)).toEqual(
+      observabilityBinding(),
+    );
   });
 
   it("keeps execution and observability add methods type-separated", () => {
