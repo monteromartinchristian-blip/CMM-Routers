@@ -39,6 +39,7 @@ function account(): Account {
     accountId: "account-main",
     providerId: "test-provider",
     label: "Primary Account",
+    identityStatus: "resolved",
     externalAccountRef: "provider-native-account-123",
     rawSecret: RAW_SECRET,
     profilePath: PROFILE_PATH,
@@ -190,6 +191,7 @@ describe("catalog projections", () => {
         accountId: "account-main",
         providerId: "test-provider",
         label: "Primary Account",
+        identityStatus: "resolved",
       },
     ]);
     expect(projection.products).toEqual([
@@ -209,6 +211,7 @@ describe("catalog projections", () => {
         productId: "product-main",
         connectionKind: "openai-chat-completions",
         status: "configured",
+        identityStatus: "resolved",
       },
     ]);
     expect(projection.models).toEqual([
@@ -257,6 +260,7 @@ describe("catalog projections", () => {
       "accountId",
       "connectionId",
       "connectionKind",
+      "identityStatus",
       "productId",
       "providerId",
       "status",
@@ -327,6 +331,7 @@ describe("catalog projections", () => {
       accountId: "demo-account",
       providerId: "demo-provider",
       label: "Explicit Demo Account",
+      identityStatus: "unresolved",
     };
     expect(
       buildRouterCatalogProjection({
@@ -342,6 +347,7 @@ describe("catalog projections", () => {
         accountId: "demo-account",
         providerId: "demo-provider",
         label: "Explicit Demo Account",
+        identityStatus: "unresolved",
       },
     ]);
   });

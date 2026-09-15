@@ -1,5 +1,6 @@
 import { ensureSharedConfigFromExample, loadConfig, type RouterConfig } from "./config/load-config.js";
 import {
+  type ProviderCatalogConfig,
   WAVE_PROVIDER_IDS,
   waveProviderConfig,
   type WaveProviderId,
@@ -42,13 +43,20 @@ import { CredentialBindingStore } from "./catalog/credential-bindings.js";
 import { ProviderConnectionService } from "./catalog/provider-connections.js";
 import { ModelIdentityStore } from "./catalog/model-identities.js";
 import { RouteCatalog } from "./catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "./catalog/route-visibility-policy.js";
+import {
+  CatalogReconciler,
+  type CatalogRoutePolicy,
+} from "./catalog/catalog-reconciler.js";
 import {
   CatalogRuntimeBridge,
   supportsExactResolvedRouteExecution,
 } from "./catalog/runtime-bridge.js";
 import {
+  buildAccountId,
   buildConnectionId,
   buildModelIdentityId,
+  buildProductId,
   buildRouteId,
 } from "./catalog/ids.js";
 import type {
@@ -57,13 +65,9 @@ import type {
 } from "./catalog/secure-credential-resolver.js";
 import type {
   Account,
-  ProductKind,
-  ProviderConnection,
   ProviderProduct,
-  RouteCapabilities,
 } from "./catalog/types.js";
-import type { DiscoveredModel, ProviderId } from "./core/model.js";
-import type { ProviderAdapter } from "./core/provider.js";
+import type { ProviderId } from "./core/model.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -74,6 +78,8 @@ export interface ProductionComposition {
   providerConnections: ProviderConnectionService;
   modelIdentities: ModelIdentityStore;
   routeCatalog: RouteCatalog;
+  routeVisibilityPolicy: RouteVisibilityPolicy;
+  catalogReconciler: CatalogReconciler;
   runtimeBridge: CatalogRuntimeBridge;
   accounts: Account[];
   products: ProviderProduct[];
@@ -94,17 +100,44 @@ export interface ProductionCompositionOptions {
    * production omits it and the adapters use the real `fetch`.
    */
   fetchFn?: ProviderFetchFn | undefined;
-  /** Deterministic test seam for the five dedicated adapters. */
-  dedicatedAdapterOverrides?: Partial<
-    Record<"chatgpt" | "claude" | "google" | "command-code" | "cavoti", ProviderAdapter>
-  >;
-  /** Deterministic test-only acknowledgement path overrides. */
-  commandCodeAckPath?: string | undefined;
-  cavotiAckPath?: string | undefined;
+  /**
+   * Lower-level deterministic seams for dedicated adapters. Production still
+   * constructs the real adapter classes, so callers cannot replace the
+   * exact-route validation boundary with an arbitrary look-alike adapter.
+   */
+  dedicatedAdapterDependencies?: {
+    chatgptTransportFactory?: NonNullable<
+      ConstructorParameters<typeof CodexAdapter>[0]
+    >["transportFactory"];
+    claudeQueryFn?: NonNullable<
+      ConstructorParameters<typeof ClaudeAdapter>[0]
+    >["queryFn"];
+    googleInferenceRunner?: ConstructorParameters<typeof AntigravityAdapter>[0];
+    googleModelsRunner?: ConstructorParameters<typeof AntigravityAdapter>[1];
+    commandCodeClient?: NonNullable<
+      ConstructorParameters<typeof CommandCodeAdapter>[0]
+    >["client"];
+    cavotiClient?: NonNullable<
+      ConstructorParameters<typeof CavotiAdapter>[0]
+    >["client"];
+  };
+  /** Minimum interval between live catalog reconciliations. */
+  catalogReconcileIntervalMs?: number | undefined;
 }
 
 function isWaveProviderId(id: string): id is WaveProviderId {
   return (WAVE_PROVIDER_IDS as readonly string[]).includes(id);
+}
+
+function providerCatalogConfig(
+  config: RouterConfig,
+  providerId: string,
+): ProviderCatalogConfig | undefined {
+  const providers = config.providers as unknown as Record<
+    string,
+    { catalog?: ProviderCatalogConfig } | undefined
+  >;
+  return providers[providerId]?.catalog;
 }
 
 /**
@@ -213,12 +246,6 @@ class ProductionCredentialResolver implements SecureCredentialResolver {
   }
 }
 
-function productKindForBillingClass(billingClass: string): ProductKind {
-  if (billingClass === "subscription") return "subscription";
-  if (billingClass === "local") return "local";
-  return "api";
-}
-
 function bridgeProfileRef(providerId: string, config: RouterConfig): string | undefined {
   if (providerId === "chatgpt") return resolveChatgptCodexHome(config);
   if (providerId === "claude") return resolveClaudeProfileDir(config);
@@ -272,14 +299,6 @@ function connectionFacts(
   };
 }
 
-function modelCapabilities(model: DiscoveredModel): RouteCapabilities {
-  return {
-    chat: true,
-    tools: model.capability === "CHAT_AND_TOOLS",
-    streaming: true,
-  };
-}
-
 function stableOpaqueRef(value: string): string {
   return encodeURIComponent(value).replace(/'/gu, "%27");
 }
@@ -303,6 +322,7 @@ function composeSharedCatalog(
   config: RouterConfig,
   registry: ProviderRegistry,
   registeredProviders: readonly string[],
+  options: ProductionCompositionOptions,
 ): Pick<
   ProductionComposition,
   | "providerDirectory"
@@ -310,6 +330,8 @@ function composeSharedCatalog(
   | "providerConnections"
   | "modelIdentities"
   | "routeCatalog"
+  | "routeVisibilityPolicy"
+  | "catalogReconciler"
   | "runtimeBridge"
   | "accounts"
   | "products"
@@ -327,11 +349,7 @@ function composeSharedCatalog(
   const administrativeDiscovery = new Map(
     registeredProviders.map((providerId) => [
       providerId,
-      async () => {
-        const adapter = registry.getAdapter(providerId);
-        if (adapter === undefined) throw new Error("Provider adapter is unavailable");
-        return adapter.discoverModels();
-      },
+      async () => registry.getDiscoveredModels(providerId),
     ] as const),
   );
   const providerConnections = new ProviderConnectionService({
@@ -345,126 +363,205 @@ function composeSharedCatalog(
     connections: providerConnections,
     modelIdentities,
   });
+  const routeVisibilityPolicy = new RouteVisibilityPolicy(config.routeVisibility);
   const accounts: Account[] = [];
   const products: ProviderProduct[] = [];
-  const connectionByProvider = new Map<string, ProviderConnection>();
 
   for (const providerId of registeredProviders) {
     const definition = providerDirectory.get(providerId);
     if (definition === undefined) continue;
     const facts = connectionFacts(providerId, config);
-    const accountId = `account:${providerId}:default`;
-    const productId = `product:${providerId}:default`;
-    const account: Account = {
-      accountId,
-      providerId,
-      label: `${definition.displayName} default account`,
-    };
-    const product: ProviderProduct = {
-      productId,
-      accountId,
-      providerId,
-      kind: productKindForBillingClass(facts.billingClass),
-      label: definition.displayName,
-    };
-    accounts.push(account);
-    products.push(product);
+    const catalog = providerCatalogConfig(config, providerId);
 
-    const connectionId = buildConnectionId({
-      providerId,
-      accountId,
-      productId,
-      connectionKind: facts.connectionKind,
-      ...(facts.profileRef !== undefined
-        ? { profileRef: stableOpaqueRef(facts.profileRef) }
-        : {}),
-      ...(facts.endpointRef !== undefined
-        ? { endpointRef: stableOpaqueRef(facts.endpointRef) }
-        : {}),
-    });
-    const bindingId = `execution:${connectionId}`;
-    credentialBindings.addExecution({
-      bindingId,
-      providerId,
-      accountId,
-      productId,
-      secretRef: facts.secretRef,
-      purpose: "execution",
-      enabled: true,
-    });
-    const connection = providerConnections.add({
-      connectionId,
-      providerId,
-      accountId,
-      productId,
-      connectionKind: facts.connectionKind,
-      executionCredentialBindingId: bindingId,
-      ...(facts.profileRef !== undefined ? { profileRef: facts.profileRef } : {}),
-      ...(facts.endpointRef !== undefined ? { endpointRef: facts.endpointRef } : {}),
-      status: "configured",
-    });
-    connectionByProvider.set(providerId, connection);
-  }
-
-  for (const model of registry.listModels()) {
-    const connection = connectionByProvider.get(model.provider);
-    if (connection === undefined) continue;
-    const adapter = registry.getAdapter(model.provider);
-    const exactRouteExecutable =
-      adapter !== undefined && supportsExactResolvedRouteExecution(adapter);
-    const canonicalName = canonicalModelIdentityName(model.provider, model.upstreamModel);
-    const modelIdentityId = buildModelIdentityId({ canonicalName });
-    modelIdentities.upsertExplicit({
-      modelIdentityId,
-      canonicalName,
-      aliases: [model.upstreamModel],
-    });
-    modelIdentities.bindProviderModel({
-      providerId: model.provider,
-      connectionId: connection.connectionId,
-      providerModelId: model.upstreamModel,
-      modelIdentityId,
-    });
-    let routeId: string;
-    try {
-      routeId = buildRouteId({
-        providerId: model.provider,
-        connectionId: connection.connectionId,
-        providerModelId: model.upstreamModel,
-        executionProfile: "default",
+    if (catalog === undefined) {
+      // Unknown account identity is intentionally not materialized as a fake
+      // Account/Product. The connection remains executable, while the product
+      // projection exposes its identity as unresolved for Usage/admin clients.
+      const connectionId = buildConnectionId({
+        providerId,
+        connectionKind: facts.connectionKind,
+        ...(facts.profileRef !== undefined
+          ? { profileRef: stableOpaqueRef(facts.profileRef) }
+          : {}),
+        ...(facts.endpointRef !== undefined
+          ? { endpointRef: stableOpaqueRef(facts.endpointRef) }
+          : {}),
       });
-    } catch {
-      // Stable route IDs deliberately reject unsafe opaque segments. Preserve
-      // the discovered model identity/history but do not create an executable
-      // catalog route by rewriting or guessing the provider-native model id.
+      const bindingId = `execution:${connectionId}`;
+      credentialBindings.addExecution({
+        bindingId,
+        providerId,
+        secretRef: facts.secretRef,
+        purpose: "execution",
+        enabled: true,
+      });
+      providerConnections.add({
+        connectionId,
+        providerId,
+        connectionKind: facts.connectionKind,
+        executionCredentialBindingId: bindingId,
+        ...(facts.profileRef !== undefined ? { profileRef: facts.profileRef } : {}),
+        ...(facts.endpointRef !== undefined ? { endpointRef: facts.endpointRef } : {}),
+        status: "configured",
+      });
       continue;
     }
-    const routable =
-      exactRouteExecutable && routeIsActivated(model.provider, model.upstreamModel, config);
-    routeCatalog.upsert({
-      routeId,
-      modelIdentityId,
-      connectionId: connection.connectionId,
-      providerId: model.provider,
-      providerModelId: model.upstreamModel,
-      executionProfile: "default",
-      capabilities: modelCapabilities(model),
-      billingClass: connectionFacts(model.provider, config).billingClass,
-      routable,
-      visibility: {
-        visibleOn: exactRouteExecutable
-          ? model.capability === "CHAT_ONLY"
-            ? ["cmmchat_model_picker", "admin_console"]
-            : ["cmmchat_model_picker", "cmmcode_model_picker", "admin_console"]
-          : ["admin_console"],
-      },
-    });
+
+    const accountIdByRef = new Map<string, string>();
+    for (const configuredAccount of catalog.accounts) {
+      const accountId =
+        configuredAccount.identityStatus === "resolved"
+          ? buildAccountId({
+              providerId,
+              identityStatus: "resolved",
+              externalAccountRef: configuredAccount.externalAccountRef,
+            })
+          : buildAccountId({
+              providerId,
+              identityStatus: "unresolved",
+              accountRef: configuredAccount.ref,
+            });
+      accountIdByRef.set(configuredAccount.ref, accountId);
+      accounts.push({
+        accountId,
+        providerId,
+        label: configuredAccount.label,
+        identityStatus: configuredAccount.identityStatus,
+        ...(configuredAccount.identityStatus === "resolved"
+          ? { externalAccountRef: configuredAccount.externalAccountRef }
+          : {}),
+      });
+    }
+
+    const productByRef = new Map<
+      string,
+      { productId: string; accountId: string }
+    >();
+    for (const configuredProduct of catalog.products) {
+      const accountId = accountIdByRef.get(configuredProduct.accountRef);
+      if (accountId === undefined) {
+        throw new Error("Provider catalog product references an unknown account");
+      }
+      const productId = buildProductId({
+        providerId,
+        accountId,
+        productRef: configuredProduct.ref,
+      });
+      productByRef.set(configuredProduct.ref, { productId, accountId });
+      products.push({
+        productId,
+        accountId,
+        providerId,
+        kind: configuredProduct.kind,
+        label: configuredProduct.label,
+      });
+    }
+
+    for (const configuredConnection of catalog.connections) {
+      const product = productByRef.get(configuredConnection.productRef);
+      if (product === undefined) {
+        throw new Error("Provider catalog connection references an unknown product");
+      }
+      const connectionId = buildConnectionId({
+        providerId,
+        connectionRef: configuredConnection.ref,
+        accountId: product.accountId,
+        productId: product.productId,
+        connectionKind: facts.connectionKind,
+        ...(facts.profileRef !== undefined
+          ? { profileRef: stableOpaqueRef(facts.profileRef) }
+          : {}),
+        ...(facts.endpointRef !== undefined
+          ? { endpointRef: stableOpaqueRef(facts.endpointRef) }
+          : {}),
+      });
+
+      if (configuredConnection.runtime === "primary") {
+        const bindingId = `execution:${connectionId}`;
+        credentialBindings.addExecution({
+          bindingId,
+          providerId,
+          accountId: product.accountId,
+          productId: product.productId,
+          secretRef: facts.secretRef,
+          purpose: "execution",
+          enabled: true,
+        });
+        providerConnections.add({
+          connectionId,
+          providerId,
+          accountId: product.accountId,
+          productId: product.productId,
+          connectionKind: facts.connectionKind,
+          executionCredentialBindingId: bindingId,
+          ...(facts.profileRef !== undefined ? { profileRef: facts.profileRef } : {}),
+          ...(facts.endpointRef !== undefined ? { endpointRef: facts.endpointRef } : {}),
+          status: "configured",
+        });
+      } else {
+        providerConnections.add({
+          connectionId,
+          providerId,
+          accountId: product.accountId,
+          productId: product.productId,
+          connectionKind: facts.connectionKind,
+          ...(facts.profileRef !== undefined ? { profileRef: facts.profileRef } : {}),
+          ...(facts.endpointRef !== undefined ? { endpointRef: facts.endpointRef } : {}),
+          status: "disabled",
+        });
+      }
+    }
   }
+
+  const routePolicy: CatalogRoutePolicy = (connection, model) => {
+    const adapter = registry.getAdapter(connection.providerId);
+    const exactRouteExecutable =
+      adapter !== undefined && supportsExactResolvedRouteExecution(adapter);
+    const tools = model.capabilities?.tools === true;
+    return {
+      canonicalName: canonicalModelIdentityName(
+        connection.providerId as ProviderId,
+        model.providerModelId,
+      ),
+      executionProfile: "default",
+      capabilities: {
+        chat: model.capabilities?.chat !== false,
+        tools,
+        streaming: true,
+      },
+      billingClass: connectionFacts(connection.providerId, config).billingClass,
+      routable:
+        exactRouteExecutable &&
+        routeIsActivated(connection.providerId, model.providerModelId, config),
+      visibility: routeVisibilityPolicy.resolve({
+        providerId: connection.providerId,
+        providerModelId: model.providerModelId,
+        toolCapable: tools,
+        exactRouteExecutable,
+      }),
+    };
+  };
+
+  const catalogReconciler = new CatalogReconciler({
+    connections: providerConnections,
+    modelIdentities,
+    routeCatalog,
+    routePolicy,
+    ...(options.catalogReconcileIntervalMs !== undefined
+      ? { minRefreshIntervalMs: options.catalogReconcileIntervalMs }
+      : {}),
+  });
 
   const runtimeBridge = new CatalogRuntimeBridge({
     catalog: routeCatalog,
     connections: providerConnections,
     registry,
+    beforeResolveRoute: async (routeId) => {
+      const route = routeCatalog.get(routeId);
+      if (route !== undefined) {
+        await catalogReconciler.reconcileConnection(route.connectionId);
+      }
+    },
   });
 
   return {
@@ -473,6 +570,8 @@ function composeSharedCatalog(
     providerConnections,
     modelIdentities,
     routeCatalog,
+    routeVisibilityPolicy,
+    catalogReconciler,
     runtimeBridge,
     accounts,
     products,
@@ -535,19 +634,26 @@ export async function createProductionRegistry(
       registeredProviders,
       skippedProviders,
       toolBroker,
-      ...composeSharedCatalog(resolved, registry, registeredProviders),
+      ...(await (async () => {
+        const shared = composeSharedCatalog(resolved, registry, registeredProviders, options);
+        await shared.catalogReconciler.reconcileAll({ force: true });
+        return shared;
+      })()),
     };
   }
 
   if (resolved.providers.chatgpt.enabled) {
     const codexHome = resolveChatgptCodexHome(resolved);
-    const adapter =
-      options.dedicatedAdapterOverrides?.chatgpt ??
-      new CodexAdapter({
-        ...(codexHome ? { codexHome } : {}),
-        broker: toolBroker,
-      });
-    if (adapter.id !== "chatgpt") throw new Error("ChatGPT adapter override has wrong provider id");
+    const adapter = new CodexAdapter({
+      ...(codexHome ? { codexHome } : {}),
+      broker: toolBroker,
+      ...(options.dedicatedAdapterDependencies?.chatgptTransportFactory !== undefined
+        ? {
+            transportFactory:
+              options.dedicatedAdapterDependencies.chatgptTransportFactory,
+          }
+        : {}),
+    });
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -561,13 +667,13 @@ export async function createProductionRegistry(
     // long before this factory runs. The shared broker backs the
     // cross-request Qoder tool correlation held across the HTTP split.
     const profileDir = resolveClaudeProfileDir(resolved);
-    const adapter =
-      options.dedicatedAdapterOverrides?.claude ??
-      new ClaudeAdapter({
-        ...(profileDir ? { profileDir } : {}),
-        broker: toolBroker,
-      });
-    if (adapter.id !== "claude") throw new Error("Claude adapter override has wrong provider id");
+    const adapter = new ClaudeAdapter({
+      ...(profileDir ? { profileDir } : {}),
+      broker: toolBroker,
+      ...(options.dedicatedAdapterDependencies?.claudeQueryFn !== undefined
+        ? { queryFn: options.dedicatedAdapterDependencies.claudeQueryFn }
+        : {}),
+    });
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -576,17 +682,14 @@ export async function createProductionRegistry(
 
   if (resolved.providers.google.enabled) {
     const agyPath = resolveGoogleAgyPath(resolved);
-    const adapter =
-      options.dedicatedAdapterOverrides?.google ??
-      new AntigravityAdapter(
-        undefined,
-        undefined,
-        {
-          ...(agyPath ? { agyPath } : {}),
-          broker: toolBroker,
-        },
-      );
-    if (adapter.id !== "google") throw new Error("Google adapter override has wrong provider id");
+    const adapter = new AntigravityAdapter(
+      options.dedicatedAdapterDependencies?.googleInferenceRunner,
+      options.dedicatedAdapterDependencies?.googleModelsRunner,
+      {
+        ...(agyPath ? { agyPath } : {}),
+        broker: toolBroker,
+      },
+    );
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -594,8 +697,13 @@ export async function createProductionRegistry(
   }
 
   if (resolved.providers["command-code"].enabled) {
+    const configuredCommandAckPath = process.env.CMM_COMMAND_CODE_ACK_PATH?.trim();
+    const commandAckPath =
+      configuredCommandAckPath && configuredCommandAckPath.length > 0
+        ? configuredCommandAckPath
+        : undefined;
     // Never instantiate the spend-guarded provider without its ack.
-    if (!isCommandCodeAckValid(options.commandCodeAckPath)) {
+    if (!isCommandCodeAckValid(commandAckPath)) {
       skippedProviders.push({ id: "command-code", reason: "spend acknowledgement missing or invalid" });
     } else if (!process.env[resolved.providers["command-code"].secretEnv]) {
       skippedProviders.push({
@@ -603,18 +711,14 @@ export async function createProductionRegistry(
         reason: `secret env ${resolved.providers["command-code"].secretEnv} absent`,
       });
     } else {
-      const adapter =
-        options.dedicatedAdapterOverrides?.["command-code"] ??
-        new CommandCodeAdapter({
-          baseUrl: resolved.providers["command-code"].baseUrl,
-          secretEnv: resolved.providers["command-code"].secretEnv,
-          ...(options.commandCodeAckPath !== undefined
-            ? { ackPath: options.commandCodeAckPath }
-            : {}),
-        });
-      if (adapter.id !== "command-code") {
-        throw new Error("Command Code adapter override has wrong provider id");
-      }
+      const adapter = new CommandCodeAdapter({
+        baseUrl: resolved.providers["command-code"].baseUrl,
+        secretEnv: resolved.providers["command-code"].secretEnv,
+        ...(commandAckPath !== undefined ? { ackPath: commandAckPath } : {}),
+        ...(options.dedicatedAdapterDependencies?.commandCodeClient !== undefined
+          ? { client: options.dedicatedAdapterDependencies.commandCodeClient }
+          : {}),
+      });
       await registry.register(adapter);
       registeredProviders.push(adapter.id);
     }
@@ -624,8 +728,7 @@ export async function createProductionRegistry(
 
   if (resolved.providers.cavoti.enabled) {
     const cavoti = resolved.providers.cavoti;
-    const configuredAckPath =
-      options.cavotiAckPath ?? process.env.CMM_CAVOTI_ACK_PATH?.trim();
+    const configuredAckPath = process.env.CMM_CAVOTI_ACK_PATH?.trim();
     const ackPath =
       configuredAckPath && configuredAckPath.length > 0
         ? configuredAckPath
@@ -644,14 +747,14 @@ export async function createProductionRegistry(
           reason: `secret env ${cavoti.secretEnv} absent`,
         });
       } else {
-        const adapter =
-          options.dedicatedAdapterOverrides?.cavoti ??
-          new CavotiAdapter({
-            baseUrl: cavoti.baseUrl,
-            secretEnv: cavoti.secretEnv,
-            ackPath,
-          });
-        if (adapter.id !== "cavoti") throw new Error("Cavoti adapter override has wrong provider id");
+        const adapter = new CavotiAdapter({
+          baseUrl: cavoti.baseUrl,
+          secretEnv: cavoti.secretEnv,
+          ackPath,
+          ...(options.dedicatedAdapterDependencies?.cavotiClient !== undefined
+            ? { client: options.dedicatedAdapterDependencies.cavotiClient }
+            : {}),
+        });
         await registry.register(adapter);
         registeredProviders.push(adapter.id);
       }
@@ -674,6 +777,9 @@ export async function createProductionRegistry(
 
   await registry.refresh();
 
+  const sharedCatalog = composeSharedCatalog(resolved, registry, registeredProviders, options);
+  await sharedCatalog.catalogReconciler.reconcileAll({ force: true });
+
   return {
     config: resolved,
     registry,
@@ -681,7 +787,7 @@ export async function createProductionRegistry(
     registeredProviders,
     skippedProviders,
     toolBroker,
-    ...composeSharedCatalog(resolved, registry, registeredProviders),
+    ...sharedCatalog,
   };
 }
 
@@ -701,6 +807,9 @@ export function createProductionServer(composition: ProductionComposition, beare
       connections: composition.providerConnections,
       modelIdentities: composition.modelIdentities,
       routeCatalog: composition.routeCatalog,
+    },
+    beforeCatalogRead: async () => {
+      await composition.catalogReconciler.reconcileAll();
     },
   });
 }

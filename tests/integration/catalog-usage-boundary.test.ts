@@ -43,6 +43,7 @@ function setup(options: SetupOptions = {}) {
       accountId: ACCOUNT_ID,
       providerId: PROVIDER_ID,
       label: "OpenRouter Account",
+      identityStatus: "unresolved",
     },
   ];
   const products: ProviderProduct[] = [

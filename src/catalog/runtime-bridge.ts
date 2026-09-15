@@ -22,6 +22,7 @@ export interface CatalogRuntimeBridgeOptions {
   catalog: RouteCatalog;
   connections: ProviderConnectionService;
   registry: ProviderRegistry;
+  beforeResolveRoute?: (routeId: string) => Promise<void>;
 }
 
 interface ResolvedExecutionAdapter extends ProviderAdapter {
@@ -136,17 +137,20 @@ export class CatalogRuntimeBridge {
   private readonly catalog: RouteCatalog;
   private readonly connections: ProviderConnectionService;
   private readonly registry: ProviderRegistry;
+  private readonly beforeResolveRoute: ((routeId: string) => Promise<void>) | undefined;
 
   constructor(options: CatalogRuntimeBridgeOptions) {
     this.catalog = options.catalog;
     this.connections = options.connections;
     this.registry = options.registry;
+    this.beforeResolveRoute = options.beforeResolveRoute;
   }
 
   async resolve(
     routeId: string,
     consumerSurface: RouteSurface,
   ): Promise<ResolvedExecutionRoute> {
+    await this.beforeResolveRoute?.(routeId);
     const route = await this.catalog.resolveForConsumer(routeId, consumerSurface);
     const connection = this.connections.authorizeExecution(route.connectionId);
 

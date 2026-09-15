@@ -259,7 +259,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // so PAYG variables and the normal profile can never leak in.
       // settingSources: [] disables user/project/local settings files so
       // discovery can never inherit the normal Claude/OmniRoute profile.
-      const queryResult: Query = query({
+      const queryResult: Query = this.queryFn({
         prompt: "",  // Minimal prompt for model discovery
         options: {
           env,
@@ -446,6 +446,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       connection.providerId !== this.id ||
       connection.connectionKind !== "claude-code-sdk" ||
       connection.profileRef !== this.profileDir ||
+      connection.endpointRef !== undefined ||
       executionProfile !== "default" ||
       credential.value !== `authorized:${this.id}`
     ) {

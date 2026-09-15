@@ -2,11 +2,30 @@ import { createHash } from "node:crypto";
 
 export interface ConnectionIdInput {
   providerId: string;
+  connectionRef?: string;
   accountId?: string;
   productId?: string;
   connectionKind?: string;
   profileRef?: string;
   endpointRef?: string;
+}
+
+export type AccountIdInput =
+  | {
+      providerId: string;
+      identityStatus: "resolved";
+      externalAccountRef: string;
+    }
+  | {
+      providerId: string;
+      identityStatus: "unresolved";
+      accountRef: string;
+    };
+
+export interface ProductIdInput {
+  providerId: string;
+  accountId: string;
+  productRef: string;
 }
 
 export interface ModelIdentityIdInput {
@@ -24,7 +43,7 @@ const HASH_LENGTH = 16;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const PATH_TRAVERSAL_PATTERN = /(?:^|\/)\.\.?(?:\/|$)/u;
 const UNSAFE_CHARACTER_PATTERN = /[\\?#[\]{}<>"'`]/u;
-const STABLE_ID_KINDS = ["conn", "model", "route"] as const;
+const STABLE_ID_KINDS = ["account", "product", "conn", "model", "route"] as const;
 
 export type StableIdKind = (typeof STABLE_ID_KINDS)[number];
 
@@ -147,25 +166,89 @@ export function assertStableId(value: string, kind: StableIdKind): string {
 export function buildConnectionId(input: ConnectionIdInput): string {
   assertOnlyKeys(
     input,
-    ["providerId", "accountId", "productId", "connectionKind", "profileRef", "endpointRef"],
+    [
+      "providerId",
+      "connectionRef",
+      "accountId",
+      "productId",
+      "connectionKind",
+      "profileRef",
+      "endpointRef",
+    ],
     "buildConnectionId",
   );
   const providerId = normalizeCanonicalPart(input.providerId, "providerId");
+  const connectionRef = optionalCanonicalPart(input.connectionRef, "connectionRef");
   const accountId = optionalCanonicalPart(input.accountId, "accountId");
   const productId = optionalCanonicalPart(input.productId, "productId");
   const connectionKind = optionalCanonicalPart(input.connectionKind, "connectionKind");
   const profileRef = optionalOpaquePart(input.profileRef, "profileRef");
   const endpointRef = optionalOpaquePart(input.endpointRef, "endpointRef");
 
+  const parts: Array<readonly [string, string | undefined]> = [
+    ["providerId", providerId],
+    ["accountId", accountId],
+    ["productId", productId],
+    ["connectionKind", connectionKind],
+    ["profileRef", profileRef],
+    ["endpointRef", endpointRef],
+  ];
+  if (connectionRef !== undefined) parts.push(["connectionRef", connectionRef]);
+
+  return buildOpaqueId("conn", canonicalize(parts));
+}
+
+export function buildAccountId(input: AccountIdInput): string {
+  const providerId = normalizeCanonicalPart(input.providerId, "providerId");
+  if (input.identityStatus === "resolved") {
+    assertOnlyKeys(
+      input,
+      ["providerId", "identityStatus", "externalAccountRef"],
+      "buildAccountId",
+    );
+    const externalAccountRef = preserveOpaquePart(
+      input.externalAccountRef,
+      "externalAccountRef",
+    );
+    return buildOpaqueId(
+      "account",
+      canonicalize([
+        ["providerId", providerId],
+        ["identityStatus", "resolved"],
+        ["externalAccountRef", externalAccountRef],
+      ]),
+    );
+  }
+  if (input.identityStatus === "unresolved") {
+    assertOnlyKeys(
+      input,
+      ["providerId", "identityStatus", "accountRef"],
+      "buildAccountId",
+    );
+    const accountRef = normalizeCanonicalPart(input.accountRef, "accountRef");
+    return buildOpaqueId(
+      "account",
+      canonicalize([
+        ["providerId", providerId],
+        ["identityStatus", "unresolved"],
+        ["accountRef", accountRef],
+      ]),
+    );
+  }
+  throw new Error("Unsupported account identity status");
+}
+
+export function buildProductId(input: ProductIdInput): string {
+  assertOnlyKeys(input, ["providerId", "accountId", "productRef"], "buildProductId");
+  const providerId = normalizeCanonicalPart(input.providerId, "providerId");
+  const accountId = normalizeCanonicalPart(input.accountId, "accountId");
+  const productRef = normalizeCanonicalPart(input.productRef, "productRef");
   return buildOpaqueId(
-    "conn",
+    "product",
     canonicalize([
       ["providerId", providerId],
       ["accountId", accountId],
-      ["productId", productId],
-      ["connectionKind", connectionKind],
-      ["profileRef", profileRef],
-      ["endpointRef", endpointRef],
+      ["productRef", productRef],
     ]),
   );
 }

@@ -1,13 +1,76 @@
 import { describe, expect, it } from "vitest";
 import {
   assertStableId,
+  buildAccountId,
   buildConnectionId,
   buildModelIdentityId,
+  buildProductId,
   buildRouteId,
   type ConnectionIdInput,
 } from "../../src/catalog/ids.js";
 
 describe("catalog stable IDs", () => {
+  it("derives resolved account identity from the provider account reference", () => {
+    const accountId = buildAccountId({
+      providerId: "deepseek",
+      identityStatus: "resolved",
+      externalAccountRef: "provider-account-123",
+    });
+    const productId = buildProductId({
+      providerId: "deepseek",
+      accountId,
+      productRef: "api-primary",
+    });
+
+    expect(
+      buildAccountId({
+        providerId: "deepseek",
+        identityStatus: "resolved",
+        externalAccountRef: "provider-account-123",
+      }),
+    ).toBe(accountId);
+    expect(
+      buildAccountId({
+        providerId: "deepseek",
+        identityStatus: "resolved",
+        externalAccountRef: "provider-account-456",
+      }),
+    ).not.toBe(accountId);
+    expect(
+      buildProductId({ providerId: "deepseek", accountId, productRef: "api-secondary" }),
+    ).not.toBe(productId);
+    expect(accountId).toMatch(/^account_[a-f0-9]{16}$/);
+    expect(productId).toMatch(/^product_[a-f0-9]{16}$/);
+  });
+
+  it("keeps unresolved account identity explicitly distinct from resolved identity", () => {
+    const unresolved = buildAccountId({
+      providerId: "deepseek",
+      identityStatus: "unresolved",
+      accountRef: "team-a",
+    });
+    const resolved = buildAccountId({
+      providerId: "deepseek",
+      identityStatus: "resolved",
+      externalAccountRef: "team-a",
+    });
+
+    expect(unresolved).not.toBe(resolved);
+  });
+
+  it("uses connectionRef to distinguish configured connections with identical bindings", () => {
+    const base = {
+      providerId: "deepseek",
+      accountId: "account_0123456789abcdef",
+      productId: "product_0123456789abcdef",
+      connectionKind: "openai-chat-completions",
+    } as const;
+
+    expect(buildConnectionId({ ...base, connectionRef: "primary" })).not.toBe(
+      buildConnectionId({ ...base, connectionRef: "secondary" }),
+    );
+  });
+
   it("normalizes only canonical route identity fields deterministically", () => {
     const normalized = buildRouteId({
       providerId: "openrouter",

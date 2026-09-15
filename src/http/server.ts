@@ -23,6 +23,7 @@ export interface ServerOptions {
   usageStore?: UsageStore;
   runtimeBridge?: CatalogRuntimeBridge;
   catalogProjectionInput?: RouterCatalogProjectionInput;
+  beforeCatalogRead?: () => Promise<void>;
   /**
    * Optional second bearer token bound to the Qoder consumer. When absent
    * there is no Qoder consumer and every authenticated client is CMMChat
@@ -120,7 +121,11 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
   if (options.catalogProjectionInput !== undefined) {
-    registerManagementCatalog(fastify, options.catalogProjectionInput);
+    registerManagementCatalog(
+      fastify,
+      options.catalogProjectionInput,
+      options.beforeCatalogRead,
+    );
   }
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer

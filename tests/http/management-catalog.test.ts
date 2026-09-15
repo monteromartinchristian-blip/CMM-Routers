@@ -30,6 +30,7 @@ function createCatalogState() {
     accountId: "account-primary",
     providerId: "catalog-provider",
     label: "Primary Account",
+    identityStatus: "resolved" as const,
     externalAccountRef: "private-external-account",
     rawSecret: RAW_SECRET,
     profilePath: PROFILE_PATH,
@@ -181,6 +182,7 @@ describe("GET /v1/cmm/catalog", () => {
         accountId: "account-primary",
         providerId: "catalog-provider",
         label: "Primary Account",
+        identityStatus: "resolved",
       },
     ]);
     expect(body.products).toEqual([
@@ -200,6 +202,7 @@ describe("GET /v1/cmm/catalog", () => {
         productId: "product-subscription",
         connectionKind: "openai-chat-completions",
         status: "configured",
+        identityStatus: "resolved",
       },
     ]);
     expect(body.models).toEqual([

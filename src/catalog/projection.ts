@@ -23,6 +23,7 @@ export interface AccountSummary {
   readonly accountId: string;
   readonly providerId: string;
   readonly label: string;
+  readonly identityStatus: Account["identityStatus"];
 }
 
 export interface ProductSummary {
@@ -40,6 +41,7 @@ export interface ProviderConnectionSummary {
   readonly productId?: string;
   readonly connectionKind: string;
   readonly status: ProviderConnection["status"];
+  readonly identityStatus: "resolved" | "unresolved";
 }
 
 export interface ModelIdentitySummary {
@@ -122,6 +124,7 @@ function projectAccount(account: Account): AccountSummary {
     accountId: account.accountId,
     providerId: account.providerId,
     label: account.label,
+    identityStatus: account.identityStatus,
   };
 }
 
@@ -137,7 +140,12 @@ function projectProduct(product: ProviderProduct): ProductSummary {
 
 function projectConnection(
   connection: ProviderConnection,
+  accountIdentityStatusById: ReadonlyMap<string, Account["identityStatus"]>,
 ): ProviderConnectionSummary {
+  const identityStatus =
+    connection.accountId === undefined
+      ? "unresolved"
+      : accountIdentityStatusById.get(connection.accountId) ?? "unresolved";
   if (connection.accountId !== undefined && connection.productId !== undefined) {
     return {
       connectionId: connection.connectionId,
@@ -146,6 +154,7 @@ function projectConnection(
       productId: connection.productId,
       connectionKind: connection.connectionKind,
       status: connection.status,
+      identityStatus,
     };
   }
   if (connection.accountId !== undefined) {
@@ -155,6 +164,7 @@ function projectConnection(
       accountId: connection.accountId,
       connectionKind: connection.connectionKind,
       status: connection.status,
+      identityStatus,
     };
   }
   if (connection.productId !== undefined) {
@@ -164,6 +174,7 @@ function projectConnection(
       productId: connection.productId,
       connectionKind: connection.connectionKind,
       status: connection.status,
+      identityStatus,
     };
   }
   return {
@@ -171,6 +182,7 @@ function projectConnection(
     providerId: connection.providerId,
     connectionKind: connection.connectionKind,
     status: connection.status,
+    identityStatus,
   };
 }
 
@@ -246,11 +258,16 @@ function projectRoute(route: AccessRoute): AccessRouteSummary {
 export function buildRouterCatalogProjection(
   input: RouterCatalogProjectionInput,
 ): RouterCatalogProjection {
+  const accountIdentityStatusById = new Map(
+    input.accounts.map((account) => [account.accountId, account.identityStatus] as const),
+  );
   return {
     providers: input.directory.list().map(projectProvider),
     accounts: input.accounts.map(projectAccount),
     products: input.products.map(projectProduct),
-    connections: input.connections.list().map(projectConnection),
+    connections: input.connections
+      .list()
+      .map((connection) => projectConnection(connection, accountIdentityStatusById)),
     models: input.modelIdentities.list().map(projectModel),
     routes: input.routeCatalog.list().map(projectRoute),
   };

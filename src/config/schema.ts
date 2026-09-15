@@ -6,9 +6,162 @@ import {
   isSafeProviderBaseUrl,
 } from "../providers/manifest.js";
 
-const providerConfigSchema = z.object({
-  enabled: z.boolean(),
-}).strict();
+const providerIdentityRefSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9._:-]+$/, "identity refs must be non-secret stable identifiers");
+
+const providerCatalogAccountSchema = z.discriminatedUnion("identityStatus", [
+  z
+    .object({
+      ref: providerIdentityRefSchema,
+      label: z.string().min(1),
+      identityStatus: z.literal("resolved"),
+      externalAccountRef: providerIdentityRefSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ref: providerIdentityRefSchema,
+      label: z.string().min(1),
+      identityStatus: z.literal("unresolved"),
+    })
+    .strict(),
+]);
+
+const providerProductKindSchema = z.enum([
+  "subscription",
+  "api",
+  "free_pool",
+  "promo_pool",
+  "enterprise",
+  "local",
+]);
+
+const providerCatalogProductSchema = z
+  .object({
+    ref: providerIdentityRefSchema,
+    accountRef: providerIdentityRefSchema,
+    kind: providerProductKindSchema,
+    label: z.string().min(1),
+  })
+  .strict();
+
+const providerCatalogConnectionSchema = z
+  .object({
+    ref: providerIdentityRefSchema,
+    productRef: providerIdentityRefSchema,
+    runtime: z.enum(["primary", "disabled"]),
+  })
+  .strict();
+
+const providerCatalogSchema = z
+  .object({
+    accounts: z.array(providerCatalogAccountSchema).min(1),
+    products: z.array(providerCatalogProductSchema).min(1),
+    connections: z.array(providerCatalogConnectionSchema).min(1),
+  })
+  .strict()
+  .superRefine((catalog, context) => {
+    const accountRefs = new Set<string>();
+    catalog.accounts.forEach((account, index) => {
+      if (accountRefs.has(account.ref)) {
+        context.addIssue({
+          code: "custom",
+          path: ["accounts", index, "ref"],
+          message: "account ref must be unique within provider catalog",
+        });
+      }
+      accountRefs.add(account.ref);
+    });
+
+    const productRefs = new Set<string>();
+    catalog.products.forEach((product, index) => {
+      if (productRefs.has(product.ref)) {
+        context.addIssue({
+          code: "custom",
+          path: ["products", index, "ref"],
+          message: "product ref must be unique within provider catalog",
+        });
+      }
+      productRefs.add(product.ref);
+      if (!accountRefs.has(product.accountRef)) {
+        context.addIssue({
+          code: "custom",
+          path: ["products", index, "accountRef"],
+          message: "product accountRef must reference a configured account",
+        });
+      }
+    });
+
+    const connectionRefs = new Set<string>();
+    let primaryRuntimeCount = 0;
+    catalog.connections.forEach((connection, index) => {
+      if (connectionRefs.has(connection.ref)) {
+        context.addIssue({
+          code: "custom",
+          path: ["connections", index, "ref"],
+          message: "connection ref must be unique within provider catalog",
+        });
+      }
+      connectionRefs.add(connection.ref);
+      if (!productRefs.has(connection.productRef)) {
+        context.addIssue({
+          code: "custom",
+          path: ["connections", index, "productRef"],
+          message: "connection productRef must reference a configured product",
+        });
+      }
+      if (connection.runtime === "primary") primaryRuntimeCount += 1;
+    });
+    if (primaryRuntimeCount > 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["connections"],
+        message: "provider catalog may declare at most one primary runtime connection",
+      });
+    }
+  });
+
+const providerConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    catalog: providerCatalogSchema.optional(),
+  })
+  .strict();
+
+const routeSurfaceSchema = z.enum([
+  "cmmchat_model_picker",
+  "cmmcode_model_picker",
+  "admin_console",
+]);
+
+const routeVisibilityRuleSchema = z
+  .object({
+    providerId: z.string().min(1),
+    providerModelId: z.string().min(1),
+    visibleOn: z.array(routeSurfaceSchema),
+  })
+  .strict();
+
+const routeVisibilityPolicySchema = z
+  .array(routeVisibilityRuleSchema)
+  .default([])
+  .superRefine((rules, context) => {
+    const seen = new Set<string>();
+    rules.forEach((rule, index) => {
+      const key = `${rule.providerId}\u0000${rule.providerModelId}`;
+      if (seen.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "routeVisibility contains a duplicate provider/model rule",
+        });
+      }
+      seen.add(key);
+    });
+  });
 
 const chatgptProviderSchema = providerConfigSchema.extend({
   codexHome: z.string().optional(),
@@ -157,6 +310,7 @@ export const sharedConfigSchema = z.object({
   host: z.literal("127.0.0.1"),
   port: z.number().min(1).max(65535).default(8790),
   bearerSecretEnv: z.string().default("CMM_ROUTER_TOKEN"),
+  routeVisibility: routeVisibilityPolicySchema,
   providers: z
     .object({
       chatgpt: chatgptProviderSchema,
@@ -183,6 +337,7 @@ export const sharedConfigSchema = z.object({
 }).strict();
 
 export type SharedConfig = z.infer<typeof sharedConfigSchema>;
+export type ProviderCatalogConfig = z.infer<typeof providerCatalogSchema>;
 
 /** Configuration entry shape shared by every provider in the approved wave. */
 export type WaveProviderConfig = z.infer<typeof openAiCompatibleProviderSchema>;

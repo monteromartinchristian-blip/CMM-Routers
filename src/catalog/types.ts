@@ -18,6 +18,7 @@ export interface Account {
   accountId: string;
   providerId: string;
   label: string;
+  identityStatus: "resolved" | "unresolved";
   externalAccountRef?: string;
 }
 

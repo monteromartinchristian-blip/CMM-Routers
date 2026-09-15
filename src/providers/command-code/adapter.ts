@@ -235,6 +235,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       request.model.provider !== this.id ||
       connection.providerId !== this.id ||
       connection.connectionKind !== "openai-chat-completions" ||
+      connection.profileRef !== undefined ||
       executionProfile !== "default" ||
       endpoint === undefined ||
       endpoint !== this.client.baseUrl ||

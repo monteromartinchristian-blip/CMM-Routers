@@ -300,6 +300,7 @@ export class CodexAdapter implements ProviderAdapter {
       connection.providerId !== this.id ||
       connection.connectionKind !== "codex-app-server" ||
       connection.profileRef !== this.codexHome ||
+      connection.endpointRef !== undefined ||
       executionProfile !== "default" ||
       credential.value !== `authorized:${this.id}`
     ) {

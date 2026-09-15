@@ -125,11 +125,14 @@ describe("production composition root", () => {
       providerId: "chatgpt",
       displayName: "ChatGPT / Codex",
     });
-    expect(body.accounts).toContainEqual({
-      accountId: "account:chatgpt:default",
-      providerId: "chatgpt",
-      label: "ChatGPT / Codex default account",
-    });
+    expect(body.accounts).toEqual([]);
+    expect(body.products).toEqual([]);
+    expect(body.connections).toContainEqual(
+      expect.objectContaining({
+        providerId: "chatgpt",
+        identityStatus: "unresolved",
+      }),
+    );
     expect(body.routes).toHaveLength(1);
     expect(body.routes[0]).toMatchObject({
       providerId: "chatgpt",

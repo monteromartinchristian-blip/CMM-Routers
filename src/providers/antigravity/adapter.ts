@@ -922,6 +922,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       connection.providerId !== this.id ||
       connection.connectionKind !== "antigravity" ||
       connection.profileRef !== this.configuredAgyPath ||
+      connection.endpointRef !== undefined ||
       executionProfile !== "default" ||
       credential.value !== `authorized:${this.id}`
     ) {

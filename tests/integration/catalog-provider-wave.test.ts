@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sharedConfigSchema } from "../../src/config/schema.js";
+import {
+  buildCmmChatRouteProjection,
+  buildRouterCatalogProjection,
+} from "../../src/catalog/projection.js";
 import { createProductionRegistry } from "../../src/index.js";
 import {
   PROVIDER_WAVE_MANIFESTS,
@@ -22,11 +26,12 @@ const WAVE_SECRET_ENVS = [
   "OLLAMA_CLOUD_API_KEY",
 ] as const;
 
-function deterministicConfig() {
+function deterministicConfig(routeVisibility?: unknown) {
   return {
     ...sharedConfigSchema.parse({
       mode: "standalone",
       host: "127.0.0.1",
+      ...(routeVisibility !== undefined ? { routeVisibility } : {}),
       providers: {
       chatgpt: { enabled: false },
       claude: { enabled: false },
@@ -36,10 +41,50 @@ function deterministicConfig() {
       "qwen-token-plan": {
         enabled: true,
         baseUrl: "https://token-plan.example.invalid/compatible-mode/v1",
+        catalog: {
+          accounts: [
+            {
+              ref: "fixture-qwen-token-account",
+              label: "Fixture Qwen Token Account",
+              identityStatus: "unresolved",
+            },
+          ],
+          products: [
+            {
+              ref: "token-plan",
+              accountRef: "fixture-qwen-token-account",
+              kind: "subscription",
+              label: "Qwen Token Plan",
+            },
+          ],
+          connections: [
+            { ref: "primary", productRef: "token-plan", runtime: "primary" },
+          ],
+        },
       },
       "qwen-cloud": {
         enabled: true,
         baseUrl: "https://qwen-cloud.example.invalid/compatible-mode/v1",
+        catalog: {
+          accounts: [
+            {
+              ref: "fixture-qwen-cloud-account",
+              label: "Fixture Qwen Cloud Account",
+              identityStatus: "unresolved",
+            },
+          ],
+          products: [
+            {
+              ref: "cloud-api",
+              accountRef: "fixture-qwen-cloud-account",
+              kind: "api",
+              label: "Qwen Cloud",
+            },
+          ],
+          connections: [
+            { ref: "primary", productRef: "cloud-api", runtime: "primary" },
+          ],
+        },
       },
       deepseek: { enabled: true },
       kira: { enabled: true },
@@ -198,5 +243,220 @@ describe("production shared catalog composition", () => {
     expect(
       composition.routeCatalog.list().some((route) => route.providerId === "deepseek"),
     ).toBe(false);
+  });
+
+  it("applies exact Router-owned visibility without changing routability or Usage truth", async () => {
+    const config = deterministicConfig([
+      {
+        providerId: "openrouter",
+        providerModelId: "qwen3.8-max",
+        visibleOn: [],
+      },
+    ]);
+    const transport = catalogFetch({ data: [{ id: "qwen3.8-max" }] });
+
+    const composition = await createProductionRegistry(config, {
+      fetchFn: transport.fetchFn,
+    });
+    const hidden = composition.routeCatalog
+      .list()
+      .find(
+        (route) =>
+          route.providerId === "openrouter" && route.providerModelId === "qwen3.8-max",
+      );
+    expect(hidden).toBeDefined();
+    expect(hidden?.routable).toBe(true);
+    expect(hidden?.visibility.visibleOn).toEqual([]);
+
+    const catalog = buildRouterCatalogProjection({
+      directory: composition.providerDirectory,
+      accounts: composition.accounts,
+      products: composition.products,
+      connections: composition.providerConnections,
+      modelIdentities: composition.modelIdentities,
+      routeCatalog: composition.routeCatalog,
+    });
+    expect(catalog.routes.some((route) => route.routeId === hidden?.routeId)).toBe(true);
+    expect(buildCmmChatRouteProjection(catalog).some((route) => route.routeId === hidden?.routeId)).toBe(
+      false,
+    );
+  });
+
+  it("uses durable account/product identity and represents secondary connections without overclaiming runtime", async () => {
+    process.env.DEEPSEEK_API_KEY = "identity-fixture-secret-a";
+    const config = sharedConfigSchema.parse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      providers: {
+        chatgpt: { enabled: false },
+        claude: { enabled: false },
+        google: { enabled: false },
+        "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
+        deepseek: {
+          enabled: true,
+          catalog: {
+            accounts: [
+              {
+                ref: "deepseek-team-a",
+                label: "DeepSeek Team A",
+                identityStatus: "resolved",
+                externalAccountRef: "provider-account-123",
+              },
+            ],
+            products: [
+              {
+                ref: "api-primary",
+                accountRef: "deepseek-team-a",
+                kind: "api",
+                label: "Primary API",
+              },
+              {
+                ref: "api-secondary",
+                accountRef: "deepseek-team-a",
+                kind: "api",
+                label: "Secondary API",
+              },
+            ],
+            connections: [
+              { ref: "primary", productRef: "api-primary", runtime: "primary" },
+              { ref: "secondary", productRef: "api-secondary", runtime: "disabled" },
+            ],
+          },
+        },
+      },
+    });
+    const transport = catalogFetch({ data: [{ id: "deepseek-chat" }] });
+
+    const first = await createProductionRegistry(
+      { ...config, machineId: "identity-test-a" },
+      { fetchFn: transport.fetchFn },
+    );
+    const account = first.accounts.find((entry) => entry.providerId === "deepseek")!;
+    const products = first.products.filter((entry) => entry.providerId === "deepseek");
+    const connections = first.providerConnections
+      .list()
+      .filter((entry) => entry.providerId === "deepseek");
+    const routes = first.routeCatalog.list().filter((entry) => entry.providerId === "deepseek");
+
+    expect(account.label).toBe("DeepSeek Team A");
+    expect(account.externalAccountRef).toBe("provider-account-123");
+    expect(products).toHaveLength(2);
+    expect(new Set(products.map((product) => product.productId)).size).toBe(2);
+    expect(connections).toHaveLength(2);
+    expect(new Set(connections.map((connection) => connection.connectionId)).size).toBe(2);
+    expect(connections.filter((connection) => connection.status !== "disabled")).toHaveLength(1);
+    expect(connections.find((connection) => connection.status === "disabled")?.executionCredentialBindingId).toBeUndefined();
+    expect(routes).toHaveLength(1);
+
+    process.env.DEEPSEEK_API_KEY = "identity-fixture-secret-b";
+    const restarted = await createProductionRegistry(
+      { ...config, machineId: "identity-test-b" },
+      { fetchFn: transport.fetchFn },
+    );
+    expect(restarted.accounts.find((entry) => entry.providerId === "deepseek")?.accountId).toBe(
+      account.accountId,
+    );
+    expect(
+      restarted.products
+        .filter((entry) => entry.providerId === "deepseek")
+        .map((entry) => entry.productId),
+    ).toEqual(products.map((entry) => entry.productId));
+
+    const changedLocalMetadataConfig = sharedConfigSchema.parse({
+      ...config,
+      providers: {
+        ...config.providers,
+        deepseek: {
+          ...config.providers.deepseek,
+          catalog: {
+            ...config.providers.deepseek.catalog,
+            accounts: [
+              {
+                ref: "renamed-local-account",
+                label: "Renamed Local Label",
+                identityStatus: "resolved",
+                externalAccountRef: "provider-account-123",
+              },
+            ],
+            products: config.providers.deepseek.catalog!.products.map((product) => ({
+              ...product,
+              accountRef: "renamed-local-account",
+            })),
+          },
+        },
+      },
+    });
+    const changedLocalMetadata = await createProductionRegistry(
+      { ...changedLocalMetadataConfig, machineId: "identity-test-c" },
+      { fetchFn: transport.fetchFn },
+    );
+    expect(
+      changedLocalMetadata.accounts.find((entry) => entry.providerId === "deepseek")?.accountId,
+    ).toBe(account.accountId);
+
+    const changedExternalIdentityConfig = sharedConfigSchema.parse({
+      ...changedLocalMetadataConfig,
+      providers: {
+        ...changedLocalMetadataConfig.providers,
+        deepseek: {
+          ...changedLocalMetadataConfig.providers.deepseek,
+          catalog: {
+            ...changedLocalMetadataConfig.providers.deepseek.catalog,
+            accounts: changedLocalMetadataConfig.providers.deepseek.catalog!.accounts.map((entry) => ({
+              ...entry,
+              externalAccountRef: "provider-account-456",
+            })),
+          },
+        },
+      },
+    });
+    const changedExternalIdentity = await createProductionRegistry(
+      { ...changedExternalIdentityConfig, machineId: "identity-test-d" },
+      { fetchFn: transport.fetchFn },
+    );
+    expect(
+      changedExternalIdentity.accounts.find((entry) => entry.providerId === "deepseek")?.accountId,
+    ).not.toBe(
+      account.accountId,
+    );
+  });
+
+  it("represents unknown provider account identity as unresolved instead of synthetic defaults", async () => {
+    process.env.DEEPSEEK_API_KEY = "identity-unresolved-fixture-secret";
+    const config = sharedConfigSchema.parse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      providers: {
+        chatgpt: { enabled: false },
+        claude: { enabled: false },
+        google: { enabled: false },
+        "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
+        deepseek: { enabled: true },
+      },
+    });
+    const composition = await createProductionRegistry(
+      { ...config, machineId: "identity-unresolved-test" },
+      { fetchFn: catalogFetch({ data: [{ id: "deepseek-chat" }] }).fetchFn },
+    );
+
+    expect(composition.accounts.filter((entry) => entry.providerId === "deepseek")).toEqual([]);
+    expect(composition.products.filter((entry) => entry.providerId === "deepseek")).toEqual([]);
+    const connection = composition.providerConnections
+      .list()
+      .find((entry) => entry.providerId === "deepseek")!;
+    expect(connection.accountId).toBeUndefined();
+    expect(connection.productId).toBeUndefined();
+
+    const projection = buildRouterCatalogProjection({
+      directory: composition.providerDirectory,
+      accounts: composition.accounts,
+      products: composition.products,
+      connections: composition.providerConnections,
+      modelIdentities: composition.modelIdentities,
+      routeCatalog: composition.routeCatalog,
+    });
+    expect(projection.connections.find((entry) => entry.providerId === "deepseek")).toMatchObject({
+      identityStatus: "unresolved",
+    });
   });
 });
