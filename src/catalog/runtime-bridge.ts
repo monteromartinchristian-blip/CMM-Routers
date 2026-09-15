@@ -79,6 +79,15 @@ class RouteBoundAdapter implements ProviderAdapter {
       return;
     }
 
+    const delegate = this.delegate;
+    if (!supportsResolvedExecution(delegate)) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
     try {
       const stream = this.connections.withExecutionCredential(
         this.connection.connectionId,
@@ -91,15 +100,13 @@ class RouteBoundAdapter implements ProviderAdapter {
             throw new Error("Route execution connection changed after resolution");
           }
 
-          return supportsResolvedExecution(this.delegate)
-            ? this.delegate.runWithResolvedExecution(
-                request,
-                signal,
-                resolvedConnection,
-                this.route.executionProfile,
-                credential,
-              )
-            : this.delegate.run(request, signal);
+          return delegate.runWithResolvedExecution(
+            request,
+            signal,
+            resolvedConnection,
+            this.route.executionProfile,
+            credential,
+          );
         },
       );
       for await (const event of stream) yield event;

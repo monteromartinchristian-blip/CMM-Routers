@@ -190,7 +190,7 @@ async function bridgeFor(state: ReturnType<typeof setup>): Promise<CatalogRuntim
 }
 
 describe("CatalogRuntimeBridge", () => {
-  it("resolves the exact catalog provider, connection and provider-native model", async () => {
+  it("resolves the exact catalog provider, connection and provider-native model without materializing the secret", async () => {
     const state = setup();
     const model = identity();
     const accessRoute = route(model.modelIdentityId);
@@ -213,9 +213,19 @@ describe("CatalogRuntimeBridge", () => {
     expect(resolved.adapter).not.toBe(state.openrouter);
     expect(state.resolveSecret).not.toHaveBeenCalled();
     expect(JSON.stringify(resolved)).not.toContain("runtime-bridge-test-secret");
+  });
+
+  it("fails closed without ordinary run when the selected adapter cannot consume resolved execution binding", async () => {
+    const state = setup();
+    const model = identity();
+    const accessRoute = route(model.modelIdentityId);
+    addExecutionReadyConnection(state.bindings, state.connections);
+    addRoute(state.modelIdentities, state.catalog, accessRoute, model);
+    const bridge = await bridgeFor(state);
+    const resolved = await bridge.resolve(accessRoute.routeId, SURFACE);
 
     const request: RouterRequest = {
-      requestId: "route-runtime-secret-boundary",
+      requestId: "route-unsupported-binding-fail-closed",
       model: {
         id: `route:${accessRoute.routeId}`,
         provider: "openrouter",
@@ -227,12 +237,18 @@ describe("CatalogRuntimeBridge", () => {
       tools: [],
       stream: false,
     };
-    for await (const _event of resolved.adapter.run(request, new AbortController().signal)) {
-      // Drain the execution so the lazy credential boundary is exercised.
+    const events = [];
+    for await (const event of resolved.adapter.run(request, new AbortController().signal)) {
+      events.push(event);
     }
-    expect(state.resolveSecret).toHaveBeenCalledTimes(1);
-    expect(state.resolveSecret).toHaveBeenCalledWith(SECRET_REF);
-    expect(state.openrouter.runCalls).toEqual([request.requestId]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "error",
+      error: { code: "unknown_model" },
+    });
+    expect(state.openrouter.runCalls).toEqual([]);
+    expect(state.resolveSecret).not.toHaveBeenCalled();
   });
 
   it("uses the route provider even when canonical and native names suggest another provider", async () => {
