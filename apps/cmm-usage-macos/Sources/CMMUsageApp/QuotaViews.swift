@@ -5,9 +5,14 @@ struct QuotasSectionView: View {
     @EnvironmentObject private var model: UsageAppModel
 
     private var quotas: [CatalogQuotaSummary] { model.catalogQuotas.sortedForPresentation }
-    private var primary: [CatalogQuotaSummary] { quotas.filter(\.constraining) }
-    private var standard: [CatalogQuotaSummary] { quotas.filter { !$0.constraining && !$0.isSupplementalBalance } }
-    private var supplemental: [CatalogQuotaSummary] { quotas.filter(\.isSupplementalBalance) }
+    private var claimable: [CatalogQuotaSummary] { quotas.filter(\.isClaimableEntitlement) }
+    private var primary: [CatalogQuotaSummary] { quotas.filter { $0.constraining && !$0.isClaimableEntitlement } }
+    private var standard: [CatalogQuotaSummary] {
+        quotas.filter { !$0.constraining && !$0.isSupplementalBalance && !$0.isClaimableEntitlement }
+    }
+    private var supplemental: [CatalogQuotaSummary] {
+        quotas.filter { $0.isSupplementalBalance && !$0.isClaimableEntitlement }
+    }
 
     var body: some View {
         ScrollView {
@@ -26,6 +31,23 @@ struct QuotasSectionView: View {
                     if !standard.isEmpty {
                         sectionHeader("All quotas", detail: "Simultaneous windows stay independent and shared pools appear once.")
                         quotaGroup(standard)
+                    }
+                    if !claimable.isEmpty {
+                        sectionHeader("Capacity available to claim", detail: "Extra provider allowance that is visible now but does not constrain usage until you explicitly activate it.")
+                        VStack(spacing: 0) {
+                            ForEach(Array(claimable.enumerated()), id: \.element.id) { index, quota in
+                                ClaimableQuotaRow(
+                                    quota: quota,
+                                    context: contextLabel(for: quota),
+                                    affectedRoutes: claimableRouteLabels(for: quota)
+                                )
+                                if index < claimable.count - 1 { Divider().padding(.leading, 14) }
+                            }
+                        }
+                        .background(.quinary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.quaternary.opacity(0.8), lineWidth: 1)
+                        }
                     }
                     if !supplemental.isEmpty {
                         sectionHeader("Additional balances", detail: "Observable balances that do not independently constrain route selection.")
@@ -88,6 +110,86 @@ struct QuotasSectionView: View {
     private func hiddenRouteCount(for quota: CatalogQuotaSummary) -> Int {
         let ids = Set(quota.affectedRouteIds ?? [])
         return model.catalogRoutes.filter { ids.contains($0.routeId) && $0.visibility == .hidden }.count
+    }
+
+    private func claimableRouteLabels(for quota: CatalogQuotaSummary) -> [String] {
+        let ids = Set(quota.entitlement?.appliesToRouteIds ?? [])
+        return model.catalogRoutes
+            .filter { ids.contains($0.routeId) }
+            .map { $0.model.displayName }
+            .sorted()
+    }
+}
+
+private struct ClaimableQuotaRow: View {
+    let quota: CatalogQuotaSummary
+    let context: String
+    let affectedRoutes: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "gift")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text(quota.displayName)
+                        .font(.subheadline.weight(.semibold))
+                    Text("Claimable")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quinary.opacity(0.45), in: Capsule())
+                }
+                Text(context)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !affectedRoutes.isEmpty {
+                    Text("Applies to \(affectedRoutes.joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(quota.claimableValueText ?? "Bonus available")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                if let entitlement = quota.entitlement {
+                    Text(actionText(entitlement))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    if let validUntil = entitlement.validUntil {
+                        Text(validUntilText(validUntil))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func actionText(_ entitlement: QuotaEntitlementSummary) -> String {
+        if let label = entitlement.actionLabel, !label.isEmpty { return label }
+        switch entitlement.eligibility {
+        case .requiresAuth: return "Sign in to claim"
+        case .eligible: return "Ready to claim"
+        case .ineligible: return "Not currently eligible"
+        case .unknown: return "Eligibility unknown"
+        }
+    }
+
+    private func validUntilText(_ value: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: value) else { return "Valid until \(value)" }
+        return "Valid until \(date.formatted(.dateTime.day().month(.abbreviated).year()))"
     }
 }
 

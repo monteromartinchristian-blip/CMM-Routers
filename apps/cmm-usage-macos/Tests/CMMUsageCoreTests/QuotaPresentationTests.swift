@@ -22,9 +22,9 @@ final class QuotaPresentationTests: XCTestCase {
         XCTAssertEqual(quotas[3].primaryValueText, "42 / 100 requests remaining")
         XCTAssertEqual(quotas[4].primaryValueText, "$7.31 balance remaining")
         XCTAssertEqual(quotas[5].primaryValueText, "14 / 14 provider units remaining")
-        XCTAssertEqual(quotas[0].progressFraction, 0.61, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(quotas[0].progressFraction), 0.61, accuracy: 0.0001)
         XCTAssertNil(quotas[1].progressFraction)
-        XCTAssertEqual(quotas[2].progressFraction, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(quotas[2].progressFraction), 0.6, accuracy: 0.0001)
     }
 
     func testResetAndPrioritySemanticsRemainExplicit() throws {
@@ -51,6 +51,17 @@ final class QuotaPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(route.offer.validUntilText, "Until 30 Sep 2026")
+    }
+
+    func testAlertTitleNeverFallsBackToCanonicalBucketId() throws {
+        let quota = try XCTUnwrap(try decodeQuotas(#"""
+        [
+          {"bucketId":"bucket:internal:weekly","displayName":"Weekly window","metric":{"kind":"percentage"},"unit":"fraction","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"p"},"status":"warning","usedFraction":0.9,"constraining":true}
+        ]
+        """#).first)
+
+        XCTAssertEqual(UsageAlertPresenter.title(quota: quota), "Weekly window")
+        XCTAssertEqual(UsageAlertPresenter.title(quota: nil), "Quota alert")
     }
 
     private func decodeQuotas(_ array: String) throws -> [CatalogQuotaSummary] {

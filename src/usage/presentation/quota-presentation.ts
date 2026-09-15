@@ -1,5 +1,11 @@
 import type { QuotaBucket, QuotaSnapshot } from "../domain/types.js";
-import type { QuotaScope, QuotaSummary } from "./types.js";
+import type {
+  QuotaEntitlementEligibility,
+  QuotaEntitlementState,
+  QuotaEntitlementSummary,
+  QuotaScope,
+  QuotaSummary,
+} from "./types.js";
 
 interface ProjectQuotaSummaryInput {
   bucket: QuotaBucket;
@@ -13,6 +19,66 @@ interface ProjectQuotaSummaryInput {
 function metadataString(bucket: QuotaBucket, key: string): string | undefined {
   const value = bucket.metadata[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function metadataNumber(bucket: QuotaBucket, key: string): number | undefined {
+  const value = bucket.metadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function metadataStringArray(bucket: QuotaBucket, key: string): string[] | undefined {
+  const value = bucket.metadata[key];
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return strings.length === value.length ? strings : undefined;
+}
+
+const entitlementStates = new Set<QuotaEntitlementState>([
+  "claimable",
+  "claimed",
+  "unavailable",
+  "expired",
+  "unknown",
+]);
+
+const entitlementEligibility = new Set<QuotaEntitlementEligibility>([
+  "eligible",
+  "requires_auth",
+  "ineligible",
+  "unknown",
+]);
+
+function projectEntitlement(bucket: QuotaBucket): QuotaEntitlementSummary | undefined {
+  const rawState = metadataString(bucket, "entitlementState") as QuotaEntitlementState | undefined;
+  if (rawState === undefined || !entitlementStates.has(rawState)) return undefined;
+
+  const rawEligibility = metadataString(bucket, "entitlementEligibility") as QuotaEntitlementEligibility | undefined;
+  const eligibility = rawEligibility !== undefined && entitlementEligibility.has(rawEligibility)
+    ? rawEligibility
+    : "unknown";
+  const source = metadataString(bucket, "entitlementSource") as QuotaEntitlementSummary["source"];
+  const confidence = metadataString(bucket, "entitlementConfidence") as QuotaEntitlementSummary["confidence"];
+  const appliesToRouteIds = metadataStringArray(bucket, "entitlementAppliesToRouteIds");
+  const amount = metadataNumber(bucket, "entitlementAmount");
+  const actionLabel = metadataString(bucket, "entitlementActionLabel");
+  const observedAt = metadataString(bucket, "entitlementObservedAt");
+  const validUntil = metadataString(bucket, "entitlementValidUntil");
+
+  return {
+    state: rawState,
+    eligibility,
+    unit: metadataString(bucket, "entitlementUnit") ?? bucket.unit,
+    requiresExplicitUserAction: true,
+    ...(amount === undefined ? {} : { amount }),
+    ...(actionLabel === undefined ? {} : { actionLabel }),
+    ...(source === undefined ? {} : { source }),
+    ...(confidence === undefined ? {} : { confidence }),
+    ...(observedAt === undefined ? {} : { observedAt }),
+    ...(validUntil === undefined ? {} : { validUntil }),
+    ...(appliesToRouteIds === undefined
+      ? {}
+      : { appliesToRouteIds: [...appliesToRouteIds].sort() }),
+  };
 }
 
 export function quotaScope(
@@ -54,6 +120,7 @@ export function quotaScope(
 
 export function projectQuotaSummary(input: ProjectQuotaSummaryInput): QuotaSummary {
   const { bucket, snapshot } = input;
+  const entitlement = projectEntitlement(bucket);
   return {
     bucketId: bucket.id,
     displayName: bucket.displayName,
@@ -83,5 +150,6 @@ export function projectQuotaSummary(input: ProjectQuotaSummaryInput): QuotaSumma
     ...(input.affectedRouteIds.length === 0
       ? {}
       : { affectedRouteIds: [...input.affectedRouteIds].sort() }),
+    ...(entitlement === undefined ? {} : { entitlement }),
   };
 }

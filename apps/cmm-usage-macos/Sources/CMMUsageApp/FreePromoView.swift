@@ -4,6 +4,10 @@ import CMMUsageCore
 struct FreePromoSectionView: View {
     @EnvironmentObject private var model: UsageAppModel
 
+    private var claimableAllowances: [CatalogQuotaSummary] {
+        model.catalogQuotas.filter(\.isClaimableEntitlement).sortedForPresentation
+    }
+
     private var connectedPromotions: [CatalogRouteEntry] {
         model.promotions.filter {
             ProviderCatalogPresenter.isConnected($0.provider, among: model.catalogProviders)
@@ -51,13 +55,16 @@ struct FreePromoSectionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
-                if model.promotions.isEmpty {
+                if model.promotions.isEmpty && claimableAllowances.isEmpty {
                     EmptyStateView(
                         title: "No provider-reported free access yet",
                         detail: "Free routes, trials and promotions appear here only when there is explicit provider evidence.",
                         systemImage: "sparkles"
                     )
                 } else {
+                    if !claimableAllowances.isEmpty {
+                        claimableSection
+                    }
                     if !disconnected.isEmpty {
                         section(
                             "Available but provider not connected",
@@ -100,7 +107,7 @@ struct FreePromoSectionView: View {
             }
             VStack(spacing: 0) {
                 ForEach(Array(routes.enumerated()), id: \.element.id) { index, route in
-                    PromotionRouteRow(route: route, connected: connected)
+                    PromotionRouteRow(route: route, connected: connected, allQuotas: model.catalogQuotas)
                     if index < routes.count - 1 { Divider().padding(.leading, 14) }
                 }
             }
@@ -110,14 +117,61 @@ struct FreePromoSectionView: View {
             }
         }
     }
+
+    private var claimableSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Bonus capacity available").font(.headline)
+                Text("Extra free allowance discovered by CMM Usage. Activation always requires an explicit user action.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(claimableAllowances.enumerated()), id: \.element.id) { index, quota in
+                    FreeCapacityRow(
+                        quota: quota,
+                        providerName: providerName(for: quota),
+                        modelNames: modelNames(for: quota)
+                    )
+                    if index < claimableAllowances.count - 1 { Divider().padding(.leading, 14) }
+                }
+            }
+            .background(.quinary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(.quaternary.opacity(0.8), lineWidth: 1)
+            }
+        }
+    }
+
+    private func providerName(for quota: CatalogQuotaSummary) -> String {
+        let routeIds = Set(quota.entitlement?.appliesToRouteIds ?? [])
+        if let route = model.catalogRoutes.first(where: { routeIds.contains($0.routeId) }) {
+            return route.provider.displayName
+        }
+        if let productId = quota.scope.productId,
+           let route = model.catalogRoutes.first(where: { $0.product.id == productId }) {
+            return route.provider.displayName
+        }
+        return quota.scopeText
+    }
+
+    private func modelNames(for quota: CatalogQuotaSummary) -> [String] {
+        let routeIds = Set(quota.entitlement?.appliesToRouteIds ?? [])
+        return Array(Set(model.catalogRoutes.filter { routeIds.contains($0.routeId) }.map { $0.model.displayName })).sorted()
+    }
 }
 
 private struct PromotionRouteRow: View {
     let route: CatalogRouteEntry
     let connected: Bool
+    let allQuotas: [CatalogQuotaSummary]
+
+    private var hierarchy: ModelQuotaHierarchy {
+        ModelCatalogPresenter.quotaHierarchy(for: route, allQuotas: allQuotas)
+    }
 
     private var quota: CatalogQuotaSummary? {
-        route.quota.sortedForPresentation.first
+        hierarchy.modelLimits.first ?? hierarchy.otherLimits.first ?? hierarchy.sharedLimits.first
     }
 
     var body: some View {
@@ -140,6 +194,17 @@ private struct PromotionRouteRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 Text(quota?.primaryValueText ?? accessText)
                     .font(.caption.weight(.medium))
+                if let shared = hierarchy.sharedLimits.first,
+                   shared.bucketId != quota?.bucketId {
+                    Text("Shared · \(shared.primaryValueText)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if let bonus = hierarchy.claimableAllowances.first {
+                    Label(bonus.claimableValueText ?? "Bonus available", systemImage: "gift")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
                 Text(connected ? visibilityText : "Connect in Providers")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -160,5 +225,48 @@ private struct PromotionRouteRow: View {
 
     private var visibilityText: String {
         route.visibility == .visible ? "Visible in model catalog" : "Hidden from model picker"
+    }
+}
+
+private struct FreeCapacityRow: View {
+    let quota: CatalogQuotaSummary
+    let providerName: String
+    let modelNames: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "gift")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(quota.displayName).font(.subheadline.weight(.semibold))
+                    Text("CLAIMABLE")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                Text(providerName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !modelNames.isEmpty {
+                    Text("For \(modelNames.joined(separator: ", "))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 18)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(quota.claimableValueText ?? "Bonus available")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                Text(quota.entitlement?.actionLabel ?? "Explicit claim required")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
     }
 }

@@ -150,6 +150,35 @@ public struct CatalogQuotaScope: Decodable, Sendable {
     public let key: String?
 }
 
+public enum QuotaEntitlementState: String, Decodable, Sendable {
+    case claimable
+    case claimed
+    case unavailable
+    case expired
+    case unknown
+}
+
+public enum QuotaEntitlementEligibility: String, Decodable, Sendable {
+    case eligible
+    case requiresAuth = "requires_auth"
+    case ineligible
+    case unknown
+}
+
+public struct QuotaEntitlementSummary: Decodable, Sendable {
+    public let state: QuotaEntitlementState
+    public let eligibility: QuotaEntitlementEligibility
+    public let amount: Double?
+    public let unit: String
+    public let actionLabel: String?
+    public let requiresExplicitUserAction: Bool
+    public let source: UsageSource?
+    public let confidence: UsageConfidence?
+    public let observedAt: String?
+    public let validUntil: String?
+    public let appliesToRouteIds: [String]?
+}
+
 public struct CatalogQuotaSummary: Decodable, Sendable, Identifiable {
     public let bucketId: String
     public let displayName: String
@@ -171,6 +200,7 @@ public struct CatalogQuotaSummary: Decodable, Sendable, Identifiable {
     public let observedAt: String?
     public let stale: Bool?
     public let affectedRouteIds: [String]?
+    public let entitlement: QuotaEntitlementSummary?
 
     public var id: String { bucketId }
 }

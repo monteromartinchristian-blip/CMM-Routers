@@ -21,8 +21,8 @@ import { ManagedConfigStore } from "../runtime/managed-config-store.js";
 export const PUBLIC_SAFE_DEMO_READ_TOKEN = "cmm-usage-public-demo-read";
 export const PUBLIC_SAFE_DEMO_MANAGEMENT_TOKEN = "cmm-usage-public-demo-management";
 
-const observedAt = "2026-09-14T18:00:00.000Z";
-const freshUntil = "2026-09-14T19:30:00.000Z";
+const observedAt = "2026-09-15T00:00:00.000Z";
+const freshUntil = "2026-09-16T00:00:00.000Z";
 
 export const PUBLIC_SAFE_DEMO_CONFIG: LoadedUsageRuntimeConfig = parseUsageRuntimeConfig({
   version: 1,
@@ -81,6 +81,8 @@ const models: ModelIdentity[] = [
   { id: "model:demo:codex", canonicalName: "Codex", vendor: "OpenAI", family: "GPT", lifecycle: "active", aliases: [], metadata: {} },
   { id: "model:demo:claude", canonicalName: "Claude Sonnet", vendor: "Anthropic", family: "Claude", lifecycle: "active", aliases: [], metadata: {} },
   { id: "model:demo:qwen", canonicalName: "Qwen Flash", vendor: "Qwen", family: "Qwen", lifecycle: "active", aliases: [], metadata: {} },
+  { id: "model:demo:kira-qwen-38", canonicalName: "Qwen 3.8 Flash Free", vendor: "Qwen", family: "Qwen 3.8", lifecycle: "active", aliases: [], metadata: {} },
+  { id: "model:demo:kira-qwen-37", canonicalName: "Qwen 3.7-27B Free", vendor: "Qwen", family: "Qwen 3.7", lifecycle: "active", aliases: [], metadata: {} },
   { id: "model:demo:northstar", canonicalName: "Northstar Pro", vendor: "Northstar", lifecycle: "active", aliases: [], metadata: {} },
   { id: "model:demo:local", canonicalName: "Local Demo 8B", vendor: "Local Lab", lifecycle: "active", aliases: [], metadata: {} },
 ];
@@ -90,7 +92,8 @@ const routes: AccessRoute[] = [
   { id: "route:demo:chatgpt", accountId: "account:demo:chatgpt", productId: "product:demo:chatgpt", subscriptionPeriodId: "subscription:demo:chatgpt", modelIdentityId: "model:demo:codex", providerModelId: "codex", displayName: "Codex", status: "available", metadata: {} },
   { id: "route:demo:openrouter-claude", accountId: "account:demo:openrouter", productId: "product:demo:openrouter", modelIdentityId: "model:demo:claude", providerModelId: "anthropic/claude-sonnet", displayName: "Claude Sonnet", status: "available", metadata: {} },
   { id: "route:demo:openrouter-qwen", accountId: "account:demo:openrouter", productId: "product:demo:openrouter", modelIdentityId: "model:demo:qwen", providerModelId: "qwen/qwen-flash", displayName: "Qwen Flash", status: "available", metadata: {} },
-  { id: "route:demo:free", accountId: "account:demo:kira", productId: "product:demo:free", modelIdentityId: "model:demo:qwen", providerModelId: "qwen-free", displayName: "Qwen Flash", status: "available", metadata: {} },
+  { id: "route:demo:kira-qwen-38", accountId: "account:demo:kira", productId: "product:demo:free", modelIdentityId: "model:demo:kira-qwen-38", providerModelId: "qwen3.8-flash-free", displayName: "Qwen 3.8 Flash Free", status: "available", metadata: {} },
+  { id: "route:demo:kira-qwen-37", accountId: "account:demo:kira", productId: "product:demo:free", modelIdentityId: "model:demo:kira-qwen-37", providerModelId: "qwen3.7-27b-free", displayName: "Qwen 3.7-27B Free", status: "available", metadata: {} },
   { id: "route:demo:promo", accountId: "account:demo:kira", productId: "product:demo:promo", modelIdentityId: "model:demo:claude", providerModelId: "claude-promo", displayName: "Claude Sonnet", status: "available", metadata: {} },
   { id: "route:demo:trial", accountId: "account:demo:trial", productId: "product:demo:trial", modelIdentityId: "model:demo:northstar", providerModelId: "northstar-pro", displayName: "Northstar Pro", status: "available", metadata: {} },
   { id: "route:demo:unknown", accountId: "account:demo:local", productId: "product:demo:unknown", modelIdentityId: "model:demo:local", providerModelId: "demo-local-model", displayName: "Local Demo 8B", status: "available", metadata: {} },
@@ -109,7 +112,10 @@ const buckets: QuotaBucket[] = [
   { id: "bucket:demo:cc-weekly", accountId: "account:demo:command-code", productId: "product:demo:command-code-goat", displayName: "Weekly window", metric: { kind: "provider_defined", providerKey: "command_code_window_units" }, windowPolicy: { kind: "rolling_duration", durationSeconds: 604_800 }, limitValue: 35, unit: "provider units", enforcement: "hard", status: "warning", providerKey: "window:weekly", metadata: { scope: "product" } },
   { id: "bucket:demo:chatgpt-percentage", accountId: "account:demo:chatgpt", productId: "product:demo:chatgpt", displayName: "Weekly usage", metric: { kind: "percentage" }, windowPolicy: { kind: "provider_reported" }, unit: "%", enforcement: "hard", status: "healthy", metadata: { scope: "product" } },
   { id: "bucket:demo:openrouter-shared", accountId: "account:demo:openrouter", productId: "product:demo:openrouter", displayName: "Shared prepaid pool", metric: { kind: "currency", currency: "USD" }, windowPolicy: { kind: "none" }, unit: "USD", enforcement: "hard", status: "healthy", metadata: { scope: "shared_pool" } },
-  { id: "bucket:demo:free-requests", accountId: "account:demo:kira", productId: "product:demo:free", displayName: "Daily free requests", metric: { kind: "requests" }, windowPolicy: { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" }, limitValue: 100, unit: "requests", enforcement: "hard", status: "healthy", metadata: { scope: "route" } },
+  { id: "bucket:demo:kira-qwen-38", accountId: "account:demo:kira", productId: "product:demo:free", displayName: "Qwen 3.8 Flash daily allowance", metric: { kind: "tokens" }, windowPolicy: { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" }, limitValue: 30_000_000, unit: "tokens", enforcement: "hard", status: "healthy", metadata: { scope: "route" } },
+  { id: "bucket:demo:kira-qwen-37", accountId: "account:demo:kira", productId: "product:demo:free", displayName: "Qwen 3.7-27B daily allowance", metric: { kind: "tokens" }, windowPolicy: { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" }, limitValue: 20_000_000, unit: "tokens", enforcement: "hard", status: "healthy", metadata: { scope: "route" } },
+  { id: "bucket:demo:kira-general", accountId: "account:demo:kira", productId: "product:demo:free", displayName: "General free allowance", metric: { kind: "tokens" }, windowPolicy: { kind: "fixed_calendar", calendarUnit: "day", timezone: "UTC" }, limitValue: 80_000_000, unit: "tokens", enforcement: "hard", status: "healthy", metadata: { scope: "shared_pool" } },
+  { id: "bucket:demo:kira-bonus", accountId: "account:demo:kira", productId: "product:demo:free", displayName: "Check-in bonus", metric: { kind: "tokens" }, windowPolicy: { kind: "none" }, limitValue: 50_000_000, unit: "tokens", enforcement: "soft", status: "healthy", metadata: { scope: "shared_pool", entitlementState: "claimable", entitlementEligibility: "requires_auth", entitlementAmount: 50_000_000, entitlementUnit: "tokens", entitlementActionLabel: "Sign in to claim", entitlementSource: "provider_official_api", entitlementConfidence: "exact", entitlementObservedAt: observedAt, entitlementAppliesToRouteIds: ["route:demo:kira-qwen-38", "route:demo:kira-qwen-37"] } },
   { id: "bucket:demo:promo-units", accountId: "account:demo:kira", productId: "product:demo:promo", displayName: "Promo capacity", metric: { kind: "provider_defined", providerKey: "promo_units" }, windowPolicy: { kind: "provider_reported" }, unit: "promo units", enforcement: "hard", status: "healthy", metadata: { scope: "route" } },
   { id: "bucket:demo:trial-tokens", accountId: "account:demo:trial", productId: "product:demo:trial", displayName: "Trial token pool", metric: { kind: "tokens" }, windowPolicy: { kind: "fixed_calendar", calendarUnit: "week", timezone: "UTC" }, limitValue: 2_000_000, unit: "tokens", enforcement: "hard", status: "healthy", metadata: { scope: "route" } },
 ];
@@ -121,7 +127,10 @@ const bindings: QuotaBinding[] = [
   { id: "binding:demo:chatgpt", accessRouteId: "route:demo:chatgpt", quotaBucketId: "bucket:demo:chatgpt-percentage", activeFrom: observedAt, metadata: {} },
   { id: "binding:demo:openrouter-claude", accessRouteId: "route:demo:openrouter-claude", quotaBucketId: "bucket:demo:openrouter-shared", activeFrom: observedAt, metadata: {} },
   { id: "binding:demo:openrouter-qwen", accessRouteId: "route:demo:openrouter-qwen", quotaBucketId: "bucket:demo:openrouter-shared", activeFrom: observedAt, metadata: {} },
-  { id: "binding:demo:free", accessRouteId: "route:demo:free", quotaBucketId: "bucket:demo:free-requests", activeFrom: observedAt, metadata: {} },
+  { id: "binding:demo:kira-qwen-38", accessRouteId: "route:demo:kira-qwen-38", quotaBucketId: "bucket:demo:kira-qwen-38", activeFrom: observedAt, metadata: {} },
+  { id: "binding:demo:kira-qwen-37", accessRouteId: "route:demo:kira-qwen-37", quotaBucketId: "bucket:demo:kira-qwen-37", activeFrom: observedAt, metadata: {} },
+  { id: "binding:demo:kira-general-38", accessRouteId: "route:demo:kira-qwen-38", quotaBucketId: "bucket:demo:kira-general", activeFrom: observedAt, metadata: {} },
+  { id: "binding:demo:kira-general-37", accessRouteId: "route:demo:kira-qwen-37", quotaBucketId: "bucket:demo:kira-general", activeFrom: observedAt, metadata: {} },
   { id: "binding:demo:promo", accessRouteId: "route:demo:promo", quotaBucketId: "bucket:demo:promo-units", activeFrom: observedAt, metadata: {} },
   { id: "binding:demo:trial", accessRouteId: "route:demo:trial", quotaBucketId: "bucket:demo:trial-tokens", activeFrom: observedAt, metadata: {} },
 ];
@@ -134,7 +143,10 @@ const snapshots: QuotaSnapshot[] = [
   { id: "snapshot:demo:cc-weekly", quotaBucketId: "bucket:demo:cc-weekly", observedAt, usedValue: 27, remainingValue: 8, limitValue: 35, usedFraction: 27 / 35, remainingFraction: 8 / 35, source: "provider_official_cli", confidence: "exact", stalenessAfter: freshUntil },
   { id: "snapshot:demo:chatgpt", quotaBucketId: "bucket:demo:chatgpt-percentage", observedAt, usedFraction: 0.41, remainingFraction: 0.59, providerResetText: "Provider reports a user-triggerable reset when available", source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
   { id: "snapshot:demo:openrouter", quotaBucketId: "bucket:demo:openrouter-shared", observedAt, remainingValue: 7.31, source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
-  { id: "snapshot:demo:free", quotaBucketId: "bucket:demo:free-requests", observedAt, usedValue: 58, remainingValue: 42, limitValue: 100, resetAt: "2026-09-15T00:00:00.000Z", source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
+  { id: "snapshot:demo:kira-qwen-38", quotaBucketId: "bucket:demo:kira-qwen-38", observedAt, usedValue: 6_000_000, remainingValue: 24_000_000, limitValue: 30_000_000, resetAt: "2026-09-16T00:00:00.000Z", source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
+  { id: "snapshot:demo:kira-qwen-37", quotaBucketId: "bucket:demo:kira-qwen-37", observedAt, usedValue: 5_000_000, remainingValue: 15_000_000, limitValue: 20_000_000, resetAt: "2026-09-16T00:00:00.000Z", source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
+  { id: "snapshot:demo:kira-general", quotaBucketId: "bucket:demo:kira-general", observedAt, usedValue: 12_000_000, remainingValue: 68_000_000, limitValue: 80_000_000, resetAt: "2026-09-16T00:00:00.000Z", source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
+  { id: "snapshot:demo:kira-bonus", quotaBucketId: "bucket:demo:kira-bonus", observedAt, remainingValue: 50_000_000, limitValue: 50_000_000, source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
   { id: "snapshot:demo:promo", quotaBucketId: "bucket:demo:promo-units", observedAt, usedValue: 18, remainingValue: 82, limitValue: 100, source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
   { id: "snapshot:demo:trial", quotaBucketId: "bucket:demo:trial-tokens", observedAt, usedValue: 1_200_000, remainingValue: 800_000, limitValue: 2_000_000, source: "provider_official_api", confidence: "exact", stalenessAfter: freshUntil },
 ];

@@ -137,7 +137,7 @@ struct AlertsSectionView: View {
                                     .foregroundStyle(alert.status.tint)
                                     .font(.title2)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(model.quota(id: alert.bucketId)?.bucket.displayName ?? alert.bucketId)
+                                    Text(UsageAlertPresenter.title(quota: model.catalogQuotas.first { $0.bucketId == alert.bucketId }))
                                         .font(.headline)
                                     Text(alert.kind.replacingOccurrences(of: "_", with: " ").capitalized)
                                         .font(.caption)

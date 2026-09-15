@@ -146,6 +146,16 @@ public extension CatalogQuotaSummary {
         return metric.kind == "credits" || metric.kind == "currency"
     }
 
+    var isClaimableEntitlement: Bool {
+        entitlement?.state == .claimable
+    }
+
+    var claimableValueText: String? {
+        guard let entitlement, entitlement.state == .claimable else { return nil }
+        guard let amount = entitlement.amount else { return "Bonus available" }
+        return "\(Self.compactNumber(amount)) \(entitlement.unit) available"
+    }
+
     var scopeText: String {
         switch scope.kind {
         case .sharedPool: return "Shared pool"
@@ -206,6 +216,12 @@ public extension CatalogQuotaSummary {
         case "JPY": return "¥\(amount)"
         default: return "\(code.uppercased()) \(amount)"
         }
+    }
+}
+
+public enum UsageAlertPresenter {
+    public static func title(quota: CatalogQuotaSummary?) -> String {
+        quota?.displayName ?? "Quota alert"
     }
 }
 

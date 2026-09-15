@@ -21,6 +21,33 @@ export type QuotaScope =
   | { kind: "api_key"; providerId: string }
   | { kind: "provider_defined"; key: string };
 
+export type QuotaEntitlementState =
+  | "claimable"
+  | "claimed"
+  | "unavailable"
+  | "expired"
+  | "unknown";
+
+export type QuotaEntitlementEligibility =
+  | "eligible"
+  | "requires_auth"
+  | "ineligible"
+  | "unknown";
+
+export interface QuotaEntitlementSummary {
+  state: QuotaEntitlementState;
+  eligibility: QuotaEntitlementEligibility;
+  amount?: number;
+  unit: string;
+  actionLabel?: string;
+  requiresExplicitUserAction: true;
+  source?: Source;
+  confidence?: Confidence;
+  observedAt?: string;
+  validUntil?: string;
+  appliesToRouteIds?: readonly string[];
+}
+
 export interface QuotaSummary {
   bucketId: string;
   displayName: string;
@@ -42,6 +69,7 @@ export interface QuotaSummary {
   observedAt?: string;
   stale?: boolean;
   affectedRouteIds?: readonly string[];
+  entitlement?: QuotaEntitlementSummary;
 }
 
 export type ProviderCategory =

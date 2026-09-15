@@ -34,6 +34,20 @@ function routeAvailability(route: AccessRoute): CatalogRouteEntry["availability"
   return "unknown";
 }
 
+function currentAccessOffer(
+  route: AccessRoute,
+  product: Product,
+  now: Date,
+): CatalogRouteEntry["offer"] {
+  const offer = projectAccessOffer(route, product);
+  const expiringKind =
+    offer.kind === "FREE" || offer.kind === "PROMO" || offer.kind === "TRIAL";
+  if (!expiringKind || offer.validUntil === undefined) return offer;
+  const validUntilMs = Date.parse(offer.validUntil);
+  if (Number.isFinite(validUntilMs) && validUntilMs > now.getTime()) return offer;
+  return { ...offer, kind: "UNKNOWN" };
+}
+
 export class PresentationCatalogService {
   private readonly now: () => Date;
 
@@ -143,7 +157,7 @@ export class PresentationCatalogService {
           displayName: model?.canonicalName ?? route.displayName,
           ...(model?.family === undefined ? {} : { family: model.family }),
         },
-        offer: projectAccessOffer(route, product),
+        offer: currentAccessOffer(route, product, this.now()),
         quota: routeQuotas,
         availability: routeAvailability(route),
         visibility,

@@ -8,15 +8,15 @@ import { seedCatalogScenario } from "../fixtures/catalog-scenarios.js";
 
 const stores: SqliteUsageStore[] = [];
 
-async function makeCatalog() {
+async function makeCatalog(now = "2026-09-14T18:10:00.000Z") {
   const store = new SqliteUsageStore(":memory:");
   stores.push(store);
   await store.initialize();
   await seedCatalogScenario(store);
   const visibility = new VisibilityStore(store);
-  const queries = new UsageQueryService(store, { now: () => new Date("2026-09-14T18:10:00.000Z") });
+  const queries = new UsageQueryService(store, { now: () => new Date(now) });
   const directory = createDefaultProviderDirectory([]);
-  return { store, visibility, catalog: new PresentationCatalogService(store, queries, directory, visibility, { now: () => new Date("2026-09-14T18:10:00.000Z") }) };
+  return { store, visibility, catalog: new PresentationCatalogService(store, queries, directory, visibility, { now: () => new Date(now) }) };
 }
 
 afterEach(async () => {
@@ -93,6 +93,15 @@ describe("PresentationCatalogService", () => {
     expect(routes.find((route) => route.routeId === "route:openrouter:claude")).toMatchObject({
       offer: { kind: "PAYG" },
     });
+  });
+
+  it("stops advertising expired promotional access", async () => {
+    const { catalog } = await makeCatalog("2026-10-01T00:00:00.000Z");
+    const routes = await catalog.listRoutes();
+    const promotions = await catalog.listPromotions();
+
+    expect(routes.find((route) => route.routeId === "route:kira:qwen")?.offer.kind).toBe("UNKNOWN");
+    expect(promotions.map((route) => route.routeId)).not.toContain("route:kira:qwen");
   });
 
   it("hides only the selected provider route and leaves sibling routes visible", async () => {

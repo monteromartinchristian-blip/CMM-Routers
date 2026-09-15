@@ -219,6 +219,28 @@ func testQuotaPresentationContract() throws {
     try expect(quotas.sortedForPresentation.first?.constraining == true && quotas.sortedForPresentation.last?.bucketId == "supplemental", "constraining quotas must lead and supplemental balances must trail")
 }
 
+func testClaimableQuotaEntitlementContract() throws {
+    let json = #"{"bucketId":"kira-bonus","displayName":"Check-in bonus","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"none"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":50000000,"limit":50000000,"constraining":false,"entitlement":{"state":"claimable","eligibility":"requires_auth","amount":50000000,"unit":"tokens","actionLabel":"Sign in to claim","requiresExplicitUserAction":true,"source":"provider_official_api","confidence":"exact","observedAt":"2026-09-15T00:00:00.000Z","appliesToRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}}"#
+    let quota = try JSONDecoder().decode(CatalogQuotaSummary.self, from: Data(json.utf8))
+    try expect(quota.entitlement?.state == .claimable, "claimable entitlement state must decode")
+    try expect(quota.entitlement?.eligibility == .requiresAuth, "claimable entitlement auth requirement must decode")
+    try expect(quota.entitlement?.amount == 50_000_000, "claimable entitlement amount must preserve native units")
+    try expect(quota.entitlement?.appliesToRouteIds == ["route:kira:qwen-37", "route:kira:qwen-38"], "claimable entitlement must identify the routes it can extend")
+    try expect(quota.entitlement?.requiresExplicitUserAction == true, "claim actions must always require explicit user action")
+}
+
+func testModelQuotaHierarchyContract() throws {
+    let routeJSON = #"{"routeId":"route:kira:qwen-38","provider":{"id":"kira","displayName":"Kira AI"},"product":{"id":"kira-free","displayName":"Free models","category":"api"},"model":{"id":"qwen-38","displayName":"Qwen 3.8 Flash Free"},"offer":{"kind":"FREE"},"quota":[{"bucketId":"model","displayName":"Model allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":true},{"bucketId":"general","displayName":"General Kira pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}],"availability":"available","visibility":"visible"}"#
+    let quotasJSON = #"{"data":[{"bucketId":"model","displayName":"Model allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":true,"affectedRouteIds":["route:kira:qwen-38"]},{"bucketId":"general","displayName":"General Kira pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]},{"bucketId":"bonus","displayName":"Check-in bonus","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"none"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":50000000,"limit":50000000,"constraining":false,"entitlement":{"state":"claimable","eligibility":"requires_auth","amount":50000000,"unit":"tokens","actionLabel":"Sign in to claim","requiresExplicitUserAction":true,"appliesToRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}}]}"#
+    let route = try JSONDecoder().decode(CatalogRouteEntry.self, from: Data(routeJSON.utf8))
+    let quotas = try JSONDecoder().decode(UsageListResponse<CatalogQuotaSummary>.self, from: Data(quotasJSON.utf8)).data
+    let hierarchy = ModelCatalogPresenter.quotaHierarchy(for: route, allQuotas: quotas)
+
+    try expect(hierarchy.modelLimits.map(\.bucketId) == ["model"], "route-specific allowance must be visually identified as a model limit")
+    try expect(hierarchy.sharedLimits.map(\.bucketId) == ["general"], "shared provider allowance must remain a shared limit")
+    try expect(hierarchy.claimableAllowances.map(\.bucketId) == ["bonus"], "claimable capacity must be visually separate from active limits")
+}
+
 func testMenuBarPresentationContract() throws {
     let routesJSON = #"""
     {"data":[
@@ -228,7 +250,8 @@ func testMenuBarPresentationContract() throws {
     let quotasJSON = #"""
     {"data":[
       {"bucketId":"credits","displayName":"Monthly plan credits","metric":{"kind":"credits"},"unit":"credits","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","remaining":35,"constraining":true,"affectedRouteIds":["route:goat"]},
-      {"bucketId":"weekly","displayName":"Weekly usage","metric":{"kind":"percentage"},"unit":"fraction","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","usedFraction":0.61,"constraining":false,"affectedRouteIds":["route:goat"]}
+      {"bucketId":"weekly","displayName":"Weekly usage","metric":{"kind":"percentage"},"unit":"fraction","windowPolicy":{"kind":"provider_reported"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","usedFraction":0.61,"constraining":false,"affectedRouteIds":["route:goat"]},
+      {"bucketId":"claimable","displayName":"Bonus available","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"none"},"scope":{"kind":"product","productId":"product:goat"},"status":"healthy","remaining":50000000,"limit":50000000,"constraining":false,"entitlement":{"state":"claimable","eligibility":"requires_auth","amount":50000000,"unit":"tokens","actionLabel":"Sign in to claim","requiresExplicitUserAction":true,"appliesToRouteIds":["route:goat"]}}
     ]}
     """#
     let routes = try JSONDecoder().decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(routesJSON.utf8)).data
@@ -239,6 +262,7 @@ func testMenuBarPresentationContract() throws {
     try expect(goat.quotaLines.map(\.valueText) == ["35 credits remaining", "61% used"], "heterogeneous menu quotas must keep their native values")
     try expect(goat.quotaLines.allSatisfy { $0.resetText == "Unknown reset" }, "missing provider reset instants must remain Unknown reset")
     try expect(goat.quotaLines.count == 2, "menu bar must not collapse heterogeneous quotas into a universal percentage")
+    try expect(!goat.quotaLines.contains { $0.id == "claimable" }, "claimable capacity must not masquerade as an active menu-bar quota")
     try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://models")!) == .models, "models deep link must map to Models")
     try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://providers")!) == .providers, "providers deep link must map to Providers")
     try expect(UsageNavigationDestination.fromDeepLink(URL(string: "cmm-usage://quotas")!) == .quotas, "quotas deep link must map to Quotas")
@@ -450,6 +474,8 @@ do {
     try testProviderPresentationContract()
     try testModelCatalogPresentationContract()
     try testQuotaPresentationContract()
+    try testClaimableQuotaEntitlementContract()
+    try testModelQuotaHierarchyContract()
     try testMenuBarPresentationContract()
     try await testReadOnlyAPIClient()
     try await testCatalogReadsAndManagementMutationsUseSeparateCredentials()

@@ -46,6 +46,7 @@ struct ModelsSectionView: View {
                         ForEach(groups) { group in
                             ProviderModelGroupView(
                                 group: group,
+                                allQuotas: model.catalogQuotas,
                                 onSetVisibility: setVisibility
                             )
                         }
@@ -125,6 +126,7 @@ struct ModelsSectionView: View {
 
 private struct ProviderModelGroupView: View {
     let group: ModelCatalogProviderGroup
+    let allQuotas: [CatalogQuotaSummary]
     let onSetVisibility: ([CatalogRouteEntry], CatalogVisibilityState) -> Void
 
     private var routes: [CatalogRouteEntry] {
@@ -152,7 +154,7 @@ private struct ProviderModelGroupView: View {
 
             ForEach(Array(group.products.enumerated()), id: \.element.id) { productIndex, product in
                 if productIndex > 0 { Divider() }
-                ProductModelGroupView(product: product, onSetVisibility: onSetVisibility)
+                ProductModelGroupView(product: product, allQuotas: allQuotas, onSetVisibility: onSetVisibility)
             }
         }
         .background(.quinary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -166,6 +168,7 @@ private struct ProviderModelGroupView: View {
 
 private struct ProductModelGroupView: View {
     let product: ModelCatalogProductGroup
+    let allQuotas: [CatalogQuotaSummary]
     let onSetVisibility: ([CatalogRouteEntry], CatalogVisibilityState) -> Void
 
     var body: some View {
@@ -185,7 +188,7 @@ private struct ProductModelGroupView: View {
             Divider().padding(.leading, 14)
 
             ForEach(Array(product.routes.enumerated()), id: \.element.id) { index, route in
-                ModelRouteRow(route: route, onSetVisibility: onSetVisibility)
+                ModelRouteRow(route: route, allQuotas: allQuotas, onSetVisibility: onSetVisibility)
                 if index < product.routes.count - 1 { Divider().padding(.leading, 44) }
             }
         }
@@ -194,61 +197,195 @@ private struct ProductModelGroupView: View {
 
 private struct ModelRouteRow: View {
     let route: CatalogRouteEntry
+    let allQuotas: [CatalogQuotaSummary]
     let onSetVisibility: ([CatalogRouteEntry], CatalogVisibilityState) -> Void
+    @State private var expanded = false
 
     private var headlineQuota: CatalogQuotaSummary? {
-        route.quota.first(where: \.constraining) ?? route.quota.first
+        hierarchy.headlineQuota
+    }
+
+    private var hierarchy: ModelQuotaHierarchy {
+        ModelCatalogPresenter.quotaHierarchy(for: route, allQuotas: allQuotas)
+    }
+
+    private var hasQuotaDetails: Bool {
+        !hierarchy.modelLimits.isEmpty ||
+        !hierarchy.sharedLimits.isEmpty ||
+        !hierarchy.otherLimits.isEmpty ||
+        !hierarchy.claimableAllowances.isEmpty
     }
 
     var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: route.visibility == .visible ? "circle.fill" : "circle")
-                .font(.system(size: 7))
-                .foregroundStyle(route.visibility == .visible ? .primary : .tertiary)
-                .frame(width: 18)
-                .accessibilityHidden(true)
+        VStack(spacing: 0) {
+            HStack(spacing: 11) {
+                Image(systemName: route.visibility == .visible ? "circle.fill" : "circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(route.visibility == .visible ? .primary : .tertiary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Text(route.model.displayName)
-                        .font(.subheadline.weight(.medium))
-                    AccessOfferBadge(offer: route.offer)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text(route.model.displayName)
+                            .font(.subheadline.weight(.medium))
+                        AccessOfferBadge(offer: route.offer)
+                    }
+                    HStack(spacing: 6) {
+                        if let family = route.model.family {
+                            Text(family)
+                        }
+                        if let quota = headlineQuota {
+                            Text("·")
+                            Text(quota.compactRemainingText)
+                        }
+                        if !hierarchy.sharedLimits.isEmpty {
+                            Text("·")
+                            Text("\(hierarchy.sharedLimits.count) shared limit\(hierarchy.sharedLimits.count == 1 ? "" : "s")")
+                        }
+                        if !hierarchy.claimableAllowances.isEmpty {
+                            Text("·")
+                            Label("Bonus available", systemImage: "gift")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        if route.availability != .available {
+                            Text("·")
+                            Text("Unavailable")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 6) {
-                    if let family = route.model.family {
-                        Text(family)
+
+                Spacer(minLength: 18)
+
+                if hasQuotaDetails {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 18, height: 18)
                     }
-                    if let quota = headlineQuota {
-                        Text("·")
-                        Text(quota.compactRemainingText)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(expanded ? "Hide quota details" : "Show quota details")
+                }
+
+                Toggle(
+                    "Show \(route.model.displayName) through \(route.provider.displayName)",
+                    isOn: Binding(
+                        get: { route.visibility == .visible },
+                        set: { visible in
+                            onSetVisibility([route], visible ? .visible : .hidden)
+                        }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .accessibilityValue(route.visibility == .visible ? "Visible" : "Hidden")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+
+            if expanded && hasQuotaDetails {
+                Divider().padding(.leading, 44)
+                VStack(alignment: .leading, spacing: 9) {
+                    if !hierarchy.modelLimits.isEmpty {
+                        quotaSection("Model limits", quotas: hierarchy.modelLimits, kind: .model)
                     }
-                    if route.availability != .available {
-                        Text("·")
-                        Text("Unavailable")
+                    if !hierarchy.sharedLimits.isEmpty {
+                        quotaSection("Shared pools", quotas: hierarchy.sharedLimits, kind: .shared)
+                    }
+                    if !hierarchy.otherLimits.isEmpty {
+                        quotaSection("Other active limits", quotas: hierarchy.otherLimits, kind: .other)
+                    }
+                    if !hierarchy.claimableAllowances.isEmpty {
+                        quotaSection("Bonus capacity", quotas: hierarchy.claimableAllowances, kind: .claimable)
                     }
                 }
+                .padding(.leading, 44)
+                .padding(.trailing, 14)
+                .padding(.vertical, 9)
+                .background(.quinary.opacity(0.08))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func quotaSection(_ title: String, quotas: [CatalogQuotaSummary], kind: ModelQuotaLine.Kind) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            ForEach(quotas) { quota in
+                ModelQuotaLine(quota: quota, kind: kind)
+            }
+        }
+    }
+}
+
+private struct ModelQuotaLine: View {
+    enum Kind: Equatable {
+        case model
+        case shared
+        case other
+        case claimable
+    }
+
+    let quota: CatalogQuotaSummary
+    let kind: Kind
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: symbol)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .frame(width: 14, height: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(quota.displayName)
+                        .font(.caption.weight(.medium))
+                    if kind == .shared, let count = quota.affectedRouteIds?.count, count > 1 {
+                        Text("Shared with \(count) routes")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                if let progress = quota.progressFraction, kind != .claimable {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 220)
+                        .accessibilityLabel("\(quota.displayName) used")
+                        .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+                }
             }
 
-            Spacer(minLength: 18)
+            Spacer(minLength: 14)
 
-            Toggle(
-                "Show \(route.model.displayName) through \(route.provider.displayName)",
-                isOn: Binding(
-                    get: { route.visibility == .visible },
-                    set: { visible in
-                        onSetVisibility([route], visible ? .visible : .hidden)
-                    }
-                )
-            )
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityValue(route.visibility == .visible ? "Visible" : "Hidden")
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(kind == .claimable ? (quota.claimableValueText ?? "Bonus available") : quota.primaryValueText)
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                Text(kind == .claimable ? claimText : quota.resetText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+    }
+
+    private var symbol: String {
+        switch kind {
+        case .model: return "cpu"
+        case .shared: return "arrow.triangle.branch"
+        case .other: return "gauge.with.dots.needle.67percent"
+        case .claimable: return "gift"
+        }
+    }
+
+    private var claimText: String {
+        quota.entitlement?.actionLabel ?? "Explicit claim required"
     }
 }
 

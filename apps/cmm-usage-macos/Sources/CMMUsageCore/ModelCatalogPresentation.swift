@@ -46,6 +46,17 @@ public struct ModelCatalogProviderGroup: Identifiable, Sendable {
     public var id: String { provider.id }
 }
 
+public struct ModelQuotaHierarchy: Sendable {
+    public let modelLimits: [CatalogQuotaSummary]
+    public let sharedLimits: [CatalogQuotaSummary]
+    public let otherLimits: [CatalogQuotaSummary]
+    public let claimableAllowances: [CatalogQuotaSummary]
+
+    public var headlineQuota: CatalogQuotaSummary? {
+        modelLimits.first ?? otherLimits.first ?? sharedLimits.first
+    }
+}
+
 public enum ModelCatalogPresenter {
     public static func visibleRoutes(_ routes: [CatalogRouteEntry]) -> [CatalogRouteEntry] {
         routes.filter { $0.visibility == .visible }
@@ -100,6 +111,34 @@ public enum ModelCatalogPresenter {
         return routes.filter { route in
             matches(filter, route: route) && matches(normalizedQuery, route: route)
         }
+    }
+
+    public static func quotaHierarchy(
+        for route: CatalogRouteEntry,
+        allQuotas: [CatalogQuotaSummary]
+    ) -> ModelQuotaHierarchy {
+        let active = route.quota.filter { !$0.isClaimableEntitlement }
+        let modelLimits = active.filter { quota in
+            quota.scope.kind == .route || quota.scope.kind == .model
+        }.sortedForPresentation
+        let sharedLimits = active.filter { $0.scope.kind == .sharedPool }.sortedForPresentation
+        let otherLimits = active.filter { quota in
+            quota.scope.kind != .route && quota.scope.kind != .model && quota.scope.kind != .sharedPool
+        }.sortedForPresentation
+        let claimableAllowances = allQuotas.filter { quota in
+            guard let entitlement = quota.entitlement, entitlement.state == .claimable else { return false }
+            if let routeIds = entitlement.appliesToRouteIds, !routeIds.isEmpty {
+                return routeIds.contains(route.routeId)
+            }
+            return quota.scope.productId == route.product.id
+        }.sortedForPresentation
+
+        return ModelQuotaHierarchy(
+            modelLimits: modelLimits,
+            sharedLimits: sharedLimits,
+            otherLimits: otherLimits,
+            claimableAllowances: claimableAllowances
+        )
     }
 
     private static func matches(_ filter: ModelCatalogFilter, route: CatalogRouteEntry) -> Bool {

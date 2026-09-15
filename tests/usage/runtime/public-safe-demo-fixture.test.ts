@@ -63,10 +63,37 @@ describe("public-safe CMM Usage demo fixture", () => {
       expect(supplemental).toHaveLength(2);
       expect(supplemental.every((quota) => quota.constraining === false)).toBe(true);
 
-      const sharedPool = quotas.find((quota) => quota.scope.kind === "shared_pool");
+      const sharedPool = quotas.find((quota) => quota.displayName === "Shared prepaid pool");
       expect(sharedPool?.affectedRouteIds).toHaveLength(2);
       expect(sharedPool?.resetAt).toBeUndefined();
       expect(sharedPool?.limit).toBeUndefined();
+
+      const kiraFreeRoutes = routes.filter((route) =>
+        route.provider.displayName === "Kira AI" && route.offer.kind === "FREE");
+      expect(kiraFreeRoutes.map((route) => route.model.displayName)).toEqual([
+        "Qwen 3.7-27B Free",
+        "Qwen 3.8 Flash Free",
+      ]);
+      expect(kiraFreeRoutes.every((route) =>
+        route.quota.some((quota) => quota.scope.kind === "shared_pool"))).toBe(true);
+      expect(kiraFreeRoutes.every((route) =>
+        route.quota.some((quota) => quota.scope.kind === "route"))).toBe(true);
+
+      const claimable = quotas.find((quota) => quota.entitlement?.state === "claimable");
+      expect(claimable).toMatchObject({
+        displayName: "Check-in bonus",
+        constraining: false,
+        entitlement: {
+          amount: 50_000_000,
+          unit: "tokens",
+          eligibility: "requires_auth",
+          requiresExplicitUserAction: true,
+        },
+      });
+      expect(claimable?.entitlement?.appliesToRouteIds).toEqual([
+        "route:demo:kira-qwen-37",
+        "route:demo:kira-qwen-38",
+      ]);
 
       const safePayload = JSON.stringify({ routes, providers, quotas });
       expect(safePayload).not.toMatch(/credentialRef|keychain:\/\/|managementApiCredentialRef|apiCredentialRef/i);

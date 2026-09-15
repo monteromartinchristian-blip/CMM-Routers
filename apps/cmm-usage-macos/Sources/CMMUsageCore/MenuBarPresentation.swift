@@ -17,6 +17,13 @@ public struct MenuBarProductSummary: Identifiable, Sendable {
 }
 
 public enum MenuBarPresenter {
+    public static func freeCapacityCount(
+        promotions: [CatalogRouteEntry],
+        quotas: [CatalogQuotaSummary]
+    ) -> Int {
+        promotions.count + quotas.filter(\.isClaimableEntitlement).count
+    }
+
     public static func productSummaries(
         routes: [CatalogRouteEntry],
         quotas: [CatalogQuotaSummary]
@@ -28,7 +35,7 @@ public enum MenuBarPresenter {
                 if quota.scope.productId == first.product.id { return true }
                 return !(Set(quota.affectedRouteIds ?? []).isDisjoint(with: routeIds))
             }
-            .filter { !$0.isSupplementalBalance }
+            .filter { !$0.isSupplementalBalance && !$0.isClaimableEntitlement }
             .sortedForPresentation
 
             return MenuBarProductSummary(

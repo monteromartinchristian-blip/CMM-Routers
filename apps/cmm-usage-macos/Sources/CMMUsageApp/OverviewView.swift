@@ -35,6 +35,10 @@ struct OverviewSectionView: View {
         .sorted { ($0.resetAt ?? "") < ($1.resetAt ?? "") }
     }
 
+    private var claimableAllowances: [CatalogQuotaSummary] {
+        model.catalogQuotas.filter(\.isClaimableEntitlement).sortedForPresentation
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 15) {
@@ -88,9 +92,26 @@ struct OverviewSectionView: View {
                     }
                 }
 
-                if !model.promotions.isEmpty {
-                    sectionTitle("Free & promo", detail: "Provider-reported free access, trials and promotions.")
+                if !model.promotions.isEmpty || !claimableAllowances.isEmpty {
+                    sectionTitle("Free capacity", detail: "Provider-reported free routes, trials, promotions and claimable bonus capacity.")
                     QuietList {
+                        ForEach(claimableAllowances.prefix(2)) { quota in
+                            HStack(spacing: 10) {
+                                Image(systemName: "gift")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(quota.displayName).font(.subheadline.weight(.medium))
+                                    Text("Claimable bonus · explicit activation required")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(quota.claimableValueText ?? "Bonus available")
+                                    .font(.caption.weight(.semibold).monospacedDigit())
+                            }
+                            .padding(.vertical, 7)
+                        }
                         ForEach(model.promotions.prefix(3)) { route in
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -131,7 +152,7 @@ struct OverviewSectionView: View {
             Divider().frame(height: 40)
             summaryMetric("Reset soon", "\(resetsSoon.count)", "clock.arrow.circlepath")
             Divider().frame(height: 40)
-            summaryMetric("Free & promo", "\(model.promotions.count)", "sparkles")
+            summaryMetric("Free capacity", "\(model.promotions.count + claimableAllowances.count)", "sparkles")
         }
         .padding(.vertical, 7)
         .background(.quinary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))

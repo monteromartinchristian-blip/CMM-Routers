@@ -32,6 +32,16 @@ final class ModelCatalogPresentationTests: XCTestCase {
         XCTAssertEqual(ModelCatalogPresenter.pickerRoutes(routes).map(\.routeId), ModelCatalogPresenter.visibleRoutes(routes).map(\.routeId))
     }
 
+    func testQuotaHierarchyPrefersModelSpecificLimitForCollapsedRouteSummary() throws {
+        let routeJSON = #"""
+        {"routeId":"route:kira:qwen-38","provider":{"id":"kira","displayName":"Kira AI"},"product":{"id":"kira-free","displayName":"Community access","category":"api"},"model":{"id":"qwen-38","displayName":"Qwen 3.8 Flash Free","family":"Qwen 3.8"},"offer":{"kind":"FREE"},"quota":[{"bucketId":"general","displayName":"General free allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":true,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]},{"bucketId":"model","displayName":"Qwen 3.8 Flash daily allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-38"]}],"availability":"available","visibility":"visible"}
+        """#
+        let route = try JSONDecoder().decode(CatalogRouteEntry.self, from: Data(routeJSON.utf8))
+        let hierarchy = ModelCatalogPresenter.quotaHierarchy(for: route, allQuotas: route.quota)
+
+        XCTAssertEqual(hierarchy.headlineQuota?.bucketId, "model")
+    }
+
     private func fixtureRoutes() throws -> [CatalogRouteEntry] {
         let json = #"""
         {"data":[

@@ -18,6 +18,10 @@ struct MenuBarUsageView: View {
         }
     }
 
+    private var freeCapacityCount: Int {
+        MenuBarPresenter.freeCapacityCount(promotions: model.promotions, quotas: model.catalogQuotas)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -64,7 +68,7 @@ struct MenuBarUsageView: View {
                 )
             }
 
-            if !model.promotions.isEmpty {
+            if freeCapacityCount > 0 {
                 Button {
                     open(.freePromo)
                 } label: {
@@ -73,7 +77,7 @@ struct MenuBarUsageView: View {
                             .foregroundStyle(.secondary)
                         Text("Free & Promo")
                         Spacer()
-                        Text("\(model.promotions.count) available")
+                        Text("\(freeCapacityCount) available")
                             .foregroundStyle(.secondary)
                         Image(systemName: "chevron.right")
                             .font(.caption2)
@@ -83,7 +87,7 @@ struct MenuBarUsageView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open Free and Promo, \(model.promotions.count) available")
+                .accessibilityLabel("Open Free and Promo, \(freeCapacityCount) available")
             }
 
             Divider()
