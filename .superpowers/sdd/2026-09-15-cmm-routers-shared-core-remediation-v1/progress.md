@@ -13,6 +13,10 @@ Starting remediation HEAD: `0d511c606eebcc44cfbc1c9276346f2f9aa7c35b`
 - GREEN: focused runtime bridge plus production composition/catalog wave tests pass `17/17`.
 - Typecheck: PASS (`npm run typecheck`).
 - Diff check: PASS (`git diff --check`).
-- Commit: PENDING.
-- Independent review: PENDING.
+- Primary commit: `e5012e3` (`fix(catalog): require exact route execution capability`).
+- Independent review V1: FAIL — two IMPORTANT findings: (1) product visibility incorrectly followed combined `routable`, hiding exact-executable but activation-disabled routes; (2) the positive CMMChat route-binding fixture exposed the exact execution method without declaring the new capability.
+- Review remediation: product visibility now follows exact-route executability independently of activation; non-allowlisted NIM routes remain product-visible but non-routable; positive HTTP fixture declares the capability explicitly.
+- Review remediation verification: `tests/http/cmmchat-route-resolution.test.ts` + `tests/integration/catalog-provider-wave.test.ts` pass `9/9`.
+- Review remediation commit: PENDING.
+- Independent re-review: PENDING.
 - Final ruling: PENDING.

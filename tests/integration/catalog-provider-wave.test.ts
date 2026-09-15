@@ -119,6 +119,11 @@ describe("production shared catalog composition", () => {
     expect(
       nimRoutes.filter((route) => route.providerModelId !== "moonshotai/kimi-k3").every((route) => !route.routable),
     ).toBe(true);
+    expect(
+      nimRoutes
+        .filter((route) => route.providerModelId !== "moonshotai/kimi-k3")
+        .every((route) => route.visibility.visibleOn.includes("cmmchat_model_picker")),
+    ).toBe(true);
 
     for (const providerId of ["kira", "vikey"] as const) {
       const route = composition.routeCatalog.list().find((candidate) => candidate.providerId === providerId);

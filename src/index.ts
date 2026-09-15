@@ -444,7 +444,7 @@ function composeSharedCatalog(
       billingClass: connectionFacts(model.provider, config).billingClass,
       routable,
       visibility: {
-        visibleOn: routable
+        visibleOn: exactRouteExecutable
           ? model.capability === "CHAT_ONLY"
             ? ["cmmchat_model_picker", "admin_console"]
             : ["cmmchat_model_picker", "cmmcode_model_picker", "admin_console"]

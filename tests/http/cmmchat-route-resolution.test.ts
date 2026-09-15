@@ -36,6 +36,7 @@ interface ExecutionRecord {
 }
 
 class RecordingAdapter implements ProviderAdapter {
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   readonly requests: RouterRequest[] = [];
   readonly executions: ExecutionRecord[] = [];
 
