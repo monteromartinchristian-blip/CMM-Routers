@@ -3,6 +3,7 @@ import { RouterError } from "../core/errors.js";
 import type { CredentialBindingStore } from "./credential-bindings.js";
 import type { ProviderDirectory } from "./provider-directory.js";
 import type {
+  ExecutionCredentialBinding,
   ProviderConnection,
   RouteCapabilities,
 } from "./types.js";
@@ -146,6 +147,29 @@ export class ProviderConnectionService {
     return snapshotConnection(connection);
   }
 
+  authorizeExecution(connectionId: string): ProviderConnection {
+    const connection = this.requireConnection(connectionId);
+    this.requireExecutionBinding(connection);
+    return snapshotConnection(connection);
+  }
+
+  async *withExecutionCredential<T>(
+    connectionId: string,
+    execute: (
+      connection: Readonly<ProviderConnection>,
+      credential: Readonly<ResolvedSecret>,
+    ) => AsyncIterable<T>,
+  ): AsyncIterable<T> {
+    const connection = this.requireConnection(connectionId);
+    const credential = await this.resolveExecutionCredential(connection);
+    connection.status = "ready";
+    const connectionSnapshot = Object.freeze(snapshotConnection(connection));
+    const resolvedCredential = Object.freeze({ value: credential.value });
+    for await (const item of execute(connectionSnapshot, resolvedCredential)) {
+      yield item;
+    }
+  }
+
   async discoverModels(connectionId: string): Promise<DiscoveredProviderModel[]> {
     const connection = this.requireConnection(connectionId);
     const credential = await this.resolveExecutionCredential(connection);
@@ -209,6 +233,23 @@ export class ProviderConnectionService {
     connection: ProviderConnection,
   ): Promise<ResolvedSecret> {
     connection.status = "validating";
+    const binding = this.requireExecutionBinding(connection);
+
+    try {
+      const credential = await this.options.credentialResolver.resolve(binding.secretRef);
+      if (typeof credential.value !== "string" || credential.value.length === 0) {
+        throw new Error("Resolved execution credential is empty");
+      }
+      return { value: credential.value };
+    } catch {
+      connection.status = "auth_required";
+      throw new Error("Execution credential could not be resolved");
+    }
+  }
+
+  private requireExecutionBinding(
+    connection: ProviderConnection,
+  ): ExecutionCredentialBinding {
     const bindingId = connection.executionCredentialBindingId;
     if (bindingId === undefined) {
       connection.status = "auth_required";
@@ -227,17 +268,7 @@ export class ProviderConnectionService {
       connection.status = "auth_required";
       throw new Error("Execution credential binding does not match the provider connection");
     }
-
-    try {
-      const credential = await this.options.credentialResolver.resolve(binding.secretRef);
-      if (typeof credential.value !== "string" || credential.value.length === 0) {
-        throw new Error("Resolved execution credential is empty");
-      }
-      return { value: credential.value };
-    } catch {
-      connection.status = "auth_required";
-      throw new Error("Execution credential could not be resolved");
-    }
+    return binding;
   }
 }
 

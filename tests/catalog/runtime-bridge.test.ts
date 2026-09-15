@@ -16,6 +16,7 @@ import type {
   DiscoveredModel,
   ProviderAdapter,
   ProviderHealth,
+  RouterRequest,
 } from "../../src/core/provider.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
 import { CatalogRuntimeBridge } from "../../src/catalog/runtime-bridge.js";
@@ -115,12 +116,14 @@ function setup() {
   directory.register(providerDefinition("deepseek"));
 
   const bindings = new CredentialBindingStore();
+  const credentialResolver = new InMemorySecureCredentialResolver(
+    new Map([[SECRET_REF, "runtime-bridge-test-secret"]]),
+  );
+  const resolveSecret = vi.spyOn(credentialResolver, "resolve");
   const connections = new ProviderConnectionService({
     directory,
     credentialBindings: bindings,
-    credentialResolver: new InMemorySecureCredentialResolver(
-      new Map([[SECRET_REF, "runtime-bridge-test-secret"]]),
-    ),
+    credentialResolver,
     administrativeDiscovery: new Map(),
   });
   const modelIdentities = new ModelIdentityStore();
@@ -137,6 +140,7 @@ function setup() {
     modelIdentities,
     openrouter,
     registry,
+    resolveSecret,
   };
 }
 
@@ -196,16 +200,39 @@ describe("CatalogRuntimeBridge", () => {
 
     const resolved = await bridge.resolve(accessRoute.routeId, SURFACE);
 
-    expect(resolved).toEqual({
+    expect(resolved).toMatchObject({
       route: accessRoute,
-      connection: expect.objectContaining({
+      connection: {
         connectionId: "connection-main",
         providerId: "openrouter",
-        status: "ready",
-      }),
-      adapter: state.openrouter,
+        status: "configured",
+      },
       providerModelId: "Vendor/Claude-Sonnet@2026-09-15",
     });
+    expect(resolved.adapter.id).toBe("openrouter");
+    expect(resolved.adapter).not.toBe(state.openrouter);
+    expect(state.resolveSecret).not.toHaveBeenCalled();
+    expect(JSON.stringify(resolved)).not.toContain("runtime-bridge-test-secret");
+
+    const request: RouterRequest = {
+      requestId: "route-runtime-secret-boundary",
+      model: {
+        id: `route:${accessRoute.routeId}`,
+        provider: "openrouter",
+        upstreamModel: accessRoute.providerModelId,
+        displayName: accessRoute.providerModelId,
+        capability: "CHAT_ONLY",
+      },
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      stream: false,
+    };
+    for await (const _event of resolved.adapter.run(request, new AbortController().signal)) {
+      // Drain the execution so the lazy credential boundary is exercised.
+    }
+    expect(state.resolveSecret).toHaveBeenCalledTimes(1);
+    expect(state.resolveSecret).toHaveBeenCalledWith(SECRET_REF);
+    expect(state.openrouter.runCalls).toEqual([request.requestId]);
   });
 
   it("uses the route provider even when canonical and native names suggest another provider", async () => {
@@ -220,7 +247,8 @@ describe("CatalogRuntimeBridge", () => {
 
     const resolved = await bridge.resolve(accessRoute.routeId, SURFACE);
 
-    expect(resolved.adapter).toBe(state.openrouter);
+    expect(resolved.adapter.id).toBe("openrouter");
+    expect(resolved.adapter).not.toBe(state.openrouter);
     expect(resolved.connection.providerId).toBe("openrouter");
     expect(resolved.providerModelId).toBe("deepseek/claude-sonnet-compatible");
     expect(state.deepseek.runCalls).toEqual([]);
@@ -297,7 +325,7 @@ describe("CatalogRuntimeBridge", () => {
     expect(state.openrouter.runCalls).toEqual([]);
     await expect(bridge.resolve(ready.routeId, SURFACE)).resolves.toMatchObject({
       route: ready,
-      adapter: state.openrouter,
+      adapter: { id: "openrouter" },
       providerModelId: ready.providerModelId,
     });
   });

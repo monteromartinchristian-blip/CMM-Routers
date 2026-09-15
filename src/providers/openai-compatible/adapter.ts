@@ -7,7 +7,10 @@ import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { toChatWireToolChoice } from "../../core/tool-policy.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import {
+  assertSafeProviderBaseUrl,
   isActivatedModel,
   type ProviderActivationSpec,
   type ProviderManifest,
@@ -152,8 +155,38 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     return this.manifest;
   }
 
-  private requireSecret(): void {
-    this.client.readSecret();
+  private requireSecret(client: OpenAiCompatibleClient = this.client): void {
+    client.readSecret();
+  }
+
+  private routeExecutionClient(
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): OpenAiCompatibleClient {
+    if (
+      connection.providerId !== this.id ||
+      connection.connectionId.length === 0 ||
+      executionProfile.length === 0 ||
+      connection.connectionKind !== OPENAI_CHAT_COMPLETIONS_STYLE ||
+      connection.endpointRef === undefined ||
+      credential.value.length === 0
+    ) {
+      throw new RouterError(
+        "provider_unavailable",
+        `Provider ${this.id} received an invalid route execution binding`,
+      );
+    }
+    let baseUrl: string;
+    try {
+      baseUrl = assertSafeProviderBaseUrl(connection.endpointRef);
+    } catch {
+      throw new RouterError(
+        "provider_unavailable",
+        `Provider ${this.id} received an unsafe route endpoint`,
+      );
+    }
+    return this.client.forExecution(baseUrl, credential.value);
   }
 
   /**
@@ -217,6 +250,37 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   }
 
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
+    yield* this.runWithClient(request, signal, this.client);
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    let client: OpenAiCompatibleClient;
+    try {
+      client = this.routeExecutionClient(connection, executionProfile, credential);
+    } catch (error) {
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_unavailable", "Invalid route execution binding"),
+      };
+      return;
+    }
+    yield* this.runWithClient(request, signal, client);
+  }
+
+  private async *runWithClient(
+    request: RouterRequest,
+    signal: AbortSignal,
+    client: OpenAiCompatibleClient,
+  ): AsyncIterable<RouterEvent> {
     if (request.model.provider !== this.id) {
       yield {
         type: "error",
@@ -241,7 +305,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     try {
-      this.requireSecret();
+      this.requireSecret(client);
     } catch (error) {
       yield {
         type: "error",
@@ -278,7 +342,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
           : {}),
       };
 
-      for await (const record of this.client.streamChatCompletion(
+      for await (const record of client.streamChatCompletion(
         request.model.upstreamModel,
         toUpstreamMessages(request),
         abortController.signal,

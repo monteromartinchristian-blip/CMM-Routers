@@ -160,6 +160,22 @@ export class OpenAiCompatibleClient {
     return value.trim();
   }
 
+  /**
+   * Create an isolated per-route transport while preserving the adapter's
+   * timeout and injected fetch seam. The credential value remains in-memory
+   * and is never written to process.env.
+   */
+  forExecution(baseUrl: string, credential: string): OpenAiCompatibleClient {
+    return new OpenAiCompatibleClient({
+      baseUrl,
+      secretEnv: this.secretEnv,
+      secret: credential,
+      providerLabel: this.providerLabel,
+      timeoutMs: this.timeoutMs,
+      fetchFn: this.fetchFn,
+    });
+  }
+
   private authHeaders(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.readSecret()}`,

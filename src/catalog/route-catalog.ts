@@ -184,8 +184,8 @@ export class RouteCatalog {
       throw new Error(`Route is not routable: ${routeId}`);
     }
 
-    const connection = await this.connections.validateExecution(route.connectionId);
-    if (connection.status !== "ready" || connection.providerId !== route.providerId) {
+    const connection = this.connections.authorizeExecution(route.connectionId);
+    if (connection.providerId !== route.providerId) {
       throw new Error(`Route connection is not execution-ready: ${route.connectionId}`);
     }
     return snapshotRoute(route);
