@@ -136,6 +136,14 @@ export class RouteCatalog {
     ) {
       throw new Error(`Unknown model identity: ${stored.modelIdentityId}`);
     }
+    const boundIdentity = this.modelIdentities.resolveProviderModel(
+      stored.providerId,
+      stored.connectionId,
+      stored.providerModelId,
+    );
+    if (boundIdentity.modelIdentityId !== stored.modelIdentityId) {
+      throw new Error("Route model identity does not match its exact provider model binding");
+    }
     this.routes.set(stored.routeId, stored);
     return snapshotRoute(stored);
   }

@@ -132,6 +132,19 @@ function bindRouteIdentity(
 }
 
 describe("RouteCatalog", () => {
+  it("rejects a route whose exact provider model binding belongs to another identity", () => {
+    const { catalog, modelIdentities } = setup();
+    const boundIdentity = explicitIdentity("Bound Model");
+    const mismatchedIdentity = explicitIdentity("Mismatched Model");
+    modelIdentities.upsertExplicit(boundIdentity);
+    modelIdentities.upsertExplicit(mismatchedIdentity);
+    const mismatchedRoute = route(mismatchedIdentity.modelIdentityId);
+    bindRouteIdentity(modelIdentities, boundIdentity, mismatchedRoute);
+
+    expect(() => catalog.upsert(mismatchedRoute)).toThrow(/identity|bound/i);
+    expect(catalog.list()).toEqual([]);
+  });
+
   it("keeps multiple exact routes for one model identity with stable route-specific IDs", () => {
     const { catalog, modelIdentities } = setup();
     const identity = explicitIdentity();
