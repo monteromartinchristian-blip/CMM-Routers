@@ -288,6 +288,62 @@ export function providerDefinitions(): ProviderDefinition[] {
 /** Subscription bridges: present and unchanged, not part of the HTTP wave. */
 export const SUBSCRIPTION_BRIDGE_IDS = ["chatgpt", "claude", "google"] as const;
 
+export type SubscriptionBridgeId = (typeof SUBSCRIPTION_BRIDGE_IDS)[number];
+
+/**
+ * Product-safe metadata for the three pre-existing subscription bridges.
+ * Identity is derived from SUBSCRIPTION_BRIDGE_IDS so the composition root
+ * does not carry a second provider-id inventory.
+ */
+export function subscriptionBridgeDefinitions(): ProviderDefinition[] {
+  return SUBSCRIPTION_BRIDGE_IDS.map((providerId) => {
+    switch (providerId) {
+      case "chatgpt":
+        return {
+          providerId,
+          displayName: "ChatGPT / Codex",
+          adapterKind: "codex-app-server",
+          supportedConnectionKinds: ["codex-app-server"],
+          discoveryCapabilities: ["models"],
+        };
+      case "claude":
+        return {
+          providerId,
+          displayName: "Claude / Claude Code",
+          adapterKind: "claude-code-sdk",
+          supportedConnectionKinds: ["claude-code-sdk"],
+          discoveryCapabilities: ["models"],
+        };
+      case "google":
+        return {
+          providerId,
+          displayName: "Google AI Pro / Antigravity",
+          adapterKind: "antigravity",
+          supportedConnectionKinds: ["antigravity"],
+          discoveryCapabilities: ["models"],
+        };
+    }
+  });
+}
+
+/**
+ * Explicit canonicalization rule for provider products that are known to
+ * expose the same underlying model identity. Qwen Token Plan and Qwen Cloud
+ * are separate products/connections, but an exactly equal provider model id
+ * denotes the same Qwen model. Every other provider remains namespaced by
+ * provider id so no cross-provider identity is guessed.
+ */
+export function canonicalModelIdentityName(
+  providerId: ProviderId,
+  providerModelId: string,
+): string {
+  const encodedModelId = encodeURIComponent(providerModelId).replace(/'/gu, "%27");
+  if (providerId === "qwen-token-plan" || providerId === "qwen-cloud") {
+    return `qwen:${encodedModelId}`;
+  }
+  return `${providerId}:${encodedModelId}`;
+}
+
 /**
  * Billing/identity metadata for one approved provider route, derived from the
  * manifest catalog. This is a PROJECTION of `PROVIDER_WAVE_MANIFESTS`, never a

@@ -7,6 +7,7 @@ import {
   SUBSCRIPTION_BRIDGE_IDS,
   assertProviderWaveInventory,
   providerInventory,
+  subscriptionBridgeDefinitions,
 } from "../../src/providers/manifests.js";
 import { PROVIDER_BILLING_CLASSES } from "../../src/providers/manifest.js";
 import {
@@ -76,6 +77,9 @@ describe("expanded provider inventory", () => {
 
   it("keeps the three subscription bridges present, separate and unchanged", () => {
     expect([...SUBSCRIPTION_BRIDGE_IDS]).toEqual(["chatgpt", "claude", "google"]);
+    expect(subscriptionBridgeDefinitions().map((definition) => definition.providerId)).toEqual([
+      ...SUBSCRIPTION_BRIDGE_IDS,
+    ]);
     for (const bridge of SUBSCRIPTION_BRIDGE_IDS) {
       expect(PROVIDER_WAVE_MANIFESTS.some((manifest) => manifest.id === bridge)).toBe(false);
     }
