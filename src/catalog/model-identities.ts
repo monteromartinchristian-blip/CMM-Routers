@@ -88,10 +88,13 @@ function unknownIdentity(evidence: ProviderModelEvidence): ModelIdentity {
 export class ModelIdentityStore {
   private readonly identities = new Map<string, ModelIdentity>();
   private readonly bindings = new Map<string, ProviderModelIdentityBinding>();
+  private readonly explicitIdentityIds = new Set<string>();
+  private readonly provisionalIdentityIds = new Set<string>();
 
   upsertExplicit(identity: ModelIdentity): void {
     const snapshot = snapshotIdentity(identity);
     this.identities.set(snapshot.modelIdentityId, snapshot);
+    this.explicitIdentityIds.add(snapshot.modelIdentityId);
   }
 
   bindProviderModel(binding: ProviderModelIdentityBinding): void {
@@ -107,7 +110,12 @@ export class ModelIdentityStore {
     );
     const existing = this.bindings.get(key);
     if (existing !== undefined && existing.modelIdentityId !== snapshot.modelIdentityId) {
-      throw new Error("Provider model is already bound to another model identity");
+      const canReplaceProvisional =
+        this.provisionalIdentityIds.has(existing.modelIdentityId) &&
+        this.explicitIdentityIds.has(snapshot.modelIdentityId);
+      if (!canReplaceProvisional) {
+        throw new Error("Provider model is already bound to another model identity");
+      }
     }
     this.bindings.set(key, snapshot);
   }
@@ -135,6 +143,7 @@ export class ModelIdentityStore {
       unknownIdentity({ providerId, connectionId, providerModelId }),
     );
     this.identities.set(identity.modelIdentityId, identity);
+    this.provisionalIdentityIds.add(identity.modelIdentityId);
     this.bindings.set(key, {
       providerId,
       connectionId,

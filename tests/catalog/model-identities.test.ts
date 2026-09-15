@@ -130,6 +130,47 @@ describe("ModelIdentityStore", () => {
     expect(store.list()).toHaveLength(1);
   });
 
+  it("allows an explicit mapping to replace a provisional unknown binding", () => {
+    const store = new ModelIdentityStore();
+    const model = discoveredModel();
+    const provisional = store.resolveProviderModel(
+      model.providerId,
+      model.connectionId,
+      model.providerModelId,
+    );
+    const explicit = explicitIdentity("Claude Sonnet");
+    store.upsertExplicit(explicit);
+
+    store.bindProviderModel(
+      binding(explicit.modelIdentityId, {
+        providerId: model.providerId,
+        connectionId: model.connectionId,
+        providerModelId: model.providerModelId,
+      }),
+    );
+
+    expect(
+      store.resolveProviderModel(
+        model.providerId,
+        model.connectionId,
+        model.providerModelId,
+      ),
+    ).toEqual(explicit);
+    expect(store.list()).toContainEqual(provisional);
+
+    const otherExplicit = explicitIdentity("Claude Opus");
+    store.upsertExplicit(otherExplicit);
+    expect(() =>
+      store.bindProviderModel(
+        binding(otherExplicit.modelIdentityId, {
+          providerId: model.providerId,
+          connectionId: model.connectionId,
+          providerModelId: model.providerModelId,
+        }),
+      ),
+    ).toThrow(/already bound/i);
+  });
+
   it("retains identity history when later discovery omits an older model", () => {
     const store = new ModelIdentityStore();
     const historical = store.resolveProviderModel(
