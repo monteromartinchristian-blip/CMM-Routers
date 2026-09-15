@@ -20,6 +20,8 @@ import type {
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
 import {
   AGY_PATH,
@@ -830,10 +832,12 @@ interface AgyToolSession {
 
 export class AntigravityAdapter implements ProviderAdapter {
   readonly id = "google" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private activeRequests = new Map<string, { abort: () => void; cwd: string }>();
   private runner: InferenceRunner;
   private modelsRunner: AgyRunner;
   private readonly agyPath: string;
+  private readonly configuredAgyPath: string | undefined;
   /**
    * Router-owned bounded pending state shared with the other adapters. The
    * cross-request correlation is keyed by a Router-generated public tool id.
@@ -876,6 +880,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       maxStreamEvents?: number | undefined;
     } = {},
   ) {
+    this.configuredAgyPath = options.agyPath;
     this.agyPath = options.agyPath ?? AGY_PATH;
     this.runner = runner ?? new SpawnInferenceRunner(this.agyPath);
     this.modelsRunner = modelsRunner ?? new RealAgyRunner(this.agyPath);
@@ -903,6 +908,31 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   maxRendezvousSessions(): number {
     return this.registry.maxLiveSessions();
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    if (
+      request.model.provider !== this.id ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "antigravity" ||
+      connection.profileRef !== this.configuredAgyPath ||
+      executionProfile !== "default" ||
+      credential.value !== `authorized:${this.id}`
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    yield* this.run(request, signal);
   }
 
   buildInferenceArgs(upstreamSlug: string, prompt: string, _effort?: string): string[] {

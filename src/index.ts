@@ -63,6 +63,7 @@ import type {
   RouteCapabilities,
 } from "./catalog/types.js";
 import type { DiscoveredModel, ProviderId } from "./core/model.js";
+import type { ProviderAdapter } from "./core/provider.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -93,6 +94,13 @@ export interface ProductionCompositionOptions {
    * production omits it and the adapters use the real `fetch`.
    */
   fetchFn?: ProviderFetchFn | undefined;
+  /** Deterministic test seam for the five dedicated adapters. */
+  dedicatedAdapterOverrides?: Partial<
+    Record<"chatgpt" | "claude" | "google" | "command-code" | "cavoti", ProviderAdapter>
+  >;
+  /** Deterministic test-only acknowledgement path overrides. */
+  commandCodeAckPath?: string | undefined;
+  cavotiAckPath?: string | undefined;
 }
 
 function isWaveProviderId(id: string): id is WaveProviderId {
@@ -155,9 +163,9 @@ function registerWaveProvider(
   return adapter;
 }
 
-function isCommandCodeAckValid(): boolean {
+function isCommandCodeAckValid(ackPath?: string): boolean {
   try {
-    requireSpendAcknowledgement();
+    requireSpendAcknowledgement(ackPath);
     return true;
   } catch {
     return false;
@@ -533,10 +541,13 @@ export async function createProductionRegistry(
 
   if (resolved.providers.chatgpt.enabled) {
     const codexHome = resolveChatgptCodexHome(resolved);
-    const adapter = new CodexAdapter({
-      ...(codexHome ? { codexHome } : {}),
-      broker: toolBroker,
-    });
+    const adapter =
+      options.dedicatedAdapterOverrides?.chatgpt ??
+      new CodexAdapter({
+        ...(codexHome ? { codexHome } : {}),
+        broker: toolBroker,
+      });
+    if (adapter.id !== "chatgpt") throw new Error("ChatGPT adapter override has wrong provider id");
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -550,10 +561,13 @@ export async function createProductionRegistry(
     // long before this factory runs. The shared broker backs the
     // cross-request Qoder tool correlation held across the HTTP split.
     const profileDir = resolveClaudeProfileDir(resolved);
-    const adapter = new ClaudeAdapter({
-      ...(profileDir ? { profileDir } : {}),
-      broker: toolBroker,
-    });
+    const adapter =
+      options.dedicatedAdapterOverrides?.claude ??
+      new ClaudeAdapter({
+        ...(profileDir ? { profileDir } : {}),
+        broker: toolBroker,
+      });
+    if (adapter.id !== "claude") throw new Error("Claude adapter override has wrong provider id");
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -562,14 +576,17 @@ export async function createProductionRegistry(
 
   if (resolved.providers.google.enabled) {
     const agyPath = resolveGoogleAgyPath(resolved);
-    const adapter = new AntigravityAdapter(
-      undefined,
-      undefined,
-      {
-        ...(agyPath ? { agyPath } : {}),
-        broker: toolBroker,
-      },
-    );
+    const adapter =
+      options.dedicatedAdapterOverrides?.google ??
+      new AntigravityAdapter(
+        undefined,
+        undefined,
+        {
+          ...(agyPath ? { agyPath } : {}),
+          broker: toolBroker,
+        },
+      );
+    if (adapter.id !== "google") throw new Error("Google adapter override has wrong provider id");
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
   } else {
@@ -578,7 +595,7 @@ export async function createProductionRegistry(
 
   if (resolved.providers["command-code"].enabled) {
     // Never instantiate the spend-guarded provider without its ack.
-    if (!isCommandCodeAckValid()) {
+    if (!isCommandCodeAckValid(options.commandCodeAckPath)) {
       skippedProviders.push({ id: "command-code", reason: "spend acknowledgement missing or invalid" });
     } else if (!process.env[resolved.providers["command-code"].secretEnv]) {
       skippedProviders.push({
@@ -586,10 +603,18 @@ export async function createProductionRegistry(
         reason: `secret env ${resolved.providers["command-code"].secretEnv} absent`,
       });
     } else {
-      const adapter = new CommandCodeAdapter({
-        baseUrl: resolved.providers["command-code"].baseUrl,
-        secretEnv: resolved.providers["command-code"].secretEnv,
-      });
+      const adapter =
+        options.dedicatedAdapterOverrides?.["command-code"] ??
+        new CommandCodeAdapter({
+          baseUrl: resolved.providers["command-code"].baseUrl,
+          secretEnv: resolved.providers["command-code"].secretEnv,
+          ...(options.commandCodeAckPath !== undefined
+            ? { ackPath: options.commandCodeAckPath }
+            : {}),
+        });
+      if (adapter.id !== "command-code") {
+        throw new Error("Command Code adapter override has wrong provider id");
+      }
       await registry.register(adapter);
       registeredProviders.push(adapter.id);
     }
@@ -599,7 +624,8 @@ export async function createProductionRegistry(
 
   if (resolved.providers.cavoti.enabled) {
     const cavoti = resolved.providers.cavoti;
-    const configuredAckPath = process.env.CMM_CAVOTI_ACK_PATH?.trim();
+    const configuredAckPath =
+      options.cavotiAckPath ?? process.env.CMM_CAVOTI_ACK_PATH?.trim();
     const ackPath =
       configuredAckPath && configuredAckPath.length > 0
         ? configuredAckPath
@@ -618,11 +644,14 @@ export async function createProductionRegistry(
           reason: `secret env ${cavoti.secretEnv} absent`,
         });
       } else {
-        const adapter = new CavotiAdapter({
-          baseUrl: cavoti.baseUrl,
-          secretEnv: cavoti.secretEnv,
-          ackPath,
-        });
+        const adapter =
+          options.dedicatedAdapterOverrides?.cavoti ??
+          new CavotiAdapter({
+            baseUrl: cavoti.baseUrl,
+            secretEnv: cavoti.secretEnv,
+            ackPath,
+          });
+        if (adapter.id !== "cavoti") throw new Error("Cavoti adapter override has wrong provider id");
         await registry.register(adapter);
         registeredProviders.push(adapter.id);
       }

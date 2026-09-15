@@ -530,6 +530,15 @@ export class CommandCodeClient {
     this.secretOverride = options.secret;
   }
 
+  forExecution(baseUrl: string, secret: string): CommandCodeClient {
+    return new CommandCodeClient({
+      baseUrl,
+      secret,
+      timeoutMs: this.timeoutMs,
+      fetchFn: this.fetchFn,
+    });
+  }
+
   wireForUpstreamId(modelId: string): CommandCodeWire {
     return classifyCommandCodeWire(modelId).wire;
   }

@@ -6,6 +6,8 @@ import type {
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { toChatWireToolChoice } from "../../core/tool-policy.js";
 import {
   CAVOTI_DEFAULT_BASE_URL,
@@ -90,12 +92,15 @@ function topLevelError(record: Record<string, unknown>): RouterError | null {
 
 export class CavotiAdapter implements ProviderAdapter {
   readonly id = "cavoti" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private readonly client: CavotiClientLike;
   private readonly ackPath: string;
+  private readonly expectedBaseUrl: string;
   private readonly pending = new Map<string, PendingCancellation>();
 
   constructor(options: CavotiAdapterOptions = {}) {
     this.ackPath = options.ackPath ?? defaultCavotiAckPath();
+    this.expectedBaseUrl = (options.baseUrl ?? CAVOTI_DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.client =
       options.client ??
       new CavotiClient({
@@ -178,6 +183,64 @@ export class CavotiAdapter implements ProviderAdapter {
       return;
     }
 
+    yield* this.runWithClient(request, signal, this.client);
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    const endpoint = connection.endpointRef?.replace(/\/+$/, "");
+    if (
+      request.model.provider !== this.id ||
+      request.model.upstreamModel !== CAVOTI_PINNED_MODEL ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "openai-chat-completions" ||
+      connection.profileRef !== undefined ||
+      executionProfile !== "default" ||
+      endpoint === undefined ||
+      endpoint !== this.expectedBaseUrl ||
+      credential.value.length === 0
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    try {
+      requireCavotiSpendAcknowledgement(this.ackPath);
+      const routeClient = this.client.forExecution?.(endpoint, credential.value);
+      if (routeClient === undefined) {
+        yield {
+          type: "error",
+          error: new RouterError("unknown_model", "Unknown or unavailable route"),
+        };
+        return;
+      }
+      routeClient.readSecret();
+      yield* this.runWithClient(request, signal, routeClient);
+    } catch (error) {
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_auth_required", "Cavoti route is not enabled"),
+      };
+    }
+  }
+
+  private async *runWithClient(
+    request: RouterRequest,
+    signal: AbortSignal,
+    client: CavotiClientLike,
+  ): AsyncIterable<RouterEvent> {
+
     const abortController = new AbortController();
     const onOuterAbort = (): void => abortController.abort();
     signal.addEventListener("abort", onOuterAbort, { once: true });
@@ -195,7 +258,7 @@ export class CavotiAdapter implements ProviderAdapter {
       let sawAnyRecord = false;
       const upstreamTools = toUpstreamTools(request);
 
-      const generator = this.client.streamChatCompletion(
+      const generator = client.streamChatCompletion(
         CAVOTI_PINNED_MODEL,
         toUpstreamMessages(request),
         abortController.signal,

@@ -21,6 +21,7 @@ export interface CavotiChatOptions {
 
 export interface CavotiClientLike {
   readSecret(): string;
+  forExecution?(baseUrl: string, secret: string): CavotiClientLike;
   listModels(signal?: AbortSignal): Promise<CavotiModelRecord[]>;
   streamChatCompletion(
     model: string,
@@ -173,6 +174,15 @@ export class CavotiClient implements CavotiClientLike {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.secretOverride = options.secret;
     this.fetchFn = options.fetchFn ?? fetch;
+  }
+
+  forExecution(baseUrl: string, secret: string): CavotiClientLike {
+    return new CavotiClient({
+      baseUrl,
+      secret,
+      timeoutMs: this.timeoutMs,
+      fetchFn: this.fetchFn,
+    });
   }
 
   readSecret(): string {

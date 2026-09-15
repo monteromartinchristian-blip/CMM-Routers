@@ -20,3 +20,18 @@ Starting remediation HEAD: `0d511c606eebcc44cfbc1c9276346f2f9aa7c35b`
 - Review remediation commit: PENDING.
 - Independent re-review: PENDING.
 - Final ruling: PENDING.
+
+## R2 — subscription/dedicated adapter route-bound execution
+
+- Finding: `MAJOR-01` dedicated adapter execution gap.
+- Root cause: Codex, Claude, Antigravity, Command Code and Cavoti could execute their legacy provider/model paths but could not consume the exact connection/profile/endpoint/credential selected by the shared catalog.
+- RED: `tests/catalog/dedicated-route-execution.test.ts` failed `2/2` because none of the five dedicated adapters declared the exact-route contract.
+- Implementation: all five adapters now declare `exactResolvedRoute`; subscription bridges validate provider, connection kind, configured profile/runtime, execution profile and runtime authorization marker before delegating to their native path; Command Code and Cavoti additionally create route-scoped clients from the exact resolved endpoint + credential while preserving their spend acknowledgements and no-fallback rules.
+- Production composition proof: added deterministic dedicated-adapter injection/ACK seams used only through `ProductionCompositionOptions`, then `tests/integration/dedicated-route-production.test.ts` executes real production-composed `route:<routeId>` paths for ChatGPT/Codex, Claude, Google/Antigravity, acknowledged Command Code and acknowledged Cavoti. Command Code/Cavoti assertions prove inference sees the route-resolved credential, not the discovery client's credential.
+- Provider regressions: Command Code + Cavoti `69/69` PASS; Codex + Claude + Antigravity `253/253` PASS with PAYG fallback variables intentionally absent.
+- Focused route/composition regression: `25/25` PASS across runtime bridge, dedicated contract, production-composed dedicated routes, CMMChat route resolution and production composition.
+- Typecheck: PASS.
+- Diff check: PASS.
+- Commit: PENDING.
+- Independent review: PENDING.
+- Final ruling: PENDING.
