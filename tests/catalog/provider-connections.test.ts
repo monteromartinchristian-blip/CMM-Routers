@@ -214,11 +214,37 @@ describe("ProviderConnectionService", () => {
     await service.validateExecution("connection-secondary");
 
     await expect(service.discoverModels("connection-main")).rejects.toThrow(
-      /administrative discovery unavailable/i,
+      /administrative discovery failed/i,
     );
 
     expect(service.get("connection-main")?.status).toBe("error");
     expect(service.get("connection-secondary")?.status).toBe("ready");
+  });
+
+  it("sanitizes administrative discovery errors so resolved credentials cannot escape", async () => {
+    const resolvedSecret = "resolved-test-secret";
+    const { bindings, service } = setup(async (_connection, credential) => {
+      expect(credential.value).toBe(resolvedSecret);
+      throw new Error(credential.value);
+    });
+    addExecutionBinding(bindings);
+    service.add(connection());
+
+    let thrown: unknown;
+    try {
+      await service.discoverModels("connection-main");
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const outwardError = thrown as Error;
+    expect(outwardError.message).not.toContain(resolvedSecret);
+    expect(outwardError.message).toMatch(/administrative discovery failed/i);
+    expect(JSON.stringify(Object.fromEntries(Object.entries(outwardError)))).not.toContain(
+      resolvedSecret,
+    );
+    expect(service.get("connection-main")?.status).toBe("error");
   });
 
   it("defensively snapshots caller connections and returned state", () => {

@@ -185,7 +185,7 @@ export class ProviderConnectionService {
       return result;
     } catch (error) {
       connection.status = statusForDiscoveryFailure(error);
-      throw error;
+      throw new Error("Administrative discovery failed");
     }
   }
 
