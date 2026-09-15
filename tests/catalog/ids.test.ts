@@ -80,11 +80,11 @@ describe("catalog stable IDs", () => {
       buildConnectionId({
         providerId: "openrouter",
         // @ts-expect-error Raw secret material is intentionally absent from the ID API.
-        secret: "sk-type-level-forbidden",
+        secret: "fixture-type-level-forbidden-secret",
       });
     }
 
-    const credential = "sk-runtime-forbidden-value";
+    const credential = "fixture-runtime-forbidden-secret";
     const unsafeInput = {
       providerId: "openrouter",
       accountId: "account_main",

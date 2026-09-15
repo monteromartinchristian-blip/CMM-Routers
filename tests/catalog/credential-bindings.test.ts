@@ -132,7 +132,7 @@ describe("CredentialBindingStore", () => {
 
   it("stores only binding metadata and never a raw secret value", () => {
     const store = new CredentialBindingStore();
-    const rawSecret = "sk-test-raw-secret-value";
+    const rawSecret = "fixture-test-raw-secret-value";
     const execution = {
       ...executionBinding(),
       secret: rawSecret,
@@ -214,11 +214,11 @@ describe("CredentialBindingStore", () => {
 describe("InMemorySecureCredentialResolver", () => {
   it("resolves test secret material by reference without involving bindings", async () => {
     const resolver: SecureCredentialResolver = new InMemorySecureCredentialResolver(
-      new Map([["keychain://openrouter/main", "sk-test-resolved-secret"]]),
+      new Map([["keychain://openrouter/main", "fixture-test-resolved-secret"]]),
     );
 
     await expect(resolver.resolve("keychain://openrouter/main")).resolves.toEqual({
-      value: "sk-test-resolved-secret",
+      value: "fixture-test-resolved-secret",
     });
     await expect(resolver.resolve("keychain://openrouter/missing")).rejects.toThrow(
       /secret material not found/i,
