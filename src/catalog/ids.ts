@@ -24,9 +24,13 @@ const HASH_LENGTH = 16;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const PATH_TRAVERSAL_PATTERN = /(?:^|\/)\.\.?(?:\/|$)/u;
 const UNSAFE_CHARACTER_PATTERN = /[\\?#[\]{}<>"'`]/u;
-const STABLE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/u;
+const STABLE_ID_KINDS = ["conn", "model", "route"] as const;
 
-function normalizePart(
+export type StableIdKind = (typeof STABLE_ID_KINDS)[number];
+
+const STABLE_ID_KIND_SET = new Set<string>(STABLE_ID_KINDS);
+
+function validatePart(
   value: string,
   field: string,
   options: { allowSlash?: boolean } = {},
@@ -34,32 +38,69 @@ function normalizePart(
   if (typeof value !== "string") {
     throw new TypeError(`${field} must be a string`);
   }
-
-  const normalized = value.normalize("NFKC").trim().toLowerCase();
-  if (normalized.length === 0) {
+  if (value.length === 0) {
     throw new Error(`${field} must not be empty`);
   }
-  if (normalized.length > 512) {
+  if (value.length > 512) {
     throw new Error(`${field} is too long`);
   }
-  if (CONTROL_CHARACTER_PATTERN.test(normalized)) {
+  if (CONTROL_CHARACTER_PATTERN.test(value)) {
     throw new Error(`${field} contains a control character`);
   }
-  if (PATH_TRAVERSAL_PATTERN.test(normalized)) {
+  if (PATH_TRAVERSAL_PATTERN.test(value)) {
     throw new Error(`${field} contains an unsafe path segment`);
   }
-  if (!options.allowSlash && normalized.includes("/")) {
+  if (!options.allowSlash && value.includes("/")) {
     throw new Error(`${field} contains an unsafe separator`);
   }
-  if (UNSAFE_CHARACTER_PATTERN.test(normalized)) {
+  if (UNSAFE_CHARACTER_PATTERN.test(value)) {
     throw new Error(`${field} contains an unsafe character`);
   }
 
-  return normalized;
+  return value;
 }
 
-function optionalPart(value: string | undefined, field: string): string | undefined {
-  return value === undefined ? undefined : normalizePart(value, field);
+function normalizeCanonicalPart(value: string, field: string): string {
+  return validatePart(value.normalize("NFKC").trim().toLowerCase(), field);
+}
+
+function preserveOpaquePart(
+  value: string,
+  field: string,
+  options: { allowSlash?: boolean } = {},
+): string {
+  if (typeof value !== "string") {
+    throw new TypeError(`${field} must be a string`);
+  }
+  if (value !== value.trim()) {
+    throw new Error(`${field} must not contain surrounding whitespace`);
+  }
+  return validatePart(value, field, options);
+}
+
+function optionalCanonicalPart(
+  value: string | undefined,
+  field: string,
+): string | undefined {
+  return value === undefined ? undefined : normalizeCanonicalPart(value, field);
+}
+
+function optionalOpaquePart(
+  value: string | undefined,
+  field: string,
+): string | undefined {
+  return value === undefined ? undefined : preserveOpaquePart(value, field);
+}
+
+function assertOnlyKeys(
+  input: object,
+  allowedKeys: readonly string[],
+  operation: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    throw new Error(`Unsupported ${operation} input field`);
+  }
 }
 
 function canonicalize(parts: ReadonlyArray<readonly [string, string | undefined]>): string {
@@ -72,7 +113,7 @@ function canonicalize(parts: ReadonlyArray<readonly [string, string | undefined]
     .join("|");
 }
 
-function buildOpaqueId(prefix: string, identity: string): string {
+function buildOpaqueId(prefix: StableIdKind, identity: string): string {
   const digest = createHash("sha256")
     .update(identity, "utf8")
     .digest("hex")
@@ -86,9 +127,9 @@ function buildOpaqueId(prefix: string, identity: string): string {
  * The error deliberately excludes the supplied value so a mistaken secret
  * cannot be echoed through diagnostics.
  */
-export function assertStableId(value: string, kind: string): string {
-  if (typeof kind !== "string" || kind.trim().length === 0) {
-    throw new TypeError("Stable ID kind must not be empty");
+export function assertStableId(value: string, kind: StableIdKind): string {
+  if (typeof kind !== "string" || !STABLE_ID_KIND_SET.has(kind)) {
+    throw new TypeError("Unsupported stable ID kind");
   }
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`Invalid ${kind} stable ID`);
@@ -96,19 +137,25 @@ export function assertStableId(value: string, kind: string): string {
   if (value !== value.trim() || CONTROL_CHARACTER_PATTERN.test(value)) {
     throw new Error(`Invalid ${kind} stable ID`);
   }
-  if (!STABLE_ID_PATTERN.test(value)) {
+  const expectedPattern = new RegExp(`^${kind}_[a-f0-9]{${HASH_LENGTH}}$`, "u");
+  if (!expectedPattern.test(value)) {
     throw new Error(`Invalid ${kind} stable ID`);
   }
   return value;
 }
 
 export function buildConnectionId(input: ConnectionIdInput): string {
-  const providerId = normalizePart(input.providerId, "providerId");
-  const accountId = optionalPart(input.accountId, "accountId");
-  const productId = optionalPart(input.productId, "productId");
-  const connectionKind = optionalPart(input.connectionKind, "connectionKind");
-  const profileRef = optionalPart(input.profileRef, "profileRef");
-  const endpointRef = optionalPart(input.endpointRef, "endpointRef");
+  assertOnlyKeys(
+    input,
+    ["providerId", "accountId", "productId", "connectionKind", "profileRef", "endpointRef"],
+    "buildConnectionId",
+  );
+  const providerId = normalizeCanonicalPart(input.providerId, "providerId");
+  const accountId = optionalCanonicalPart(input.accountId, "accountId");
+  const productId = optionalCanonicalPart(input.productId, "productId");
+  const connectionKind = optionalCanonicalPart(input.connectionKind, "connectionKind");
+  const profileRef = optionalOpaquePart(input.profileRef, "profileRef");
+  const endpointRef = optionalOpaquePart(input.endpointRef, "endpointRef");
 
   return buildOpaqueId(
     "conn",
@@ -124,7 +171,8 @@ export function buildConnectionId(input: ConnectionIdInput): string {
 }
 
 export function buildModelIdentityId(input: ModelIdentityIdInput): string {
-  const canonicalName = normalizePart(input.canonicalName, "canonicalName");
+  assertOnlyKeys(input, ["canonicalName"], "buildModelIdentityId");
+  const canonicalName = normalizeCanonicalPart(input.canonicalName, "canonicalName");
   return buildOpaqueId(
     "model",
     canonicalize([["canonicalName", canonicalName]]),
@@ -132,12 +180,17 @@ export function buildModelIdentityId(input: ModelIdentityIdInput): string {
 }
 
 export function buildRouteId(input: RouteIdInput): string {
-  const providerId = normalizePart(input.providerId, "providerId");
-  const connectionId = normalizePart(input.connectionId, "connectionId");
-  const providerModelId = normalizePart(input.providerModelId, "providerModelId", {
+  assertOnlyKeys(
+    input,
+    ["providerId", "connectionId", "providerModelId", "executionProfile"],
+    "buildRouteId",
+  );
+  const providerId = normalizeCanonicalPart(input.providerId, "providerId");
+  const connectionId = normalizeCanonicalPart(input.connectionId, "connectionId");
+  const providerModelId = preserveOpaquePart(input.providerModelId, "providerModelId", {
     allowSlash: true,
   });
-  const executionProfile = normalizePart(input.executionProfile, "executionProfile");
+  const executionProfile = normalizeCanonicalPart(input.executionProfile, "executionProfile");
 
   return buildOpaqueId(
     "route",
