@@ -1,5 +1,6 @@
 import type { ProviderId } from "../core/model.js";
 import type { WaveProviderActivationConfig } from "../config/schema.js";
+import type { ProviderDefinition } from "../catalog/types.js";
 import { CAVOTI_PINNED_MODEL } from "./cavoti/spend-guard.js";
 import {
   assertUniqueProviderManifests,
@@ -263,6 +264,26 @@ export const PROVIDER_WAVE_MANIFESTS: readonly ProviderManifest[] = [
   COMMAND_CODE_MANIFEST,
   CAVOTI_MANIFEST,
 ];
+
+/**
+ * Product-safe provider metadata projected from the manifest catalog. Secrets,
+ * credential namespaces, billing state and account state stay in their owning
+ * layers and are deliberately absent from this projection.
+ */
+export function providerDefinitions(): ProviderDefinition[] {
+  return PROVIDER_WAVE_MANIFESTS.map((manifest) => ({
+    providerId: manifest.id,
+    displayName: manifest.displayName,
+    adapterKind:
+      manifest === COMMAND_CODE_MANIFEST
+        ? "command-code"
+        : manifest === CAVOTI_MANIFEST
+          ? "cavoti"
+          : "openai-compatible",
+    supportedConnectionKinds: [...manifest.apiStyles],
+    discoveryCapabilities: [manifest.discovery.path.replace(/^\//, "")],
+  }));
+}
 
 /** Subscription bridges: present and unchanged, not part of the HTTP wave. */
 export const SUBSCRIPTION_BRIDGE_IDS = ["chatgpt", "claude", "google"] as const;
