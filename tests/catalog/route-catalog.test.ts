@@ -164,6 +164,31 @@ describe("RouteCatalog", () => {
     expect(catalog.list()).toEqual(routes);
   });
 
+  it("mutates visibility for exactly one route and leaves siblings untouched", () => {
+    const { catalog, modelIdentities } = setup();
+    const identity = explicitIdentity();
+    modelIdentities.upsertExplicit(identity);
+    const routeA = route(identity.modelIdentityId, {
+      connectionId: "connection-a",
+      visibility: { visibleOn: ["cmmchat_model_picker", "admin_console"] },
+    });
+    const routeB = route(identity.modelIdentityId, {
+      connectionId: "connection-b",
+      visibility: { visibleOn: ["cmmchat_model_picker", "admin_console"] },
+    });
+    for (const accessRoute of [routeA, routeB]) {
+      bindRouteIdentity(modelIdentities, identity, accessRoute);
+      catalog.upsert(accessRoute);
+    }
+
+    catalog.setVisibility(routeA.routeId, ["admin_console"]);
+
+    expect(catalog.get(routeA.routeId)?.visibility.visibleOn).toEqual(["admin_console"]);
+    expect(catalog.get(routeB.routeId)?.visibility.visibleOn).toContain("cmmchat_model_picker");
+    expect(catalog.get(routeA.routeId)?.routable).toBe(true);
+    expect(catalog.get(routeB.routeId)?.routable).toBe(true);
+  });
+
   it("keeps visibility separate from catalog history and routability", () => {
     const { catalog, modelIdentities } = setup();
     const identity = explicitIdentity();

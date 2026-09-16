@@ -166,6 +166,18 @@ export class RouteCatalog {
       .map(snapshotRoute);
   }
 
+  setVisibility(routeId: string, visibleOn: readonly RouteSurface[]): AccessRoute {
+    const route = this.routes.get(routeId);
+    if (route === undefined) throw new Error(`Unknown route: ${routeId}`);
+
+    const next = snapshotRoute({
+      ...route,
+      visibility: { visibleOn: [...visibleOn] },
+    });
+    this.routes.set(routeId, next);
+    return snapshotRoute(next);
+  }
+
   async resolveForConsumer(
     routeId: string,
     surface: RouteSurface,

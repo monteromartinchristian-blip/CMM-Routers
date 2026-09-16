@@ -5,6 +5,7 @@ import {
   isAdministrativeDiscoveryPath,
   isSafeProviderBaseUrl,
 } from "../providers/manifest.js";
+import type { RouteSurface } from "../catalog/types.js";
 
 const providerIdentityRefSchema = z
   .string()
@@ -139,6 +140,13 @@ const routeSurfaceSchema = z.enum([
 
 const routeVisibilityRuleSchema = z
   .object({
+    routeId: z.string().min(1),
+    visibleOn: z.array(routeSurfaceSchema),
+  })
+  .strict();
+
+const legacyRouteVisibilityRuleSchema = z
+  .object({
     providerId: z.string().min(1),
     providerModelId: z.string().min(1),
     visibleOn: z.array(routeSurfaceSchema),
@@ -146,17 +154,23 @@ const routeVisibilityRuleSchema = z
   .strict();
 
 const routeVisibilityPolicySchema = z
-  .array(routeVisibilityRuleSchema)
+  .array(z.union([routeVisibilityRuleSchema, legacyRouteVisibilityRuleSchema]))
   .default([])
   .superRefine((rules, context) => {
     const seen = new Set<string>();
     rules.forEach((rule, index) => {
-      const key = `${rule.providerId}\u0000${rule.providerModelId}`;
+      const key =
+        "routeId" in rule
+          ? `route\u0000${rule.routeId}`
+          : `legacy\u0000${rule.providerId}\u0000${rule.providerModelId}`;
       if (seen.has(key)) {
         context.addIssue({
           code: "custom",
           path: [index],
-          message: "routeVisibility contains a duplicate provider/model rule",
+          message:
+            "routeId" in rule
+              ? "routeVisibility contains a duplicate routeId rule"
+              : "routeVisibility contains a duplicate provider/model legacy rule",
         });
       }
       seen.add(key);
@@ -338,6 +352,11 @@ export const sharedConfigSchema = z.object({
 
 export type SharedConfig = z.infer<typeof sharedConfigSchema>;
 export type ProviderCatalogConfig = z.infer<typeof providerCatalogSchema>;
+
+export interface ExactRouteVisibilityRule {
+  routeId: string;
+  visibleOn: RouteSurface[];
+}
 
 /** Configuration entry shape shared by every provider in the approved wave. */
 export type WaveProviderConfig = z.infer<typeof openAiCompatibleProviderSchema>;

@@ -246,7 +246,8 @@ describe("Routers ↔ Usage catalog responsibility boundary", () => {
   });
 
   it("keeps hidden routes in the read-only Usage/admin projection", () => {
-    const state = setup({ observability: true, execution: true, hidden: true });
+    const state = setup({ observability: true, execution: true });
+    state.routeCatalog.setVisibility(state.route.routeId, ["admin_console"]);
 
     const projection = buildRouterCatalogProjection(state.projectionInput);
 

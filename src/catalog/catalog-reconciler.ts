@@ -5,6 +5,7 @@ import type {
   ProviderConnectionService,
 } from "./provider-connections.js";
 import type { RouteCatalog } from "./route-catalog.js";
+import type { RouteVisibilityResolver } from "./route-visibility-policy.js";
 import type {
   ProviderConnection,
   RouteCapabilities,
@@ -17,7 +18,7 @@ export interface CatalogRoutePolicyResult {
   capabilities: RouteCapabilities;
   billingClass: string;
   routable: boolean;
-  visibility: RouteVisibility;
+  visibility: RouteVisibility | RouteVisibilityResolver;
 }
 
 export type CatalogRoutePolicy = (
@@ -174,7 +175,10 @@ export class CatalogReconciler {
         capabilities: policy.capabilities,
         billingClass: policy.billingClass,
         routable: policy.routable,
-        visibility: policy.visibility,
+        visibility:
+          typeof policy.visibility === "function"
+            ? policy.visibility(routeId)
+            : policy.visibility,
       });
       discoveredModelIds.add(model.providerModelId);
       upsertedRouteIds.push(routeId);

@@ -246,24 +246,28 @@ describe("production shared catalog composition", () => {
   });
 
   it("applies exact Router-owned visibility without changing routability or Usage truth", async () => {
-    const config = deterministicConfig([
-      {
-        providerId: "openrouter",
-        providerModelId: "qwen3.8-max",
-        visibleOn: [],
-      },
-    ]);
     const transport = catalogFetch({ data: [{ id: "qwen3.8-max" }] });
-
-    const composition = await createProductionRegistry(config, {
+    const baseline = await createProductionRegistry(deterministicConfig(), {
       fetchFn: transport.fetchFn,
     });
-    const hidden = composition.routeCatalog
+    const target = baseline.routeCatalog
       .list()
       .find(
         (route) =>
           route.providerId === "openrouter" && route.providerModelId === "qwen3.8-max",
       );
+    expect(target).toBeDefined();
+
+    const config = deterministicConfig([
+      {
+        routeId: target!.routeId,
+        visibleOn: [],
+      },
+    ]);
+    const composition = await createProductionRegistry(config, {
+      fetchFn: transport.fetchFn,
+    });
+    const hidden = composition.routeCatalog.get(target!.routeId);
     expect(hidden).toBeDefined();
     expect(hidden?.routable).toBe(true);
     expect(hidden?.visibility.visibleOn).toEqual([]);
