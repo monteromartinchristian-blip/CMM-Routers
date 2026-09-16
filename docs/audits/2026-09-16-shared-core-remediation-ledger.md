@@ -1,8 +1,8 @@
 # CMM Routers — Shared Core Remediation Ledger
 
-**Date:** 2026-09-16  
-**Branch:** `feature/shared-router-core`  
-**Audit input:** `docs/audits/2026-09-15-independent-shared-core-audit-v1-679778eba41f.md`  
+**Date:** 2026-09-16
+**Branch:** `feature/shared-router-core`
+**Audit input:** `docs/audits/2026-09-15-independent-shared-core-audit-v1-679778eba41f.md`
 **Remediation start HEAD:** `698bafc7ea6812306cd0157721838c9d8d0b536a`
 
 This ledger records the narrow R1–R6 remediation of the independent shared-core
@@ -13,11 +13,11 @@ No push or merge is part of this closure.
 
 | Audit finding | Remediation | Commit / closure |
 | --- | --- | --- |
-| MAJOR-01 — executable-route capability truth | R1 — require explicit exact resolved-route execution capability before advertising a route as routable | `e5012e3` (`fix(catalog): require exact route execution capability`) |
-| MAJOR-02 — dedicated/subscription routes could be advertised without exact route-bound execution | R2 — bind Codex, Claude, Antigravity, Command Code and Cavoti to the resolved route contract and remove whole-adapter/test-only bypass seams | `698bafc` (`fix(catalog): bind dedicated routes exactly`) |
-| IMPORTANT-01 — catalog truth could become stale and visibility was coupled to adapter capability | R3/R4 — live catalog reconciliation plus Router-owned visibility policy | final remediation commit created from this ledger closure |
-| IMPORTANT-02 — synthetic per-provider Account / ProviderProduct defaults | R5 — durable resolved/unresolved account identity, explicit product/connection topology, at most one primary runtime connection, secondary connections represented disabled | final remediation commit created from this ledger closure |
-| R6 — independent re-audit + final deterministic gates | Independent reviewer PASS plus focused/full serial/build/typecheck/security/diff gates | final remediation commit created from this ledger closure |
+| MAJOR-01 — executable-route truth, including dedicated adapter exact execution | R1/R2 — explicit exact-route capability plus exact route-bound execution for Codex, Claude, Antigravity, Command Code and Cavoti | `e5012e3` + `d636f80` + `698bafc` |
+| MAJOR-02 — shared catalog was a startup snapshot | R3 — live per-connection catalog reconciliation, stable route identity, removed-model unavailability and failure isolation | `7e51cd9` |
+| IMPORTANT-01 — no real Router-owned production RouteVisibility policy | R4 — Router-owned visibility policy independent from routability/Usage/billing | `d636f80` + `7e51cd9` |
+| IMPORTANT-02 — synthetic per-provider Account / ProviderProduct defaults | R5 — resolved/unresolved account identity plus explicit product/connection topology without fake defaults | `7e51cd9` |
+| R6 — independent re-audit + final deterministic gates | Internal reviewer PASS, sanitized full serial PASS, and ChatGPT independent V2 technical PASS | `7e51cd9` + docs-only V2 closure commit |
 
 ## R6 independent reviewer verdict
 
@@ -82,4 +82,3 @@ PUSH=NO
 MERGE=NO
 MERGE_READY=NO_PENDING_CHATGPT_INDEPENDENT_V2_AUDIT
 ```
-

@@ -17,9 +17,9 @@ Starting remediation HEAD: `0d511c606eebcc44cfbc1c9276346f2f9aa7c35b`
 - Independent review V1: FAIL — two IMPORTANT findings: (1) product visibility incorrectly followed combined `routable`, hiding exact-executable but activation-disabled routes; (2) the positive CMMChat route-binding fixture exposed the exact execution method without declaring the new capability.
 - Review remediation: product visibility now follows exact-route executability independently of activation; non-allowlisted NIM routes remain product-visible but non-routable; positive HTTP fixture declares the capability explicitly.
 - Review remediation verification: `tests/http/cmmchat-route-resolution.test.ts` + `tests/integration/catalog-provider-wave.test.ts` pass `9/9`.
-- Review remediation commit: PENDING.
-- Independent re-review: PENDING.
-- Final ruling: PENDING.
+- Review remediation commit: `d636f809e2ed9cce910c9d8b1b0e6e35245f761c` (`fix(catalog): preserve route visibility semantics`).
+- Independent re-review: PASS, subsumed by the final remediation reviewer and ChatGPT independent Audit V2 source review.
+- Final ruling: COMPLETE.
 
 ## R2 — subscription/dedicated adapter route-bound execution
 
@@ -32,6 +32,55 @@ Starting remediation HEAD: `0d511c606eebcc44cfbc1c9276346f2f9aa7c35b`
 - Focused route/composition regression: `25/25` PASS across runtime bridge, dedicated contract, production-composed dedicated routes, CMMChat route resolution and production composition.
 - Typecheck: PASS.
 - Diff check: PASS.
-- Commit: PENDING.
-- Independent review: PENDING.
-- Final ruling: PENDING.
+- Commit: `698bafc7ea6812306cd0157721838c9d8d0b536a` (`fix(catalog): bind dedicated routes exactly`).
+- Independent review: PASS, subsumed by the final remediation reviewer and ChatGPT independent Audit V2 source review.
+- Final ruling: COMPLETE.
+
+## R3–R6 final closure reconciliation
+
+This recovery ledger was not updated while the later remediation slices were
+being executed. The final repository evidence and independent Audit V2 reconcile
+that gap as follows.
+
+### R3 — live catalog reconciliation
+
+- Finding: V1 `MAJOR-02` — shared catalog discovery was a startup snapshot.
+- Implementation: Router-owned `CatalogReconciler`, per-connection discovery
+  reconciliation, stable route identity, new-model appearance, removed-model
+  non-routability, preserved history, and discovery-failure isolation.
+- Closure commit: `7e51cd9f3b98049f76047c18987c583c705a6dd5`.
+- Final ruling: COMPLETE.
+
+### R4 — Router-owned RouteVisibility policy
+
+- Finding: V1 `IMPORTANT-01`.
+- Implementation: independent Router-owned visibility rules with server-side
+  consumer enforcement; hidden routes remain present in the safe Router/Usage
+  projection.
+- Closure commits: `d636f809e2ed9cce910c9d8b1b0e6e35245f761c` +
+  `7e51cd9f3b98049f76047c18987c583c705a6dd5`.
+- Final ruling: COMPLETE.
+
+### R5 — durable Account / ProviderProduct identity semantics
+
+- Finding: V1 `IMPORTANT-02`.
+- Implementation: resolved/unresolved account identity, stable product and
+  connection topology, no synthetic provider-default Account/Product, and
+  privacy-safe projections.
+- Closure commit: `7e51cd9f3b98049f76047c18987c583c705a6dd5`.
+- Final ruling: COMPLETE.
+
+### R6 — closure verification
+
+- Internal independent reviewer: PASS, Critical 0 / Important 0 / Minor 0.
+- Focused remediation evidence: 12/12 files, 68/68 tests PASS.
+- PAYG-contaminated failure set: 51 tests; sanitized rerun 51/51 PASS.
+- Authoritative sanitized full serial: 171 files PASS + 5 skipped;
+  980 tests PASS + 25 skipped; exit 0.
+- Build/typecheck/security audit: PASS.
+- ChatGPT independent Audit V2 on exact tree
+  `e4bb2c8f6b111dd516d753b3d96cbfaac2e8a203`: technical PASS with only
+  documentation/closure findings.
+- Push: NO.
+- Merge: NO.
+- Final ruling: COMPLETE after the docs-only V2 closure commit.
