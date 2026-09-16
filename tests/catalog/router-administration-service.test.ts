@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { SharedConfig } from "../../src/config/schema.js";
 import { CatalogReconciler, type CatalogRoutePolicy } from "../../src/catalog/catalog-reconciler.js";
 import { CredentialBindingStore } from "../../src/catalog/credential-bindings.js";
+import { buildModelIdentityId } from "../../src/catalog/ids.js";
 import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
@@ -60,9 +62,12 @@ class TestSecureCredentialWriter implements SecureCredentialWriter {
   }
 }
 
-class FailingRouterAdminConfigStore extends RouterAdminConfigStore {
-  override async write(): Promise<void> {
-    throw new Error("fixture persistence failure");
+class TestRouterAdminConfigStore extends RouterAdminConfigStore {
+  failWrites = false;
+
+  override async write(config: SharedConfig): Promise<void> {
+    if (this.failWrites) throw new Error("fixture persistence failure");
+    return super.write(config);
   }
 }
 
@@ -76,7 +81,12 @@ function discoveredModel(upstreamModel: string): DiscoveredModel {
   };
 }
 
-function setup(options: { failPersistence?: boolean; models?: string[] } = {}) {
+function setup(options: {
+  failPersistence?: boolean;
+  models?: string[];
+  discoveryFails?: boolean;
+  routePolicy?: CatalogRoutePolicy;
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "cmm-router-admin-service-"));
   roots.push(root);
 
@@ -104,7 +114,10 @@ function setup(options: { failPersistence?: boolean; models?: string[] } = {}) {
     credentialBindings: bindings,
     credentialResolver,
     administrativeDiscovery: new Map([
-      ["openrouter", async () => models.map(discoveredModel)],
+      ["openrouter", async () => {
+        if (options.discoveryFails) throw new Error("fixture discovery failure");
+        return models.map(discoveredModel);
+      }],
     ]),
   });
   const modelIdentities = new ModelIdentityStore();
@@ -113,12 +126,11 @@ function setup(options: { failPersistence?: boolean; models?: string[] } = {}) {
     connections,
     modelIdentities,
     routeCatalog,
-    routePolicy: policy,
+    routePolicy: options.routePolicy ?? policy,
     minRefreshIntervalMs: 0,
   });
-  const configStore = options.failPersistence
-    ? new FailingRouterAdminConfigStore(root)
-    : new RouterAdminConfigStore(root);
+  const configStore = new TestRouterAdminConfigStore(root);
+  configStore.failWrites = options.failPersistence ?? false;
   const service = new RouterAdministrationService({
     directory,
     connections,
@@ -135,6 +147,7 @@ function setup(options: { failPersistence?: boolean; models?: string[] } = {}) {
     connections,
     credentialWriter,
     directory,
+    modelIdentities,
     routeCatalog,
     service,
   };
@@ -309,6 +322,68 @@ describe("RouterAdministrationService", () => {
     expect(route?.routeId).toMatch(/^route_[a-f0-9]{16}$/u);
     expect(route?.routeId).not.toMatch(/^route:custom:/u);
     expect(JSON.stringify(state.configStore.read())).not.toContain("custom-raw-secret");
+  });
+
+  it("treats failed discovery reconciliation as connect failure and rolls back setup state", async () => {
+    const state = setup({ discoveryFails: true });
+    const beforeConfig = state.configStore.read();
+
+    await expect(state.service.connect(connectInput())).rejects.toThrow(/reconciliation/i);
+
+    expect(state.connections.get("openrouter-primary")).toBeUndefined();
+    expect(state.bindings.getExecution("execution:openrouter-primary")).toBeUndefined();
+    expect(state.bindings.getObservability("observability:openrouter-primary")).toBeUndefined();
+    expect(state.configStore.read()).toEqual(beforeConfig);
+    expect(state.credentialWriter.values.size).toBe(0);
+  });
+
+  it("restores pre-existing catalog and model state when reconciliation fails after partial mutation", async () => {
+    let calls = 0;
+    const state = setup({
+      models: ["model-a", "model-b"],
+      routePolicy: (connection, model) => {
+        calls += 1;
+        if (calls === 2) throw new Error("fixture route policy failure after partial mutation");
+        return policy(connection, model);
+      },
+    });
+
+    const preexistingIdentity = {
+      modelIdentityId: buildModelIdentityId({ canonicalName: "preexisting-model" }),
+      canonicalName: "preexisting-model",
+      aliases: ["preexisting-upstream"],
+    };
+    state.modelIdentities.upsertExplicit(preexistingIdentity);
+    const beforeIdentities = state.modelIdentities.list();
+    const beforeRoutes = state.routeCatalog.list();
+
+    await expect(state.service.connect(connectInput())).rejects.toThrow(/partial mutation/i);
+
+    expect(state.modelIdentities.list()).toEqual(beforeIdentities);
+    expect(state.routeCatalog.list()).toEqual(beforeRoutes);
+    expect(state.connections.get("openrouter-primary")).toBeUndefined();
+    expect(state.credentialWriter.values.size).toBe(0);
+  });
+
+  it("restores connection status when enable or disable persistence fails", async () => {
+    const state = setup();
+    await state.service.connect(connectInput());
+
+    state.configStore.failWrites = true;
+    await expect(state.service.setEnabled("openrouter-primary", false)).rejects.toThrow(
+      /persistence failure/i,
+    );
+    expect(state.connections.get("openrouter-primary")?.status).toBe("configured");
+
+    state.configStore.failWrites = false;
+    await state.service.setEnabled("openrouter-primary", false);
+    expect(state.connections.get("openrouter-primary")?.status).toBe("disabled");
+
+    state.configStore.failWrites = true;
+    await expect(state.service.setEnabled("openrouter-primary", true)).rejects.toThrow(
+      /persistence failure/i,
+    );
+    expect(state.connections.get("openrouter-primary")?.status).toBe("disabled");
   });
 
   it("rolls back only newly created Router state and the newly written secret when persistence fails", async () => {

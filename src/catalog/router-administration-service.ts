@@ -166,11 +166,20 @@ export class RouterAdministrationService {
   }
 
   async setEnabled(connectionId: string, enabled: boolean): Promise<SafeConnectionSummary> {
+    const before = this.connections.get(connectionId);
+    if (before === undefined) throw new Error(`Unknown connection: ${connectionId}`);
+
     const connection = enabled
       ? this.connections.enable(connectionId)
       : this.connections.disable(connectionId);
-    await this.persistConnection(connection);
-    return this.summary(connection.connectionId);
+    try {
+      await this.persistConnection(connection);
+      return this.summary(connection.connectionId);
+    } catch (error) {
+      this.connections.remove(connectionId);
+      this.connections.add(before);
+      throw error;
+    }
   }
 
   async validate(connectionId: string): Promise<SafeConnectionSummary> {
@@ -308,6 +317,7 @@ export class RouterAdministrationService {
     }
 
     const beforeConfig = this.configStore.read();
+    const beforeCatalog = this.reconciler.snapshotState();
     let writtenSecretRef: string | undefined;
     let executionCreated = false;
     let observabilityCreated = false;
@@ -375,9 +385,14 @@ export class RouterAdministrationService {
       }));
       configPersisted = true;
 
-      if (explicitModels === undefined) {
-        await this.reconciler.reconcileConnection(connection.connectionId, { force: true });
-      } else {
+      if (explicitModels === undefined && input.authorizeExecution) {
+        const result = await this.reconciler.reconcileConnection(connection.connectionId, {
+          force: true,
+        });
+        if (result.failed) {
+          throw new Error(`Catalog reconciliation failed for ${connection.connectionId}`);
+        }
+      } else if (explicitModels !== undefined) {
         this.reconciler.reconcileDiscoveredModels(
           connection.connectionId,
           explicitModels,
@@ -386,6 +401,7 @@ export class RouterAdministrationService {
       }
       return this.summary(connection.connectionId);
     } catch (error) {
+      this.reconciler.restoreState(beforeCatalog);
       if (configPersisted) {
         await this.configStore.write(beforeConfig).catch(() => undefined);
       }

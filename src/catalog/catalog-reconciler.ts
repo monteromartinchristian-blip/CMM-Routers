@@ -1,5 +1,8 @@
 import { buildModelIdentityId, buildRouteId } from "./ids.js";
-import type { ModelIdentityStore } from "./model-identities.js";
+import type {
+  ModelIdentityStore,
+  ModelIdentityStoreSnapshot,
+} from "./model-identities.js";
 import type {
   DiscoveredProviderModel,
   ProviderConnectionService,
@@ -7,6 +10,7 @@ import type {
 import type { RouteCatalog } from "./route-catalog.js";
 import type { RouteVisibilityResolver } from "./route-visibility-policy.js";
 import type {
+  AccessRoute,
   ProviderConnection,
   RouteCapabilities,
   RouteVisibility,
@@ -47,6 +51,11 @@ export interface ConnectionReconcileResult {
   unavailableRouteIds: string[];
 }
 
+export interface CatalogReconcilerSnapshot {
+  modelIdentities: ModelIdentityStoreSnapshot;
+  routes: AccessRoute[];
+}
+
 export class CatalogReconciler {
   private readonly connections: ProviderConnectionService;
   private readonly modelIdentities: ModelIdentityStore;
@@ -61,6 +70,18 @@ export class CatalogReconciler {
     this.routeCatalog = options.routeCatalog;
     this.routePolicy = options.routePolicy;
     this.minRefreshIntervalMs = options.minRefreshIntervalMs ?? 30_000;
+  }
+
+  snapshotState(): CatalogReconcilerSnapshot {
+    return {
+      modelIdentities: this.modelIdentities.snapshotState(),
+      routes: this.routeCatalog.snapshotState(),
+    };
+  }
+
+  restoreState(snapshot: CatalogReconcilerSnapshot): void {
+    this.modelIdentities.restoreState(snapshot.modelIdentities);
+    this.routeCatalog.restoreState(snapshot.routes);
   }
 
   async reconcileAll(options: ReconcileOptions = {}): Promise<ConnectionReconcileResult[]> {

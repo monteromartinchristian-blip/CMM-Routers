@@ -157,6 +157,18 @@ export class RouteCatalog {
     return [...this.routes.values()].map(snapshotRoute);
   }
 
+  snapshotState(): AccessRoute[] {
+    return this.list();
+  }
+
+  restoreState(routes: readonly AccessRoute[]): void {
+    this.routes.clear();
+    for (const route of routes) {
+      const restored = snapshotRoute(route);
+      this.routes.set(restored.routeId, restored);
+    }
+  }
+
   listVisible(surface: RouteSurface): AccessRoute[] {
     if (!ROUTE_SURFACES.has(surface)) {
       throw new TypeError("Unsupported route surface");

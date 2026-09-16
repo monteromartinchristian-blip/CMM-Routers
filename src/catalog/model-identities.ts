@@ -10,6 +10,13 @@ export interface ProviderModelIdentityBinding {
   modelIdentityId: string;
 }
 
+export interface ModelIdentityStoreSnapshot {
+  identities: ModelIdentity[];
+  bindings: ProviderModelIdentityBinding[];
+  explicitIdentityIds: string[];
+  provisionalIdentityIds: string[];
+}
+
 type ProviderModelEvidence = Pick<
   DiscoveredProviderModel,
   "providerId" | "connectionId" | "providerModelId"
@@ -156,5 +163,48 @@ export class ModelIdentityStore {
 
   list(): ModelIdentity[] {
     return [...this.identities.values()].map(snapshotIdentity);
+  }
+
+  snapshotState(): ModelIdentityStoreSnapshot {
+    return {
+      identities: [...this.identities.values()].map(snapshotIdentity),
+      bindings: [...this.bindings.values()].map(snapshotBinding),
+      explicitIdentityIds: [...this.explicitIdentityIds],
+      provisionalIdentityIds: [...this.provisionalIdentityIds],
+    };
+  }
+
+  restoreState(snapshot: ModelIdentityStoreSnapshot): void {
+    this.identities.clear();
+    this.bindings.clear();
+    this.explicitIdentityIds.clear();
+    this.provisionalIdentityIds.clear();
+
+    for (const identity of snapshot.identities) {
+      const restored = snapshotIdentity(identity);
+      this.identities.set(restored.modelIdentityId, restored);
+    }
+    for (const binding of snapshot.bindings) {
+      const restored = snapshotBinding(binding);
+      if (!this.identities.has(restored.modelIdentityId)) {
+        throw new Error(`Unknown model identity during restore: ${restored.modelIdentityId}`);
+      }
+      this.bindings.set(
+        providerModelKey(
+          restored.providerId,
+          restored.connectionId,
+          restored.providerModelId,
+        ),
+        restored,
+      );
+    }
+    for (const id of snapshot.explicitIdentityIds) {
+      if (!this.identities.has(id)) throw new Error(`Unknown explicit model identity: ${id}`);
+      this.explicitIdentityIds.add(id);
+    }
+    for (const id of snapshot.provisionalIdentityIds) {
+      if (!this.identities.has(id)) throw new Error(`Unknown provisional model identity: ${id}`);
+      this.provisionalIdentityIds.add(id);
+    }
   }
 }
