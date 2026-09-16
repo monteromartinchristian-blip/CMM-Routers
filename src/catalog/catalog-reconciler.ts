@@ -1,8 +1,5 @@
 import { buildModelIdentityId, buildRouteId } from "./ids.js";
-import type {
-  ModelIdentityStore,
-  ModelIdentityStoreSnapshot,
-} from "./model-identities.js";
+import type { ModelIdentityStore } from "./model-identities.js";
 import type {
   DiscoveredProviderModel,
   ProviderConnectionService,
@@ -10,7 +7,6 @@ import type {
 import type { RouteCatalog } from "./route-catalog.js";
 import type { RouteVisibilityResolver } from "./route-visibility-policy.js";
 import type {
-  AccessRoute,
   ProviderConnection,
   RouteCapabilities,
   RouteVisibility,
@@ -40,6 +36,7 @@ export interface CatalogReconcilerOptions {
 
 export interface ReconcileOptions {
   force?: boolean;
+  rollbackOnFailure?: boolean;
 }
 
 export interface ConnectionReconcileResult {
@@ -51,10 +48,6 @@ export interface ConnectionReconcileResult {
   unavailableRouteIds: string[];
 }
 
-export interface CatalogReconcilerSnapshot {
-  modelIdentities: ModelIdentityStoreSnapshot;
-  routes: AccessRoute[];
-}
 
 export class CatalogReconciler {
   private readonly connections: ProviderConnectionService;
@@ -70,18 +63,6 @@ export class CatalogReconciler {
     this.routeCatalog = options.routeCatalog;
     this.routePolicy = options.routePolicy;
     this.minRefreshIntervalMs = options.minRefreshIntervalMs ?? 30_000;
-  }
-
-  snapshotState(): CatalogReconcilerSnapshot {
-    return {
-      modelIdentities: this.modelIdentities.snapshotState(),
-      routes: this.routeCatalog.snapshotState(),
-    };
-  }
-
-  restoreState(snapshot: CatalogReconcilerSnapshot): void {
-    this.modelIdentities.restoreState(snapshot.modelIdentities);
-    this.routeCatalog.restoreState(snapshot.routes);
   }
 
   async reconcileAll(options: ReconcileOptions = {}): Promise<ConnectionReconcileResult[]> {
@@ -136,11 +117,14 @@ export class CatalogReconciler {
       const existingRoutes = this.routeCatalog
         .list()
         .filter((route) => route.connectionId === connectionId);
+      const routeJournal = this.routeCatalog.beginMutationJournal();
       const unavailableRouteIds: string[] = [];
       for (const route of existingRoutes) {
+        routeJournal.captureRoute(route.routeId);
         this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
         unavailableRouteIds.push(route.routeId);
       }
+      if (options.rollbackOnFailure === true) routeJournal.rollback();
       return {
         connectionId,
         failed: true,
@@ -168,72 +152,88 @@ export class CatalogReconciler {
       throw new Error(`Connection disappeared during reconciliation: ${connectionId}`);
     }
 
-    const discoveredModelIds = new Set<string>();
-    const upsertedRouteIds: string[] = [];
-    for (const model of discovered) {
-      if (model.connectionId !== connectionId || model.providerId !== connection.providerId) {
-        throw new Error("Discovered model does not match the exact provider connection");
-      }
-      const policy = routePolicy(connection, model);
-      const modelIdentityId = buildModelIdentityId({ canonicalName: policy.canonicalName });
-      this.modelIdentities.upsertExplicit({
-        modelIdentityId,
-        canonicalName: policy.canonicalName,
-        aliases: [model.providerModelId],
-      });
-      this.modelIdentities.bindProviderModel({
-        providerId: model.providerId,
-        connectionId: model.connectionId,
-        providerModelId: model.providerModelId,
-        modelIdentityId,
-      });
-
-      let routeId: string;
-      try {
-        routeId = buildRouteId({
+    const modelJournal = this.modelIdentities.beginMutationJournal();
+    const routeJournal = this.routeCatalog.beginMutationJournal();
+    try {
+      const discoveredModelIds = new Set<string>();
+      const upsertedRouteIds: string[] = [];
+      for (const model of discovered) {
+        if (model.connectionId !== connectionId || model.providerId !== connection.providerId) {
+          throw new Error("Discovered model does not match the exact provider connection");
+        }
+        const policy = routePolicy(connection, model);
+        const modelIdentityId = buildModelIdentityId({ canonicalName: policy.canonicalName });
+        modelJournal.captureIdentity(modelIdentityId);
+        modelJournal.captureProviderModelBinding(
+          model.providerId,
+          model.connectionId,
+          model.providerModelId,
+        );
+        this.modelIdentities.upsertExplicit({
+          modelIdentityId,
+          canonicalName: policy.canonicalName,
+          aliases: [model.providerModelId],
+        });
+        this.modelIdentities.bindProviderModel({
           providerId: model.providerId,
           connectionId: model.connectionId,
           providerModelId: model.providerModelId,
-          executionProfile: policy.executionProfile,
+          modelIdentityId,
         });
-      } catch {
-        continue;
+
+        let routeId: string;
+        try {
+          routeId = buildRouteId({
+            providerId: model.providerId,
+            connectionId: model.connectionId,
+            providerModelId: model.providerModelId,
+            executionProfile: policy.executionProfile,
+          });
+        } catch {
+          continue;
+        }
+
+        routeJournal.captureRoute(routeId);
+        this.routeCatalog.upsert({
+          routeId,
+          modelIdentityId,
+          connectionId: model.connectionId,
+          providerId: model.providerId,
+          providerModelId: model.providerModelId,
+          executionProfile: policy.executionProfile,
+          capabilities: policy.capabilities,
+          billingClass: policy.billingClass,
+          routable: policy.routable,
+          visibility:
+            typeof policy.visibility === "function"
+              ? policy.visibility(routeId)
+              : policy.visibility,
+        });
+        discoveredModelIds.add(model.providerModelId);
+        upsertedRouteIds.push(routeId);
       }
 
-      this.routeCatalog.upsert({
-        routeId,
-        modelIdentityId,
-        connectionId: model.connectionId,
-        providerId: model.providerId,
-        providerModelId: model.providerModelId,
-        executionProfile: policy.executionProfile,
-        capabilities: policy.capabilities,
-        billingClass: policy.billingClass,
-        routable: policy.routable,
-        visibility:
-          typeof policy.visibility === "function"
-            ? policy.visibility(routeId)
-            : policy.visibility,
-      });
-      discoveredModelIds.add(model.providerModelId);
-      upsertedRouteIds.push(routeId);
-    }
-
-    const unavailableRouteIds: string[] = [];
-    for (const route of existingRoutes) {
-      if (!discoveredModelIds.has(route.providerModelId)) {
-        this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
-        unavailableRouteIds.push(route.routeId);
+      const unavailableRouteIds: string[] = [];
+      for (const route of existingRoutes) {
+        if (!discoveredModelIds.has(route.providerModelId)) {
+          routeJournal.captureRoute(route.routeId);
+          this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
+          unavailableRouteIds.push(route.routeId);
+        }
       }
-    }
 
-    return {
-      connectionId,
-      failed: false,
-      skipped: false,
-      discoveredCount: discovered.length,
-      upsertedRouteIds,
-      unavailableRouteIds,
-    };
+      return {
+        connectionId,
+        failed: false,
+        skipped: false,
+        discoveredCount: discovered.length,
+        upsertedRouteIds,
+        unavailableRouteIds,
+      };
+    } catch (error) {
+      routeJournal.rollback();
+      modelJournal.rollback();
+      throw error;
+    }
   }
 }

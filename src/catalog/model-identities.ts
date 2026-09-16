@@ -10,11 +10,14 @@ export interface ProviderModelIdentityBinding {
   modelIdentityId: string;
 }
 
-export interface ModelIdentityStoreSnapshot {
-  identities: ModelIdentity[];
-  bindings: ProviderModelIdentityBinding[];
-  explicitIdentityIds: string[];
-  provisionalIdentityIds: string[];
+export interface ModelIdentityMutationJournal {
+  captureIdentity(modelIdentityId: string): void;
+  captureProviderModelBinding(
+    providerId: string,
+    connectionId: string,
+    providerModelId: string,
+  ): void;
+  rollback(): void;
 }
 
 type ProviderModelEvidence = Pick<
@@ -165,46 +168,48 @@ export class ModelIdentityStore {
     return [...this.identities.values()].map(snapshotIdentity);
   }
 
-  snapshotState(): ModelIdentityStoreSnapshot {
+  beginMutationJournal(): ModelIdentityMutationJournal {
+    const identityBefore = new Map<
+      string,
+      { identity?: ModelIdentity; explicit: boolean; provisional: boolean }
+    >();
+    const bindingBefore = new Map<string, ProviderModelIdentityBinding | undefined>();
+
     return {
-      identities: [...this.identities.values()].map(snapshotIdentity),
-      bindings: [...this.bindings.values()].map(snapshotBinding),
-      explicitIdentityIds: [...this.explicitIdentityIds],
-      provisionalIdentityIds: [...this.provisionalIdentityIds],
+      captureIdentity: (modelIdentityId) => {
+        if (identityBefore.has(modelIdentityId)) return;
+        const identity = this.identities.get(modelIdentityId);
+        identityBefore.set(modelIdentityId, {
+          ...(identity === undefined ? {} : { identity: snapshotIdentity(identity) }),
+          explicit: this.explicitIdentityIds.has(modelIdentityId),
+          provisional: this.provisionalIdentityIds.has(modelIdentityId),
+        });
+      },
+      captureProviderModelBinding: (providerId, connectionId, providerModelId) => {
+        const key = providerModelKey(providerId, connectionId, providerModelId);
+        if (bindingBefore.has(key)) return;
+        const binding = this.bindings.get(key);
+        bindingBefore.set(
+          key,
+          binding === undefined ? undefined : snapshotBinding(binding),
+        );
+      },
+      rollback: () => {
+        for (const [modelIdentityId, before] of identityBefore) {
+          if (before.identity === undefined) this.identities.delete(modelIdentityId);
+          else this.identities.set(modelIdentityId, snapshotIdentity(before.identity));
+
+          if (before.explicit) this.explicitIdentityIds.add(modelIdentityId);
+          else this.explicitIdentityIds.delete(modelIdentityId);
+          if (before.provisional) this.provisionalIdentityIds.add(modelIdentityId);
+          else this.provisionalIdentityIds.delete(modelIdentityId);
+        }
+        for (const [key, before] of bindingBefore) {
+          if (before === undefined) this.bindings.delete(key);
+          else this.bindings.set(key, snapshotBinding(before));
+        }
+      },
     };
   }
 
-  restoreState(snapshot: ModelIdentityStoreSnapshot): void {
-    this.identities.clear();
-    this.bindings.clear();
-    this.explicitIdentityIds.clear();
-    this.provisionalIdentityIds.clear();
-
-    for (const identity of snapshot.identities) {
-      const restored = snapshotIdentity(identity);
-      this.identities.set(restored.modelIdentityId, restored);
-    }
-    for (const binding of snapshot.bindings) {
-      const restored = snapshotBinding(binding);
-      if (!this.identities.has(restored.modelIdentityId)) {
-        throw new Error(`Unknown model identity during restore: ${restored.modelIdentityId}`);
-      }
-      this.bindings.set(
-        providerModelKey(
-          restored.providerId,
-          restored.connectionId,
-          restored.providerModelId,
-        ),
-        restored,
-      );
-    }
-    for (const id of snapshot.explicitIdentityIds) {
-      if (!this.identities.has(id)) throw new Error(`Unknown explicit model identity: ${id}`);
-      this.explicitIdentityIds.add(id);
-    }
-    for (const id of snapshot.provisionalIdentityIds) {
-      if (!this.identities.has(id)) throw new Error(`Unknown provisional model identity: ${id}`);
-      this.provisionalIdentityIds.add(id);
-    }
-  }
 }

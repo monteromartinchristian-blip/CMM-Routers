@@ -317,7 +317,6 @@ export class RouterAdministrationService {
     }
 
     const beforeConfig = this.configStore.read();
-    const beforeCatalog = this.reconciler.snapshotState();
     let writtenSecretRef: string | undefined;
     let executionCreated = false;
     let observabilityCreated = false;
@@ -388,6 +387,7 @@ export class RouterAdministrationService {
       if (explicitModels === undefined && input.authorizeExecution) {
         const result = await this.reconciler.reconcileConnection(connection.connectionId, {
           force: true,
+          rollbackOnFailure: true,
         });
         if (result.failed) {
           throw new Error(`Catalog reconciliation failed for ${connection.connectionId}`);
@@ -401,7 +401,6 @@ export class RouterAdministrationService {
       }
       return this.summary(connection.connectionId);
     } catch (error) {
-      this.reconciler.restoreState(beforeCatalog);
       if (configPersisted) {
         await this.configStore.write(beforeConfig).catch(() => undefined);
       }

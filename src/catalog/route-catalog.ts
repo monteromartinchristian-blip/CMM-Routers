@@ -8,6 +8,12 @@ import type {
   RouteVisibility,
 } from "./types.js";
 
+
+export interface RouteCatalogMutationJournal {
+  captureRoute(routeId: string): void;
+  rollback(): void;
+}
+
 export interface RouteCatalogOptions {
   connections: ProviderConnectionService;
   modelIdentities: ModelIdentityStore;
@@ -157,16 +163,21 @@ export class RouteCatalog {
     return [...this.routes.values()].map(snapshotRoute);
   }
 
-  snapshotState(): AccessRoute[] {
-    return this.list();
-  }
-
-  restoreState(routes: readonly AccessRoute[]): void {
-    this.routes.clear();
-    for (const route of routes) {
-      const restored = snapshotRoute(route);
-      this.routes.set(restored.routeId, restored);
-    }
+  beginMutationJournal(): RouteCatalogMutationJournal {
+    const before = new Map<string, AccessRoute | undefined>();
+    return {
+      captureRoute: (routeId) => {
+        if (before.has(routeId)) return;
+        const route = this.routes.get(routeId);
+        before.set(routeId, route === undefined ? undefined : snapshotRoute(route));
+      },
+      rollback: () => {
+        for (const [routeId, route] of before) {
+          if (route === undefined) this.routes.delete(routeId);
+          else this.routes.set(routeId, snapshotRoute(route));
+        }
+      },
+    };
   }
 
   listVisible(surface: RouteSurface): AccessRoute[] {

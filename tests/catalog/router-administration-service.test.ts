@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { SharedConfig } from "../../src/config/schema.js";
 import { CatalogReconciler, type CatalogRoutePolicy } from "../../src/catalog/catalog-reconciler.js";
 import { CredentialBindingStore } from "../../src/catalog/credential-bindings.js";
-import { buildModelIdentityId } from "../../src/catalog/ids.js";
+import { buildModelIdentityId, buildRouteId } from "../../src/catalog/ids.js";
 import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
@@ -45,6 +45,7 @@ const policy: CatalogRoutePolicy = (connection, model) => {
 };
 
 class TestSecureCredentialWriter implements SecureCredentialWriter {
+  afterWrite?: () => void;
   readonly values = new Map<string, string>();
   readonly writes: Array<{ bindingId: string; secret: string; secretRef: string }> = [];
   readonly removals: string[] = [];
@@ -53,6 +54,7 @@ class TestSecureCredentialWriter implements SecureCredentialWriter {
     const secretRef = `keychain://CMM%20Usage/${encodeURIComponent(bindingId)}`;
     this.values.set(secretRef, secret);
     this.writes.push({ bindingId, secret, secretRef });
+    this.afterWrite?.();
     return { secretRef, hint: "••••test" };
   }
 
@@ -337,6 +339,65 @@ describe("RouterAdministrationService", () => {
     expect(state.credentialWriter.values.size).toBe(0);
   });
 
+  it("preserves unrelated catalog mutations that occur after connect rollback baseline", async () => {
+    const state = setup({
+      routePolicy: () => {
+        throw new Error("fixture reconciliation failure after concurrent mutation");
+      },
+    });
+
+    const concurrentConnectionId = "openrouter-concurrent";
+    state.connections.add({
+      connectionId: concurrentConnectionId,
+      providerId: "openrouter",
+      connectionKind: "openai-chat-completions",
+      status: "configured",
+    });
+    const concurrentIdentity = {
+      modelIdentityId: buildModelIdentityId({ canonicalName: "concurrent-model" }),
+      canonicalName: "concurrent-model",
+      aliases: ["concurrent-upstream"],
+    };
+    const concurrentRouteId = buildRouteId({
+      providerId: "openrouter",
+      connectionId: concurrentConnectionId,
+      providerModelId: "concurrent-upstream",
+      executionProfile: "default",
+    });
+
+    state.credentialWriter.afterWrite = () => {
+      state.modelIdentities.upsertExplicit(concurrentIdentity);
+      state.modelIdentities.bindProviderModel({
+        providerId: "openrouter",
+        connectionId: concurrentConnectionId,
+        providerModelId: "concurrent-upstream",
+        modelIdentityId: concurrentIdentity.modelIdentityId,
+      });
+      state.routeCatalog.upsert({
+        routeId: concurrentRouteId,
+        modelIdentityId: concurrentIdentity.modelIdentityId,
+        connectionId: concurrentConnectionId,
+        providerId: "openrouter",
+        providerModelId: "concurrent-upstream",
+        executionProfile: "default",
+        capabilities: { chat: true, tools: false, streaming: true },
+        billingClass: "api",
+        routable: true,
+        visibility: { visibleOn: ["admin_console"] },
+      });
+    };
+
+    await expect(state.service.connect(connectInput())).rejects.toThrow(/concurrent mutation/i);
+
+    expect(state.modelIdentities.list()).toContainEqual(concurrentIdentity);
+    expect(state.routeCatalog.get(concurrentRouteId)).toMatchObject({
+      routeId: concurrentRouteId,
+      connectionId: concurrentConnectionId,
+      modelIdentityId: concurrentIdentity.modelIdentityId,
+      routable: true,
+    });
+  });
+
   it("restores pre-existing catalog and model state when reconciliation fails after partial mutation", async () => {
     let calls = 0;
     const state = setup({
@@ -349,11 +410,35 @@ describe("RouterAdministrationService", () => {
     });
 
     const preexistingIdentity = {
-      modelIdentityId: buildModelIdentityId({ canonicalName: "preexisting-model" }),
-      canonicalName: "preexisting-model",
-      aliases: ["preexisting-upstream"],
+      modelIdentityId: buildModelIdentityId({ canonicalName: "openrouter:model-a" }),
+      canonicalName: "openrouter:model-a",
+      aliases: ["legacy-model-a"],
     };
     state.modelIdentities.upsertExplicit(preexistingIdentity);
+    state.modelIdentities.bindProviderModel({
+      providerId: "openrouter",
+      connectionId: "openrouter-primary",
+      providerModelId: "model-a",
+      modelIdentityId: preexistingIdentity.modelIdentityId,
+    });
+    const preexistingRouteId = buildRouteId({
+      providerId: "openrouter",
+      connectionId: "openrouter-primary",
+      providerModelId: "model-a",
+      executionProfile: "default",
+    });
+    state.routeCatalog.upsert({
+      routeId: preexistingRouteId,
+      modelIdentityId: preexistingIdentity.modelIdentityId,
+      connectionId: "openrouter-primary",
+      providerId: "openrouter",
+      providerModelId: "model-a",
+      executionProfile: "default",
+      capabilities: { chat: true, tools: false, streaming: true },
+      billingClass: "legacy",
+      routable: false,
+      visibility: { visibleOn: ["admin_console"] },
+    });
     const beforeIdentities = state.modelIdentities.list();
     const beforeRoutes = state.routeCatalog.list();
 
