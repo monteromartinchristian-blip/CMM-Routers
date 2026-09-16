@@ -108,14 +108,13 @@ export class CatalogReconciler {
     }
     this.lastAttemptAt.set(connectionId, now);
 
-    const existingRoutes = this.routeCatalog
-      .list()
-      .filter((route) => route.connectionId === connectionId);
-
     let discovered: DiscoveredProviderModel[];
     try {
       discovered = await this.connections.discoverModels(connectionId);
     } catch {
+      const existingRoutes = this.routeCatalog
+        .list()
+        .filter((route) => route.connectionId === connectionId);
       const unavailableRouteIds: string[] = [];
       for (const route of existingRoutes) {
         this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
@@ -131,6 +130,18 @@ export class CatalogReconciler {
       };
     }
 
+    return this.reconcileDiscoveredModels(connectionId, discovered);
+  }
+
+  reconcileDiscoveredModels(
+    connectionId: string,
+    discovered: readonly DiscoveredProviderModel[],
+    routePolicy: CatalogRoutePolicy = this.routePolicy,
+  ): ConnectionReconcileResult {
+    const existingRoutes = this.routeCatalog
+      .list()
+      .filter((route) => route.connectionId === connectionId);
+
     const connection = this.connections.get(connectionId);
     if (connection === undefined) {
       throw new Error(`Connection disappeared during reconciliation: ${connectionId}`);
@@ -139,7 +150,10 @@ export class CatalogReconciler {
     const discoveredModelIds = new Set<string>();
     const upsertedRouteIds: string[] = [];
     for (const model of discovered) {
-      const policy = this.routePolicy(connection, model);
+      if (model.connectionId !== connectionId || model.providerId !== connection.providerId) {
+        throw new Error("Discovered model does not match the exact provider connection");
+      }
+      const policy = routePolicy(connection, model);
       const modelIdentityId = buildModelIdentityId({ canonicalName: policy.canonicalName });
       this.modelIdentities.upsertExplicit({
         modelIdentityId,

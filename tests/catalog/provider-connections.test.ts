@@ -133,6 +133,41 @@ describe("ProviderConnectionService", () => {
     expect(service.get("connection-main")?.status).toBe("disabled");
   });
 
+  it("enables a disabled connection by changing only its status", () => {
+    const { bindings, service } = setup();
+    addExecutionBinding(bindings);
+    const original = connection();
+    service.add(original);
+    service.disable(original.connectionId);
+
+    expect(service.enable(original.connectionId)).toEqual({
+      ...original,
+      status: "configured",
+    });
+    expect(service.get(original.connectionId)).toEqual({
+      ...original,
+      status: "configured",
+    });
+  });
+
+  it("removes exactly one connection without deleting credential bindings", () => {
+    const { bindings, service } = setup();
+    addExecutionBinding(bindings);
+    addExecutionBinding(bindings, "execution-secondary");
+    service.add(connection());
+    service.add(connection({
+      connectionId: "connection-secondary",
+      executionCredentialBindingId: "execution-secondary",
+    }));
+
+    expect(service.remove("connection-main")).toEqual(connection());
+
+    expect(service.get("connection-main")).toBeUndefined();
+    expect(service.get("connection-secondary")).toBeDefined();
+    expect(bindings.getExecution("execution-main")).toBeDefined();
+    expect(bindings.getExecution("execution-secondary")).toBeDefined();
+  });
+
   it("fails closed for missing connections and unknown providers", async () => {
     const { service } = setup();
 

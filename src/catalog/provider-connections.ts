@@ -131,6 +131,24 @@ export class ProviderConnectionService {
     return snapshotConnection(connection);
   }
 
+  enable(connectionId: string): ProviderConnection {
+    assertNonEmpty(connectionId, "connectionId");
+    const connection = this.connections.get(connectionId);
+    if (connection === undefined) {
+      throw new Error(`Unknown connection: ${connectionId}`);
+    }
+    connection.status = "configured";
+    return snapshotConnection(connection);
+  }
+
+  remove(connectionId: string): ProviderConnection | undefined {
+    assertNonEmpty(connectionId, "connectionId");
+    const connection = this.connections.get(connectionId);
+    if (connection === undefined) return undefined;
+    this.connections.delete(connectionId);
+    return snapshotConnection(connection);
+  }
+
   get(connectionId: string): ProviderConnection | undefined {
     const connection = this.connections.get(connectionId);
     return connection === undefined ? undefined : snapshotConnection(connection);

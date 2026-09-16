@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CatalogReconciler } from "../../src/catalog/catalog-reconciler.js";
 import { CredentialBindingStore } from "../../src/catalog/credential-bindings.js";
 import { buildModelIdentityId, buildRouteId } from "../../src/catalog/ids.js";
 import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
@@ -6,11 +10,16 @@ import { buildRouterCatalogProjection } from "../../src/catalog/projection.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
+import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
+import type { SecureCredentialWriter } from "../../src/catalog/secure-credential-writer.js";
 import type {
   AccessRoute,
   Account,
   ProviderProduct,
 } from "../../src/catalog/types.js";
+import type { UsageEvent } from "../../src/usage/domain/types.js";
+import { SqliteUsageStore } from "../../src/usage/storage/sqlite-usage-store.js";
 import { InMemorySecureCredentialResolver } from "../support/in-memory-secure-credential-resolver.js";
 
 const PROVIDER_ID = "openrouter";
@@ -152,6 +161,7 @@ function setup(options: SetupOptions = {}) {
   return {
     credentialBindings,
     directory,
+    modelIdentities,
     providerConnections,
     projectionInput,
     route,
@@ -302,5 +312,89 @@ describe("Routers ↔ Usage catalog responsibility boundary", () => {
         },
       }),
     );
+  });
+
+  it("Router disconnect removes operational authority without deleting Usage history", async () => {
+    const state = setup({ observability: true, execution: true });
+    const root = mkdtempSync(join(tmpdir(), "cmm-router-usage-boundary-"));
+    const usageStore = new SqliteUsageStore(join(root, "usage.sqlite"));
+    await usageStore.initialize();
+    const timestamp = "2026-09-16T10:00:00.000Z";
+    await usageStore.upsertProvider({
+      id: PROVIDER_ID,
+      displayName: "OpenRouter history fixture",
+      kind: "aggregator",
+      status: "active",
+      metadata: {},
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await usageStore.upsertAccount({
+      id: ACCOUNT_ID,
+      providerId: PROVIDER_ID,
+      label: "History account",
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await usageStore.upsertProduct({
+      id: PRODUCT_ID,
+      providerId: PROVIDER_ID,
+      displayName: "History product",
+      kind: "api",
+      metadata: {},
+    });
+    const history: UsageEvent = {
+      id: "usage-history-kept",
+      occurredAt: timestamp,
+      providerId: PROVIDER_ID,
+      accountId: ACCOUNT_ID,
+      productId: PRODUCT_ID,
+      requests: 1,
+      source: "router_measured",
+      confidence: "measured",
+      metadata: { fixture: "must-survive-router-disconnect" },
+    };
+    await usageStore.appendUsageEvents([history]);
+
+    const reconciler = new CatalogReconciler({
+      connections: state.providerConnections,
+      modelIdentities: state.modelIdentities,
+      routeCatalog: state.routeCatalog,
+      routePolicy: (_connection, model) => ({
+        canonicalName: model.providerModelId,
+        executionProfile: "default",
+        capabilities: { chat: true, tools: false, streaming: true },
+        billingClass: "api",
+        routable: true,
+        visibility: { visibleOn: ["admin_console"] },
+      }),
+      minRefreshIntervalMs: 0,
+    });
+    const credentialWriter: SecureCredentialWriter = {
+      async write() {
+        throw new Error("unused in disconnect boundary test");
+      },
+      async remove() {},
+    };
+    const administration = new RouterAdministrationService({
+      directory: state.directory,
+      connections: state.providerConnections,
+      credentialBindings: state.credentialBindings,
+      routeCatalog: state.routeCatalog,
+      catalogReconciler: reconciler,
+      configStore: new RouterAdminConfigStore(join(root, "router-config")),
+      credentialWriter,
+    });
+
+    try {
+      await administration.disconnect(CONNECTION_ID);
+
+      expect(state.providerConnections.get(CONNECTION_ID)).toBeUndefined();
+      expect(await usageStore.listUsageEvents()).toEqual([history]);
+    } finally {
+      await usageStore.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
