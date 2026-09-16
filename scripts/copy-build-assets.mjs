@@ -1,16 +1,19 @@
-import { copyFile, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { copyFile, mkdir, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 
-const assets = [
-  ["src/usage/storage/schema/001_initial.sql", "dist/usage/storage/schema/001_initial.sql"],
-  [
-    "src/usage/storage/schema/002_scrub_legacy_openrouter_key_buckets.sql",
-    "dist/usage/storage/schema/002_scrub_legacy_openrouter_key_buckets.sql",
-  ],
-];
+const sourceSchemaDir = resolve("src/usage/storage/schema");
+const destinationSchemaDir = resolve("dist/usage/storage/schema");
 
-for (const [source, destination] of assets) {
-  const target = resolve(destination);
-  await mkdir(dirname(target), { recursive: true });
-  await copyFile(resolve(source), target);
+await mkdir(destinationSchemaDir, { recursive: true });
+
+const migrations = (await readdir(sourceSchemaDir, { withFileTypes: true }))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+  .map((entry) => entry.name)
+  .sort();
+
+for (const filename of migrations) {
+  await copyFile(
+    resolve(sourceSchemaDir, filename),
+    resolve(destinationSchemaDir, filename),
+  );
 }

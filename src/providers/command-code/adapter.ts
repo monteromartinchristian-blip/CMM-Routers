@@ -6,6 +6,8 @@ import type {
 import type { DiscoveredModel } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { toChatWireToolChoice } from "../../core/tool-policy.js";
 import {
   ANTHROPIC_MESSAGES_PATH,
@@ -87,6 +89,7 @@ function toAnthropicTools(request: RouterRequest): unknown[] | undefined {
 
 export class CommandCodeAdapter implements ProviderAdapter {
   readonly id = "command-code" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private readonly client: CommandCodeClient;
   private readonly ackPath: string;
   private readonly pending = new Map<string, PendingCancellation>();
@@ -103,12 +106,15 @@ export class CommandCodeAdapter implements ProviderAdapter {
     this.client.readSecret();
   }
 
-  wireForModel(model: DiscoveredModel): CommandCodeWire {
+  wireForModel(
+    model: DiscoveredModel,
+    client: CommandCodeClient = this.client,
+  ): CommandCodeWire {
     const meta = (model as DiscoveredModel & { wire?: unknown }).wire;
     if (meta === "anthropic-messages" || meta === "openai-chat-completions") {
       return meta;
     }
-    return this.client.wireForUpstreamId(model.upstreamModel);
+    return client.wireForUpstreamId(model.upstreamModel);
   }
 
   async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
@@ -214,11 +220,61 @@ export class CommandCodeAdapter implements ProviderAdapter {
       return;
     }
 
+    yield* this.runWithClient(request, signal, this.client);
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    const endpoint = connection.endpointRef?.replace(/\/+$/, "");
+    if (
+      request.model.provider !== this.id ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "openai-chat-completions" ||
+      connection.profileRef !== undefined ||
+      executionProfile !== "default" ||
+      endpoint === undefined ||
+      endpoint !== this.client.baseUrl ||
+      credential.value.length === 0
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    try {
+      requireSpendAcknowledgement(this.ackPath);
+      const routeClient = this.client.forExecution(endpoint, credential.value);
+      routeClient.readSecret();
+      yield* this.runWithClient(request, signal, routeClient);
+    } catch (error) {
+      yield {
+        type: "error",
+        error:
+          error instanceof RouterError
+            ? error
+            : new RouterError("provider_auth_required", String(error)),
+      };
+    }
+  }
+
+  private async *runWithClient(
+    request: RouterRequest,
+    signal: AbortSignal,
+    client: CommandCodeClient,
+  ): AsyncIterable<RouterEvent> {
+
     assertNoSpendPath(request.model.upstreamModel);
 
     // Deterministic single-wire routing decided BEFORE any request.
     // Retrying the other endpoint after an upstream error is FORBIDDEN.
-    const wire = this.wireForModel(request.model);
+    const wire = this.wireForModel(request.model, client);
 
     const abortController = new AbortController();
     const onAbort = () => abortController.abort();
@@ -227,10 +283,10 @@ export class CommandCodeAdapter implements ProviderAdapter {
 
     try {
       if (wire === "anthropic-messages") {
-        yield* this.runAnthropicWire(request, abortController.signal, signal);
+        yield* this.runAnthropicWire(request, abortController.signal, signal, client);
         return;
       }
-      yield* this.runOpenAiWire(request, abortController.signal, signal);
+      yield* this.runOpenAiWire(request, abortController.signal, signal, client);
       return;
     } finally {
       signal.removeEventListener("abort", onAbort);
@@ -242,10 +298,11 @@ export class CommandCodeAdapter implements ProviderAdapter {
     request: RouterRequest,
     abortSignal: AbortSignal,
     outerSignal: AbortSignal,
+    client: CommandCodeClient,
   ): AsyncIterable<RouterEvent> {
     try {
       const upstreamTools = toUpstreamTools(request);
-      const generator = this.client.streamChatCompletion(
+      const generator = client.streamChatCompletion(
         request.model.upstreamModel,
         toUpstreamMessages(request) as never,
         abortSignal,
@@ -444,6 +501,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
     request: RouterRequest,
     abortSignal: AbortSignal,
     outerSignal: AbortSignal,
+    client: CommandCodeClient,
   ): AsyncIterable<RouterEvent> {
     // Anthropic Messages natively supports client-defined tools: the Router
     // declares Qoder tools, surfaces tool_use to Qoder, and feeds the result
@@ -452,7 +510,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
     try {
       const messages = toUpstreamMessages(request) as never;
       const upstreamTools = toAnthropicTools(request);
-      const generator = this.client.streamAnthropicMessages(
+      const generator = client.streamAnthropicMessages(
         request.model.upstreamModel,
         messages,
         abortSignal,

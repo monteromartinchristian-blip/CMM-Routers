@@ -128,7 +128,10 @@ rsync -a --delete "$CANDIDATE/" "$VERIFY/"
   npm run build
   echo "PUBLIC_CANDIDATE_BUILD=PASS"
 
-  CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY=1 npx vitest run
+  # Deterministic serial verification: a parallel nested suite schedules every
+  # file across all CPUs while npm/build/outer-test work already competes for
+  # them, which fails tests that only have the 5000 ms default budget.
+  CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY=1 npm run test:serial
   echo "PUBLIC_CANDIDATE_META_PUBLICATION_TESTS=SKIPPED_RECURSION_GUARD"
   echo "PUBLIC_CANDIDATE_FULL_TEST_SUITE=PASS"
 

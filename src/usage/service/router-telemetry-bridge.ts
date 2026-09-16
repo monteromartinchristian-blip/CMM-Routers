@@ -6,6 +6,7 @@ export type RouterTelemetryStatus =
   | "provider_error"
   | "auth_error"
   | "quota_error"
+  | "billing_blocked"
   | "rate_limit_error"
   | "timeout_error"
   | "cancelled";

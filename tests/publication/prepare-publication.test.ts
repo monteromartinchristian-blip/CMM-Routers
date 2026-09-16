@@ -9,7 +9,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { acquirePublicationMetaTestLock } from "./meta-test-lock.js";
+import {
+  acquirePublicationMetaTestLock,
+  PUBLICATION_META_TEST_LOCK_WAIT_MS,
+} from "./meta-test-lock.js";
+import { SERIAL_NESTED_VERIFICATION_BUDGET_MS } from "./publication-budgets.js";
 const projectRoot = resolve(import.meta.dirname, "../..");
 const prepareScript = join(
   projectRoot,
@@ -18,6 +22,16 @@ const prepareScript = join(
 const policyCli = join(projectRoot, "scripts/publication/lib/policy.mjs");
 
 const roots: string[] = [];
+
+/**
+ * Every case here builds a real repository fixture (git clone/init/commit/push)
+ * and runs the publication script, then deletes the resulting trees. Measured
+ * 3-4s once the nested verification suite has just run and 7-28s under host
+ * load, against vitest's 5000 ms default; the cleanup hook alone exceeded its
+ * 10s default. Budgets are widened; no assertion is relaxed.
+ */
+const PUBLICATION_FIXTURE_TIMEOUT_MS = 60_000;
+const PUBLICATION_CLEANUP_HOOK_TIMEOUT_MS = 120_000;
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, {
@@ -112,7 +126,7 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
-});
+}, PUBLICATION_CLEANUP_HOOK_TIMEOUT_MS);
 
 const describePreparePublication =
   process.env.CMM_ROUTERS_PUBLICATION_CANDIDATE_VERIFY === "1" ||
@@ -126,13 +140,13 @@ describePreparePublication("prepare-publication", () => {
   beforeAll(async () => {
     releasePublicationMetaTestLock =
       await acquirePublicationMetaTestLock();
-  }, 310_000);
+  }, PUBLICATION_META_TEST_LOCK_WAIT_MS + 20_000);
 
   afterAll(async () => {
     await releasePublicationMetaTestLock?.();
   });
 
-  it("policy CLI scans a tree and fails closed on an unsanitized home path", async () => {
+  it("policy CLI scans a tree and fails closed on an unsanitized home path", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const tree = join(root, "tree");
     execFileSync("mkdir", ["-p", tree]);
@@ -194,10 +208,13 @@ describePreparePublication("prepare-publication", () => {
       );
       expect(plan).not.toMatch(/\/Users\/(?!example\/)[^/\s]+\//);
     },
-    120_000,
+    // Runs the whole nested publication pipeline: sanitize, tree proof,
+    // privacy scan, npm ci, build, deterministic serial suite, typecheck, and
+    // security audit. Measured nested suite: 202-315s serial.
+    SERIAL_NESTED_VERIFICATION_BUDGET_MS,
   );
 
-  it("fails closed when the internal worktree is dirty", async () => {
+  it("fails closed when the internal worktree is dirty", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const internal = await cloneInternal(root);
     const { publicRepo } = await makePublic(root);
@@ -216,7 +233,7 @@ describePreparePublication("prepare-publication", () => {
     );
   });
 
-  it("fails closed when public staging is dirty", async () => {
+  it("fails closed when public staging is dirty", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const internal = await cloneInternal(root);
     const { publicRepo } = await makePublic(root);
@@ -235,7 +252,7 @@ describePreparePublication("prepare-publication", () => {
     );
   });
 
-  it("fails closed when origin/main is not the public staging predecessor", async () => {
+  it("fails closed when origin/main is not the public staging predecessor", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const internal = await cloneInternal(root);
     const { publicRepo } = await makePublic(root);
@@ -257,7 +274,7 @@ describePreparePublication("prepare-publication", () => {
     );
   });
 
-  it("blocks a high-confidence secret before public staging mutation", async () => {
+  it("blocks a high-confidence secret before public staging mutation", { timeout: PUBLICATION_FIXTURE_TIMEOUT_MS }, async () => {
     const root = await makeRoot();
     const internal = await cloneInternal(root);
     const { publicRepo, predecessor } = await makePublic(root);

@@ -11,6 +11,9 @@ import {
   CONSUMER_QODER,
   type ConsumerId,
 } from "../core/consumer-capability.js";
+import type { CatalogRuntimeBridge } from "../catalog/runtime-bridge.js";
+import type { RouterCatalogProjectionInput } from "../catalog/projection.js";
+import { registerManagementCatalog } from "./catalog.js";
 import type { UsageService as CmmUsageService } from "../usage/service/usage-service.js";
 import { isUsageApiPath, verifyUsageBearer } from "../usage/api/usage-auth.js";
 import { registerUsageRoutes } from "../usage/api/usage-routes.js";
@@ -28,6 +31,9 @@ export interface ServerOptions {
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
+  runtimeBridge?: CatalogRuntimeBridge;
+  catalogProjectionInput?: RouterCatalogProjectionInput;
+  beforeCatalogRead?: () => Promise<void>;
   /**
    * Optional second bearer token bound to the Qoder consumer. When absent
    * there is no Qoder consumer and every authenticated client is CMMChat
@@ -41,11 +47,11 @@ export interface ServerOptions {
   usageManagementToken?: string;
   /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
   cmmUsageService?: CmmUsageService;
-  /** Product-facing safe catalog projection for CMM Usage and CMMChat. */
+  /** Preserved product-facing Usage catalog WIP. */
   cmmUsageCatalog?: PresentationCatalogService;
-  /** Route-scoped visibility preferences exposed through read-only catalog API. */
+  /** Preserved Usage visibility WIP; authority migration follows reconciliation. */
   cmmUsageVisibility?: VisibilityStore;
-  /** Privileged semantic connection-management surface. */
+  /** Preserved Usage connection-management WIP; authority migration follows reconciliation. */
   cmmUsageConnections?: ConnectionManagementService;
   /** Optional sink for normalized inference consumption metadata. */
   routerTelemetry?: RouterTelemetrySink;
@@ -183,6 +189,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     options.cmmUsageService === undefined,
   );
 
+  if (options.catalogProjectionInput !== undefined) {
+    registerManagementCatalog(
+      fastify,
+      options.catalogProjectionInput,
+      options.beforeCatalogRead,
+    );
+  }
+
   if (options.cmmUsageService !== undefined) {
     registerUsageRoutes(fastify, options.cmmUsageService);
   }
@@ -198,10 +212,22 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // OpenAI-compatible chat completions. Tool semantics are gated per consumer
   // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
-  registerChatCompletions(fastify, options.registry, options.usageStore, options.routerTelemetry);
+  registerChatCompletions(
+    fastify,
+    options.registry,
+    options.usageStore,
+    options.runtimeBridge,
+    options.routerTelemetry,
+  );
 
   // OpenAI-compatible responses API
-  registerResponsesApi(fastify, options.registry, options.usageStore, options.routerTelemetry);
+  registerResponsesApi(
+    fastify,
+    options.registry,
+    options.usageStore,
+    options.runtimeBridge,
+    options.routerTelemetry,
+  );
 
   return fastify;
 }

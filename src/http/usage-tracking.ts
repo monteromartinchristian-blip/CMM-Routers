@@ -9,6 +9,10 @@ export function usageStatusForRouterErrorCode(code: string): UsageStatus {
   switch (code) {
     case "provider_quota_exhausted":
       return "quota_error";
+    case "provider_billing_blocked":
+      // Account-state block: distinct from quota exhaustion at the usage
+      // boundary so an owed balance is never reported as a spent allowance.
+      return "billing_blocked";
     case "provider_rate_limited":
       return "rate_limit_error";
     case "provider_timeout":

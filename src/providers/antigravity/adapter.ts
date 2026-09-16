@@ -20,6 +20,8 @@ import type {
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
 import {
   AGY_PATH,
@@ -114,6 +116,56 @@ export function parseAgyModelsOutput(stdout: string): ParsedModel[] {
 
 function ensureNeutralCwd(cwd: string): void {
   mkdirSync(cwd, { recursive: true });
+}
+
+/**
+ * Fixed, CMM-owned workspace agent name for tool-capable agy runs. It is an
+ * internal constant: not user-configurable and never derived from request
+ * content, so a request cannot influence which agent definition is loaded.
+ */
+const ANTIGRAVITY_TOOL_AGENT_NAME = "cmm-router-tool-bridge";
+
+/**
+ * Restricted workspace agent definition for Qoder-owned tool runs.
+ *
+ * `excludeDefaultComponents: true` removes agy's default components and its
+ * native tools, so `run_command`, `view_file`, `write_file`,
+ * `replace_file_content`, `grep_search`, `code_search` and the browser tools
+ * are never selectable. `inheritMcp: true` keeps the CMM-owned external MCP
+ * bridge visible, and the explicit `tools` allowlist leaves exactly one
+ * reachable capability: the MCP dispatcher `call_mcp_tool`. The allowlist is
+ * stated explicitly rather than relying on ambient defaults.
+ *
+ * Qoder owns tool execution; agy may only reason and dispatch through the
+ * bridge. Provider-native tool names are never translated into Qoder tools.
+ *
+ * Provider-neutral and secret-free by construction: no credentials, no request
+ * content, no Qoder-specific tool schemas and no MCP arguments appear here.
+ */
+const ANTIGRAVITY_TOOL_AGENT_FILE = `---
+name: ${ANTIGRAVITY_TOOL_AGENT_NAME}
+description: CMM Router tool bridge agent.
+mainAgent: true
+subagent: false
+excludeDefaultComponents: true
+inheritMcp: true
+tools:
+  - call_mcp_tool
+---
+
+Client-owned tools are reached only through the MCP dispatcher. Native
+filesystem, shell and browser execution are not part of this agent.
+`;
+
+/**
+ * Materialize the restricted agent inside the per-run temp cwd that the
+ * request/session cleanup path already owns. No second cleanup mechanism is
+ * introduced: removing the cwd removes the agent with it.
+ */
+function ensureAntigravityToolAgent(cwd: string): void {
+  const agentDir = join(cwd, ".agents", "agents", ANTIGRAVITY_TOOL_AGENT_NAME);
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "agent.md"), ANTIGRAVITY_TOOL_AGENT_FILE, "utf-8");
 }
 
 function verifyNoPaygInChildEnv(env: Record<string, string>): void {
@@ -780,10 +832,12 @@ interface AgyToolSession {
 
 export class AntigravityAdapter implements ProviderAdapter {
   readonly id = "google" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private activeRequests = new Map<string, { abort: () => void; cwd: string }>();
   private runner: InferenceRunner;
   private modelsRunner: AgyRunner;
   private readonly agyPath: string;
+  private readonly configuredAgyPath: string | undefined;
   /**
    * Router-owned bounded pending state shared with the other adapters. The
    * cross-request correlation is keyed by a Router-generated public tool id.
@@ -826,6 +880,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       maxStreamEvents?: number | undefined;
     } = {},
   ) {
+    this.configuredAgyPath = options.agyPath;
     this.agyPath = options.agyPath ?? AGY_PATH;
     this.runner = runner ?? new SpawnInferenceRunner(this.agyPath);
     this.modelsRunner = modelsRunner ?? new RealAgyRunner(this.agyPath);
@@ -853,6 +908,32 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   maxRendezvousSessions(): number {
     return this.registry.maxLiveSessions();
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    if (
+      request.model.provider !== this.id ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "antigravity" ||
+      connection.profileRef !== this.configuredAgyPath ||
+      connection.endpointRef !== undefined ||
+      executionProfile !== "default" ||
+      credential.value !== `authorized:${this.id}`
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    yield* this.run(request, signal);
   }
 
   buildInferenceArgs(upstreamSlug: string, prompt: string, _effort?: string): string[] {
@@ -1552,10 +1633,29 @@ export class AntigravityAdapter implements ProviderAdapter {
     // performs transport only; agy's native mutation tools stay unused.
     if (request.tools.length > 0) {
       try {
-        yield* this.runToolSession(request, signal, args, cwd, abortController);
+        // Tool-capable runs are confined to the CMM-owned restricted agent:
+        // agy can then reach Qoder-owned tools only through the MCP dispatcher.
+        // The agent lives in the same per-run temp cwd, so existing cleanup
+        // owns its lifetime. Base `args` are copied, never mutated, so the
+        // no-tools path is unaffected.
+        ensureAntigravityToolAgent(cwd);
+        const toolSessionArgs = [...args, "--agent", ANTIGRAVITY_TOOL_AGENT_NAME];
+        yield* this.runToolSession(request, signal, toolSessionArgs, cwd, abortController);
       } finally {
         signal.removeEventListener("abort", onAbort);
         this.activeRequests.delete(request.requestId);
+        // A live tool session owns the run cwd and removes it in
+        // closeToolSession. When no session ever took ownership - the provider
+        // run never started - this request still owns the cwd, so it removes
+        // it here. The generated agent therefore cannot outlive a failed run,
+        // and a parked session waiting for Qoder is never disturbed.
+        if (!this.sessionsByRequest.has(request.requestId)) {
+          try {
+            rmSync(cwd, { recursive: true, force: true });
+          } catch {
+            // Best-effort cleanup; the run verdict was already delivered.
+          }
+        }
       }
       return;
     }

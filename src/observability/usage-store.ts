@@ -3,6 +3,12 @@ export type UsageStatus =
   | "provider_error"
   | "auth_error"
   | "quota_error"
+  /**
+   * Account-state block (unsettled usage / outstanding balance). Kept apart
+   * from `quota_error`: a spent allowance and an owed balance are different
+   * operator facts and must not be summed into one counter.
+   */
+  | "billing_blocked"
   | "rate_limit_error"
   | "timeout_error"
   | "cancelled";
@@ -27,6 +33,7 @@ export interface UsageAggregates {
   successCount: number;
   failureCount: number;
   quotaEvents: number;
+  billingBlockedEvents: number;
   rateLimitEvents: number;
   timeoutEvents: number;
   cancelledEvents: number;
@@ -99,6 +106,7 @@ export class UsageStore {
     const totalRequests = this.records.length;
     let successCount = 0;
     let quotaEvents = 0;
+    let billingBlockedEvents = 0;
     let rateLimitEvents = 0;
     let timeoutEvents = 0;
     let cancelledEvents = 0;
@@ -123,6 +131,7 @@ export class UsageStore {
         lastSuccessAt = record.startedAt;
       }
       if (record.status === "quota_error") quotaEvents += 1;
+      if (record.status === "billing_blocked") billingBlockedEvents += 1;
       if (record.status === "rate_limit_error") rateLimitEvents += 1;
       if (record.status === "timeout_error") timeoutEvents += 1;
       if (record.status === "cancelled") cancelledEvents += 1;
@@ -134,6 +143,7 @@ export class UsageStore {
       successCount,
       failureCount: totalRequests - successCount,
       quotaEvents,
+      billingBlockedEvents,
       rateLimitEvents,
       timeoutEvents,
       cancelledEvents,

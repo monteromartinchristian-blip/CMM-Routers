@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 const REPO = join(import.meta.dirname, "../..");
 
 describe("distribution build assets", () => {
-  it("ships the CMM Usage SQL migration required by the compiled runtime", () => {
+  it("ships every CMM Usage SQL migration required by the compiled runtime", () => {
     const checkout = mkdtempSync(join(tmpdir(), "cmm-build-assets-"));
 
     try {
@@ -24,26 +24,21 @@ describe("distribution build assets", () => {
       });
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
 
-      const initialMigration = join(
-        checkout,
-        "dist",
-        "usage",
-        "storage",
-        "schema",
-        "001_initial.sql",
-      );
-      const privacyMigration = join(
-        checkout,
-        "dist",
-        "usage",
-        "storage",
-        "schema",
-        "002_scrub_legacy_openrouter_key_buckets.sql",
-      );
-      expect(existsSync(initialMigration)).toBe(true);
-      expect(readFileSync(initialMigration, "utf8")).toContain("CREATE TABLE");
-      expect(existsSync(privacyMigration)).toBe(true);
-      expect(readFileSync(privacyMigration, "utf8")).toContain("DELETE FROM quota_buckets");
+      const sourceSchema = join(checkout, "src", "usage", "storage", "schema");
+      const distSchema = join(checkout, "dist", "usage", "storage", "schema");
+      const sourceMigrations = readdirSync(sourceSchema)
+        .filter((filename) => filename.endsWith(".sql"))
+        .sort();
+      const distMigrations = readdirSync(distSchema)
+        .filter((filename) => filename.endsWith(".sql"))
+        .sort();
+
+      expect(distMigrations).toEqual(sourceMigrations);
+      for (const filename of sourceMigrations) {
+        expect(readFileSync(join(distSchema, filename), "utf8")).toBe(
+          readFileSync(join(sourceSchema, filename), "utf8"),
+        );
+      }
     } finally {
       rmSync(checkout, { recursive: true, force: true });
     }

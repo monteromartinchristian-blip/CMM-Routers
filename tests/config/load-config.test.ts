@@ -57,7 +57,7 @@ describe("config schema", () => {
         chatgpt: { enabled: true, apiKey: "sk-test" },
         claude: { enabled: false },
         google: { enabled: false },
-        "command-code": { enabled: false },
+        "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
       },
     });
     expect(result.success).toBe(false);
@@ -156,5 +156,163 @@ describe("config schema", () => {
       },
     });
     expect(result.success).toBe(true);
+  });
+
+  it("accepts explicit provider catalog topology with one primary runtime connection", () => {
+    const result = sharedConfigSchema.safeParse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      providers: {
+        chatgpt: { enabled: false },
+        claude: { enabled: false },
+        google: { enabled: false },
+        "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
+        deepseek: {
+          enabled: true,
+          catalog: {
+            accounts: [
+              {
+                ref: "team-a",
+                label: "Team A",
+                identityStatus: "resolved",
+                externalAccountRef: "provider-account-123",
+              },
+            ],
+            products: [
+              {
+                ref: "api-primary",
+                accountRef: "team-a",
+                kind: "api",
+                label: "Primary API",
+              },
+              {
+                ref: "api-secondary",
+                accountRef: "team-a",
+                kind: "api",
+                label: "Secondary API",
+              },
+            ],
+            connections: [
+              { ref: "primary", productRef: "api-primary", runtime: "primary" },
+              { ref: "secondary", productRef: "api-secondary", runtime: "disabled" },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects invalid provider catalog identity topology fail closed", () => {
+    const providerBase = {
+      enabled: true,
+      catalog: {
+        accounts: [
+          {
+            ref: "team-a",
+            label: "Team A",
+            identityStatus: "resolved",
+            externalAccountRef: "provider-account-123",
+          },
+        ],
+        products: [
+          {
+            ref: "api-primary",
+            accountRef: "team-a",
+            kind: "api",
+            label: "Primary API",
+          },
+        ],
+        connections: [
+          { ref: "primary", productRef: "api-primary", runtime: "primary" },
+        ],
+      },
+    };
+    const parseProvider = (deepseek: unknown) =>
+      sharedConfigSchema.safeParse({
+        mode: "standalone",
+        host: "127.0.0.1",
+        providers: {
+          chatgpt: { enabled: false },
+          claude: { enabled: false },
+          google: { enabled: false },
+          "command-code": { enabled: false, secretEnv: "COMMAND_CODE_SECRET" },
+          deepseek,
+        },
+      }).success;
+
+    expect(
+      parseProvider({
+        ...providerBase,
+        catalog: {
+          ...providerBase.catalog,
+          accounts: [
+            { ref: "team-a", label: "Team A", identityStatus: "resolved" },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      parseProvider({
+        ...providerBase,
+        catalog: {
+          ...providerBase.catalog,
+          accounts: [
+            {
+              ref: "team-a",
+              label: "Team A",
+              identityStatus: "unresolved",
+              externalAccountRef: "provider-account-123",
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      parseProvider({
+        ...providerBase,
+        catalog: {
+          ...providerBase.catalog,
+          products: [
+            {
+              ref: "api-primary",
+              accountRef: "missing-account",
+              kind: "api",
+              label: "Primary API",
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      parseProvider({
+        ...providerBase,
+        catalog: {
+          ...providerBase.catalog,
+          connections: [
+            { ref: "primary-a", productRef: "api-primary", runtime: "primary" },
+            { ref: "primary-b", productRef: "api-primary", runtime: "primary" },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      parseProvider({
+        ...providerBase,
+        catalog: {
+          ...providerBase.catalog,
+          accounts: [
+            {
+              ref: "team-a",
+              label: "Team A",
+              identityStatus: "resolved",
+              externalAccountRef: "provider-account-123",
+              apiKey: "secret-must-not-be-accepted",
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
   });
 });

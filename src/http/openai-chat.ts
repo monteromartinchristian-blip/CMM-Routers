@@ -15,10 +15,83 @@ import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
-import { effectiveToolCapability } from "../core/consumer-capability.js";
+import {
+  CONSUMER_CMMCHAT,
+  effectiveToolCapability,
+  type ConsumerId,
+} from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
+import type { CatalogRuntimeBridge } from "../catalog/runtime-bridge.js";
+import type { ProviderAdapter } from "../core/provider.js";
 import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
+
+const ROUTE_SELECTOR_PREFIX = "route:";
+
+export interface HttpExecutionTarget {
+  model: DiscoveredModel;
+  adapter: ProviderAdapter;
+}
+
+/**
+ * Resolve one HTTP execution target without changing the existing model
+ * namespace. `route:<routeId>` is an explicit CMMChat compatibility selector;
+ * every other model id uses the legacy registry resolver unchanged.
+ */
+export async function resolveHttpExecutionTarget(
+  modelId: string,
+  consumerId: ConsumerId,
+  registry: ProviderRegistry,
+  runtimeBridge?: CatalogRuntimeBridge,
+): Promise<HttpExecutionTarget> {
+  if (!modelId.startsWith(ROUTE_SELECTOR_PREFIX)) {
+    const model = await registry.resolve(modelId);
+    const adapter = registry.getAdapter(model.provider);
+    if (adapter === undefined) {
+      throw new RouterError("unknown_provider", "Unknown provider");
+    }
+    return { model, adapter };
+  }
+
+  const routeId = modelId.slice(ROUTE_SELECTOR_PREFIX.length);
+  if (
+    routeId.length === 0 ||
+    runtimeBridge === undefined ||
+    consumerId !== CONSUMER_CMMCHAT
+  ) {
+    throw new RouterError("unknown_model", "Unknown or unavailable route");
+  }
+
+  let resolved;
+  try {
+    resolved = await runtimeBridge.resolve(routeId, "cmmchat_model_picker");
+  } catch {
+    // Route visibility, routability and execution authorization failures are
+    // intentionally collapsed at the public boundary. Never fall back to the
+    // legacy model resolver or reveal whether a hidden route exists.
+    throw new RouterError("unknown_model", "Unknown or unavailable route");
+  }
+
+  if (!resolved.route.capabilities.chat) {
+    throw new RouterError(
+      "unsupported_capability",
+      "Selected route does not support chat execution",
+    );
+  }
+
+  return {
+    model: {
+      id: modelId,
+      provider: resolved.adapter.id,
+      upstreamModel: resolved.providerModelId,
+      displayName: resolved.providerModelId,
+      capability: resolved.route.capabilities.tools
+        ? "CHAT_AND_TOOLS"
+        : "CHAT_ONLY",
+    },
+    adapter: resolved.adapter,
+  };
+}
 
 interface ChatMessageInput {
   role?: unknown;
@@ -284,6 +357,10 @@ export function mapRouterErrorToHttp(error: unknown): { status: number; type: st
       case "provider_quota_exhausted":
       case "provider_rate_limited":
         return { status: 429, type: error.code, message: error.message };
+      case "provider_billing_blocked":
+        // 402 Payment Required: the account owes money. Distinguished from 429
+        // so a consumer never treats a billing block as a retryable limit.
+        return { status: 402, type: error.code, message: error.message };
       case "provider_timeout":
         return { status: 504, type: error.code, message: error.message };
       case "provider_unavailable":
@@ -357,6 +434,7 @@ export function registerChatCompletions(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  runtimeBridge?: CatalogRuntimeBridge,
   routerTelemetry?: RouterTelemetrySink,
 ): void {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -423,20 +501,20 @@ export function registerChatCompletions(
     }
     const reasoningEffort = parsedEffort;
 
+    const consumerId = (request as ConsumerRequest).consumerId;
     let model: DiscoveredModel;
+    let adapter: ProviderAdapter;
     try {
-      model = await registry.resolve(body.model);
+      ({ model, adapter } = await resolveHttpExecutionTarget(
+        body.model,
+        consumerId,
+        registry,
+        runtimeBridge,
+      ));
     } catch (error) {
       const mapped = mapRouterErrorToHttp(error);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
-
-    const adapter = registry.getAdapter(model.provider);
-    if (!adapter) {
-      return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
-    }
-
-    const consumerId = (request as ConsumerRequest).consumerId;
     const effective = effectiveToolCapability(consumerId, model.capability);
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {

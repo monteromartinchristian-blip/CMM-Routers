@@ -17,31 +17,53 @@ export class ProviderRegistry {
     return this.providers.get(providerId);
   }
 
+  /**
+   * Registered provider route ids in registration order. Identity comes from
+   * the runtime registry (what is actually routable), never from a separate
+   * inventory list.
+   */
+  listProviderIds(): string[] {
+    return [...this.providers.keys()];
+  }
+
   async register(adapter: ProviderAdapter): Promise<void> {
     this.providers.set(adapter.id, adapter);
+  }
+
+  private async refreshProvider(providerId: string, adapter: ProviderAdapter): Promise<void> {
+    try {
+      const models = await adapter.discoverModels();
+      this.discoveryCache.set(providerId, {
+        models,
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      this.discoveryCache.set(providerId, {
+        models: [],
+        timestamp: Date.now(),
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+  }
+
+  private discoveredOrThrow(providerId: string): DiscoveredModel[] {
+    const cached = this.discoveryCache.get(providerId);
+    if (cached?.error) {
+      if (cached.error instanceof RouterError) throw cached.error;
+      throw new RouterError(
+        "provider_unavailable",
+        `Provider discovery failed: ${providerId}`,
+        { provider: providerId, error: cached.error.message },
+      );
+    }
+    return cached?.models ?? [];
   }
 
   async refresh(): Promise<void> {
     const discoveries: Array<Promise<void>> = [];
 
     for (const [id, adapter] of this.providers) {
-      discoveries.push(
-        (async () => {
-          try {
-            const models = await adapter.discoverModels();
-            this.discoveryCache.set(id, {
-              models,
-              timestamp: Date.now(),
-            });
-          } catch (error) {
-            this.discoveryCache.set(id, {
-              models: [],
-              timestamp: Date.now(),
-              error: error instanceof Error ? error : new Error(String(error)),
-            });
-          }
-        })(),
-      );
+      discoveries.push(this.refreshProvider(id, adapter));
     }
 
     await Promise.allSettled(discoveries);
@@ -55,6 +77,29 @@ export class ProviderRegistry {
     }
 
     return allModels;
+  }
+
+  /**
+   * Return provider discovery truth through the registry's single TTL cache.
+   * Catalog reconciliation uses this instead of calling adapters directly, so
+   * startup discovery is consumed once and later refreshes cannot race a
+   * second, independent discovery cache.
+   */
+  async getDiscoveredModels(providerId: string): Promise<DiscoveredModel[]> {
+    const adapter = this.providers.get(providerId);
+    if (adapter === undefined) {
+      throw new RouterError(
+        "unknown_provider",
+        `Unknown provider: ${providerId}`,
+        { providerId },
+      );
+    }
+
+    const cached = this.discoveryCache.get(providerId);
+    if (cached === undefined || Date.now() - cached.timestamp > DISCOVERY_CACHE_TTL_MS) {
+      await this.refreshProvider(providerId, adapter);
+    }
+    return [...this.discoveredOrThrow(providerId)];
   }
 
   async getProviderHealth(signal?: AbortSignal): Promise<Map<string, import("../core/provider.js").ProviderHealth>> {
@@ -104,41 +149,9 @@ export class ProviderRegistry {
       );
     }
 
-    const cached = this.discoveryCache.get(providerId);
-    const isStale = !cached || Date.now() - cached.timestamp > DISCOVERY_CACHE_TTL_MS;
-
-    if (isStale) {
-      try {
-        const models = await adapter.discoverModels();
-        this.discoveryCache.set(providerId, {
-          models,
-          timestamp: Date.now(),
-        });
-      } catch (error) {
-        this.discoveryCache.set(providerId, {
-          models: [],
-          timestamp: Date.now(),
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
-      }
-    }
-
-    const currentCache = this.discoveryCache.get(providerId);
+    const models = await this.getDiscoveredModels(providerId);
     
-    // If discovery previously failed, preserve the error
-    if (currentCache?.error) {
-      const cachedError = currentCache.error;
-      if (cachedError instanceof RouterError) {
-        throw cachedError;
-      }
-      throw new RouterError(
-        "provider_unavailable",
-        `Provider discovery failed: ${providerId}`,
-        { provider: providerId, error: cachedError.message },
-      );
-    }
-    
-    if (!currentCache?.models.length) {
+    if (models.length === 0) {
       throw new RouterError(
         "unknown_model",
         `Model not found: ${modelId}`,
@@ -146,7 +159,7 @@ export class ProviderRegistry {
       );
     }
 
-    const model = currentCache.models.find((m) => m.id === modelId);
+    const model = models.find((m) => m.id === modelId);
     if (!model) {
       throw new RouterError(
         "unknown_model",

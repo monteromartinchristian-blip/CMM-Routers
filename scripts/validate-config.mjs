@@ -12,6 +12,7 @@
 // Exit codes: 0 = valid, 1 = invalid, 3 = shared.json missing.
 
 import { existsSync, readFileSync } from "node:fs";
+import * as nodeModule from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -24,6 +25,46 @@ function emit(line) {
   process.stdout.write(`${line}\n`);
 }
 
+/**
+ * Node's native TypeScript support resolves relative specifiers literally, so
+ * a TypeScript-style `import "./x.js"` of an `x.ts` sibling fails with
+ * ERR_MODULE_NOT_FOUND. That is a loader limitation, not a missing module.
+ * Register a resolve hook that maps exactly that case back to the real file so
+ * the validator keeps loading the SAME schema module production uses. Returns
+ * false when the runtime exposes no synchronous hooks (Node < 22.15), in which
+ * case the compiled-artifact fallback below applies instead.
+ */
+function registerTsSiblingResolution() {
+  if (typeof nodeModule.registerHooks !== "function") return false;
+  try {
+    nodeModule.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        try {
+          return nextResolve(specifier, context);
+        } catch (error) {
+          const code = error instanceof Error ? error.code : undefined;
+          if (code !== "ERR_MODULE_NOT_FOUND") throw error;
+          if (
+            !specifier.startsWith(".") ||
+            !specifier.endsWith(".js") ||
+            !context.parentURL
+          ) {
+            throw error;
+          }
+          const candidate = new URL(`${specifier.slice(0, -3)}.ts`, context.parentURL);
+          if (!existsSync(fileURLToPath(candidate))) throw error;
+          return { url: candidate.href, shortCircuit: true };
+        }
+      },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const TS_SIBLING_RESOLUTION = registerTsSiblingResolution();
+
 async function loadSchemaModule() {
   // Source of truth: the same module production loadConfig() imports.
   // Node >= 22.6 can import TypeScript directly; older runtimes fall back
@@ -34,7 +75,11 @@ async function loadSchemaModule() {
       return await import(pathToFileURL(src).href);
     } catch (error) {
       const code = error instanceof Error ? error.code : undefined;
-      if (code !== "ERR_UNKNOWN_FILE_EXTENSION" && code !== "ERR_UNSUPPORTED_NODE_VERSION") {
+      const loaderLimitation =
+        code === "ERR_UNKNOWN_FILE_EXTENSION" ||
+        code === "ERR_UNSUPPORTED_NODE_VERSION" ||
+        (!TS_SIBLING_RESOLUTION && code === "ERR_MODULE_NOT_FOUND");
+      if (!loaderLimitation) {
         throw error;
       }
     }
@@ -103,6 +148,35 @@ async function main() {
   emit(`AGY_PATH=${providers.google.agyPath ?? ""}`);
   emit(`COMMAND_CODE_SECRET_ENV=${providers["command-code"].secretEnv}`);
   emit(`CAVOTI_SECRET_ENV=${providers.cavoti.secretEnv}`);
+
+  // Approved provider wave. Status-safe: enabled flags, credential NAMES,
+  // configured base URLs and activation scope only. Secret VALUES are never
+  // read, printed or logged by this script.
+  const WAVE_PROVIDER_IDS = [
+    "qwen-token-plan",
+    "qwen-cloud",
+    "deepseek",
+    "kira",
+    "openrouter",
+    "opencode-zen",
+    "nvidia-nim",
+    "vikey",
+    "cline",
+    "ollama-cloud",
+  ];
+  emit(`WAVE_PROVIDER_COUNT=${WAVE_PROVIDER_IDS.length}`);
+  let waveEnabled = 0;
+  for (const id of WAVE_PROVIDER_IDS) {
+    const entry = providers[id] ?? {};
+    const prefix = `WAVE_${id.toUpperCase().replace(/-/g, "_")}`;
+    const enabled = entry.enabled === true;
+    if (enabled) waveEnabled += 1;
+    emit(`${prefix}_ENABLED=${enabled ? "1" : "0"}`);
+    emit(`${prefix}_SECRET_ENV=${entry.secretEnv ?? ""}`);
+    emit(`${prefix}_BASE_URL=${entry.baseUrl ?? ""}`);
+    emit(`${prefix}_ACTIVATION=${entry.activation?.mode ?? "manifest"}`);
+  }
+  emit(`WAVE_PROVIDERS_ENABLED=${waveEnabled}`);
   return 0;
 }
 

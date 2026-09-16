@@ -4,13 +4,21 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
+import {
+  mapRouterErrorToHttp,
+  rejectChatOnlyTools,
+  codexUnsupportedToolPolicy,
+  parseReasoningEffort,
+  resolveHttpExecutionTarget,
+} from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
+import type { CatalogRuntimeBridge } from "../catalog/runtime-bridge.js";
+import type { ProviderAdapter } from "../core/provider.js";
 import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -168,6 +176,7 @@ export function registerResponsesApi(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  runtimeBridge?: CatalogRuntimeBridge,
   routerTelemetry?: RouterTelemetrySink,
 ): void {
   fastify.post("/v1/responses", async (request: FastifyRequest, reply: FastifyReply) => {
@@ -224,19 +233,20 @@ export function registerResponsesApi(
     }
     const reasoningEffort = parsedEffort;
 
+    const consumerId = (request as ConsumerRequest).consumerId;
     let model: DiscoveredModel;
+    let adapter: ProviderAdapter;
     try {
-      model = await registry.resolve(body.model);
+      ({ model, adapter } = await resolveHttpExecutionTarget(
+        body.model,
+        consumerId,
+        registry,
+        runtimeBridge,
+      ));
     } catch (error) {
       const mapped = mapRouterErrorToHttp(error);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
-    const adapter = registry.getAdapter(model.provider);
-    if (!adapter) {
-      return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
-    }
-
-    const consumerId = (request as ConsumerRequest).consumerId;
     const effective = effectiveToolCapability(consumerId, model.capability);
 
     // Capability guard runs on the RAW body: assistant function_call history

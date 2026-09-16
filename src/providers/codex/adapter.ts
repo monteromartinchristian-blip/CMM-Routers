@@ -3,6 +3,8 @@ import type { Duplex } from "node:stream";
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } from "../../core/provider.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { CodexAppServerClient } from "./app-server-client.js";
 import {
   buildThreadStartParams,
@@ -185,6 +187,7 @@ function completedAgentMessageFallback(
 
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "chatgpt" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
   private client: CodexAppServerClient | null = null;
   private process: ReturnType<typeof spawn> | null = null;
   private activeTurns = new Map<string, { threadId: string; turnId?: string }>();
@@ -283,6 +286,32 @@ export class CodexAdapter implements ProviderAdapter {
       }
       return { status: "degraded", detail: String(error) };
     }
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    if (
+      request.model.provider !== this.id ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "codex-app-server" ||
+      connection.profileRef !== this.codexHome ||
+      connection.endpointRef !== undefined ||
+      executionProfile !== "default" ||
+      credential.value !== `authorized:${this.id}`
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    yield* this.run(request, signal);
   }
 
   async *run(

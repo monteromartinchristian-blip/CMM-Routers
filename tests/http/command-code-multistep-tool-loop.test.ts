@@ -27,6 +27,15 @@ const QODER_TOKEN = "cc-multistep-qoder-token";
 const OPENAI_MODEL = "command-code/goat-model-a";
 const ANTHROPIC_MODEL = "command-code/claude-two-step";
 
+/**
+ * Each case drives three real HTTP exchanges through the production server, so
+ * runtime is event-loop and filesystem bound. Measured 56ms in isolation but
+ * over 5000 ms (vitest's default budget) once the suite runs hot, which is the
+ * state nested publication verification runs in. The budget is widened to
+ * match the sibling production-stack suites; no assertion is relaxed.
+ */
+const MULTISTEP_HTTP_TIMEOUT_MS = 60_000;
+
 const TOOL_A_ID = "call_http_step_A";
 const TOOL_B_ID = "call_http_step_B";
 const TOOL_A_ID_ANTHROPIC = "toolu_http_step_A";
@@ -335,7 +344,7 @@ describe("Router HTTP: Command Code multi-step Qoder agent tool loop", () => {
     expect(final.text).toContain(RESULT_B);
   }
 
-  it("drives the full two-step loop over HTTP on the OpenAI wire", async () => {
+  it("drives the full two-step loop over HTTP on the OpenAI wire", { timeout: MULTISTEP_HTTP_TIMEOUT_MS }, async () => {
     const counter = upstream();
     const server = await serverFor(counter);
     await driveLoop(server, OPENAI_MODEL);
@@ -347,7 +356,7 @@ describe("Router HTTP: Command Code multi-step Qoder agent tool loop", () => {
     console.log("MULTI_STEP_QODER_AGENT_LOOP_COMMAND_CODE=PASS");
   });
 
-  it("negative control: the upstream gate really fires when result A is absent over HTTP", async () => {
+  it("negative control: the upstream gate really fires when result A is absent over HTTP", { timeout: MULTISTEP_HTTP_TIMEOUT_MS }, async () => {
     // No test-only escape hatch: omitting the tool result for A makes the
     // provider-faithful upstream fail closed, and the router surfaces that
     // failure instead of a fabricated tool call B.
@@ -367,7 +376,7 @@ describe("Router HTTP: Command Code multi-step Qoder agent tool loop", () => {
     console.log("COMMAND_CODE_TWO_STEP_GATE_FAILS_CLOSED_WITHOUT_RESULT_A=PASS");
   });
 
-  it("drives the full two-step loop over HTTP on the Anthropic wire", async () => {
+  it("drives the full two-step loop over HTTP on the Anthropic wire", { timeout: MULTISTEP_HTTP_TIMEOUT_MS }, async () => {
     const counter = upstream();
     const server = await serverFor(counter);
     await driveLoop(server, ANTHROPIC_MODEL);
@@ -379,7 +388,7 @@ describe("Router HTTP: Command Code multi-step Qoder agent tool loop", () => {
     console.log("MULTI_STEP_QODER_AGENT_LOOP_COMMAND_CODE=PASS");
   });
 
-  it("stays fail-closed without the human GOAT ack: no routing, no on-demand spend", async () => {
+  it("stays fail-closed without the human GOAT ack: no routing, no on-demand spend", { timeout: MULTISTEP_HTTP_TIMEOUT_MS }, async () => {
     // Reuses the existing spend-guard contract: a missing/invalid human
     // acknowledgement must block routing entirely (provider_auth_required ->
     // HTTP 401) and no upstream request may be attempted.

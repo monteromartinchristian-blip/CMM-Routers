@@ -286,10 +286,13 @@ echo "== declared tool ACL at every provider boundary =="
 acl_ok=1
 grep -q "declaredToolNames" src/providers/codex/adapter.ts || acl_ok=0
 grep -q "declaredToolNames" src/providers/command-code/adapter.ts || acl_ok=0
+grep -q "declaredToolNames" src/providers/openai-compatible/adapter.ts || acl_ok=0
+grep -q "declaredToolNames" src/providers/cavoti/adapter.ts || acl_ok=0
 if [ "$acl_ok" = "1" ]; then
   echo "CODEX_UNDECLARED_DYNAMIC_TOOL_FAIL_CLOSED=PASS"
   echo "COMMAND_CODE_OPENAI_UNDECLARED_TOOL_FAIL_CLOSED=PASS"
   echo "COMMAND_CODE_ANTHROPIC_UNDECLARED_TOOL_FAIL_CLOSED=PASS"
+  echo "OPENAI_COMPATIBLE_UNDECLARED_TOOL_FAIL_CLOSED=PASS"
   echo "DECLARED_TOOL_ACL_AT_PROVIDER_BOUNDARY=PASS"
 else
   echo "FAIL: declared-tool ACL missing at a provider boundary"

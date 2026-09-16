@@ -2,6 +2,8 @@ import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { ProviderConnection } from "../../catalog/types.js";
+import type { ResolvedSecret } from "../../catalog/secure-credential-resolver.js";
 import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -186,6 +188,7 @@ export function toClaudeImageBlock(url: string): Record<string, unknown> {
  */
 export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
+  readonly executionCapabilities = { exactResolvedRoute: true } as const;
 
   private activeRequests = new Map<string, { abortController?: AbortController }>();
   /** Live tool-capable sessions, keyed by Router-generated public tool-call id. */
@@ -256,7 +259,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // so PAYG variables and the normal profile can never leak in.
       // settingSources: [] disables user/project/local settings files so
       // discovery can never inherit the normal Claude/OmniRoute profile.
-      const queryResult: Query = query({
+      const queryResult: Query = this.queryFn({
         prompt: "",  // Minimal prompt for model discovery
         options: {
           env,
@@ -429,6 +432,32 @@ export class ClaudeAdapter implements ProviderAdapter {
       message = "Request timed out or was cancelled";
     }
     return new RouterError(code, message);
+  }
+
+  async *runWithResolvedExecution(
+    request: RouterRequest,
+    signal: AbortSignal,
+    connection: Readonly<ProviderConnection>,
+    executionProfile: string,
+    credential: Readonly<ResolvedSecret>,
+  ): AsyncIterable<RouterEvent> {
+    if (
+      request.model.provider !== this.id ||
+      connection.providerId !== this.id ||
+      connection.connectionKind !== "claude-code-sdk" ||
+      connection.profileRef !== this.profileDir ||
+      connection.endpointRef !== undefined ||
+      executionProfile !== "default" ||
+      credential.value !== `authorized:${this.id}`
+    ) {
+      yield {
+        type: "error",
+        error: new RouterError("unknown_model", "Unknown or unavailable route"),
+      };
+      return;
+    }
+
+    yield* this.run(request, signal);
   }
 
   /**

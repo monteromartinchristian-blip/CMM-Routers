@@ -1,6 +1,13 @@
 import { RouterError } from "../../core/errors.js";
+import {
+  MAX_PROVIDER_SSE_FRAME_BYTES,
+  parseSseDataLine,
+  splitSseChunks,
+} from "../../core/sse.js";
 import { toAnthropicToolChoice } from "../../core/tool-policy.js";
 import { assertNoSpendPath } from "./spend-guard.js";
+
+export { MAX_PROVIDER_SSE_FRAME_BYTES, parseSseDataLine, splitSseChunks };
 
 export const DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 export const DEFAULT_SECRET_ENV = "COMMAND_CODE_SECRET";
@@ -12,12 +19,8 @@ export const ANTHROPIC_MESSAGES_PATH = "/messages";
 export const DEFAULT_ANTHROPIC_MAX_TOKENS = 1024;
 export const MAX_ANTHROPIC_MAX_TOKENS = 4096;
 
-/**
- * Maximum size of one unterminated upstream SSE frame. A provider that streams
- * a delimited frame without ever terminating it must not grow Router memory
- * without bound; overflow fails the request closed with a protocol error.
- */
-export const MAX_PROVIDER_SSE_FRAME_BYTES = 1024 * 1024;
+// SSE framing rules (frame bound, chunk splitting, data-line extraction) are
+// shared with every OpenAI-compatible transport and re-exported above.
 
 export type CommandCodeWire = "openai-chat-completions" | "anthropic-messages";
 
@@ -525,6 +528,15 @@ export class CommandCodeClient {
         }
       });
     this.secretOverride = options.secret;
+  }
+
+  forExecution(baseUrl: string, secret: string): CommandCodeClient {
+    return new CommandCodeClient({
+      baseUrl,
+      secret,
+      timeoutMs: this.timeoutMs,
+      fetchFn: this.fetchFn,
+    });
   }
 
   wireForUpstreamId(modelId: string): CommandCodeWire {
@@ -1282,22 +1294,4 @@ export function parseAnthropicStreamEvents(bodyText: string): AnthropicStreamSta
     }
   }
   return state;
-}
-
-export function splitSseChunks(bodyText: string): string[] {
-  return bodyText
-    .split("\n\n")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-export function parseSseDataLine(chunk: string): string | null {
-  const lines = chunk.split("\n").map((l) => l.trim());
-  const dataLines = lines
-    .filter((l) => l.startsWith("data:"))
-    .map((l) => l.slice("data:".length).trim());
-  if (dataLines.length === 0) return null;
-  const joined = dataLines.join("\n");
-  if (joined === "[DONE]") return null;
-  return joined;
 }
