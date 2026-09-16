@@ -2,6 +2,63 @@ import { describe, expect, it } from "vitest";
 import { sharedConfigSchema, localConfigSchema } from "../../src/config/schema.js";
 
 describe("config schema", () => {
+  it.each(["apiKey", "accessToken", "secret", "cookie", "oauthToken", "refreshToken"])(
+    "rejects raw Router administrative credential field %s",
+    (field) => {
+      const result = sharedConfigSchema.safeParse({
+        mode: "standalone",
+        host: "127.0.0.1",
+        administrativeConnections: [{
+          connectionId: "connection:openrouter:primary",
+          providerId: "openrouter",
+          connectionKind: "openai-chat-completions",
+          executionSecretRef: "keychain://CMM%20Usage/openrouter-primary",
+          enabled: true,
+          [field]: "raw-secret-value",
+        }],
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it("accepts Router administrative records containing secure references only", () => {
+    const result = sharedConfigSchema.safeParse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      administrativeConnections: [{
+        connectionId: "connection:openrouter:primary",
+        providerId: "openrouter",
+        accountId: "account:primary",
+        productId: "product:api",
+        connectionKind: "openai-chat-completions",
+        executionSecretRef: "keychain://CMM%20Usage/openrouter-primary",
+        observabilitySecretRef: "keychain://CMM%20Usage/openrouter-observability",
+        profileRef: "profile:openrouter:primary",
+        endpointRef: "endpoint:openrouter:primary",
+        enabled: true,
+      }],
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects raw values placed in Router secretRef fields", () => {
+    const result = sharedConfigSchema.safeParse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      administrativeConnections: [{
+        connectionId: "connection:openrouter:primary",
+        providerId: "openrouter",
+        connectionKind: "openai-chat-completions",
+        executionSecretRef: "raw-secret-value",
+        enabled: true,
+      }],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("keeps canonical routeVisibility writable state exact-route only", () => {
     const result = sharedConfigSchema.safeParse({
       mode: "standalone",

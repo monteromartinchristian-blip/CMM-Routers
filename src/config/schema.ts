@@ -336,12 +336,36 @@ const waveProviderEntries = {
   "ollama-cloud": waveProviderSchema(WAVE_PROVIDER_SECRET_ENVS["ollama-cloud"]),
 };
 
+const secureCredentialRefSchema = z
+  .string()
+  .min(1)
+  .regex(
+    /^[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+$/,
+    "secure credential refs must be opaque references, not raw credential values",
+  );
+
+const administrativeConnectionSchema = z
+  .object({
+    connectionId: z.string().min(1),
+    providerId: z.string().min(1),
+    accountId: z.string().min(1).optional(),
+    productId: z.string().min(1).optional(),
+    connectionKind: z.string().min(1),
+    executionSecretRef: secureCredentialRefSchema.optional(),
+    observabilitySecretRef: secureCredentialRefSchema.optional(),
+    profileRef: z.string().min(1).optional(),
+    endpointRef: z.string().min(1).optional(),
+    enabled: z.boolean(),
+  })
+  .strict();
+
 export const sharedConfigSchema = z.object({
   mode: z.literal("standalone"),
   host: z.literal("127.0.0.1"),
   port: z.number().min(1).max(65535).default(8790),
   bearerSecretEnv: z.string().default("CMM_ROUTER_TOKEN"),
   routeVisibility: routeVisibilityPolicySchema,
+  administrativeConnections: z.array(administrativeConnectionSchema).default([]),
   providers: z
     .object({
       chatgpt: chatgptProviderSchema,

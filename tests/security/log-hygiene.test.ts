@@ -43,6 +43,12 @@ describe("runtime log hygiene", () => {
     }
   });
 
+  it("secure credential writing never logs or persists the submitted secret", () => {
+    const source = readSource("catalog/local-secure-credential-writer.ts");
+    expect(source).not.toMatch(/console\.(log|error|debug|warn)/);
+    expect(source).not.toMatch(/writeFile|appendFile/);
+  });
+
   it("normalizes Codex turn statuses to the neutral finish vocabulary", async () => {
     const { normalizeCodexFinishReason } = await import(
       "../../src/providers/codex/adapter.js"
