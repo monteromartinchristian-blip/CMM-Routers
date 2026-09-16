@@ -55,6 +55,28 @@ describe("config bootstrap and provider option wiring", () => {
     expect(config.machineId.length).toBeGreaterThan(0);
   });
 
+  it("normalizes legacy route visibility into migration input instead of writable state", async () => {
+    const legacyRule = {
+      providerId: "test-provider",
+      providerModelId: "provider/model-a",
+      visibleOn: [] as string[],
+    };
+    writeFileSync(
+      join(dir, "shared.json"),
+      JSON.stringify({
+        mode: "standalone",
+        host: "127.0.0.1",
+        routeVisibility: [legacyRule],
+      }),
+    );
+
+    const { loadConfig } = await import("../../src/config/load-config.js");
+    const config = loadConfig(dir);
+
+    expect(config.routeVisibility).toEqual([]);
+    expect(config.routeVisibilityMigrationInput).toEqual([legacyRule]);
+  });
+
   it("threads google agyPath from config into the spawned binary", async () => {
     const { loadConfig } = await import("../../src/config/load-config.js");
     const { ensureSharedConfig } = await import("../../src/config/load-config.js");

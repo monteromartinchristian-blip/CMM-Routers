@@ -368,7 +368,10 @@ function composeSharedCatalog(
     connections: providerConnections,
     modelIdentities,
   });
-  const routeVisibilityPolicy = new RouteVisibilityPolicy(config.routeVisibility);
+  const routeVisibilityPolicy = new RouteVisibilityPolicy(
+    config.routeVisibility,
+    config.routeVisibilityMigrationInput,
+  );
   const accounts: Account[] = [];
   const products: ProviderProduct[] = [];
 

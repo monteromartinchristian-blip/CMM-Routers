@@ -2,6 +2,22 @@ import { describe, expect, it } from "vitest";
 import { sharedConfigSchema, localConfigSchema } from "../../src/config/schema.js";
 
 describe("config schema", () => {
+  it("keeps canonical routeVisibility writable state exact-route only", () => {
+    const result = sharedConfigSchema.safeParse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      routeVisibility: [
+        {
+          providerId: "test-provider",
+          providerModelId: "provider/model-a",
+          visibleOn: [],
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("rejects non-loopback hosts in standalone mode", () => {
     const result = sharedConfigSchema.safeParse({
       mode: "standalone",

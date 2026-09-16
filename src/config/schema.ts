@@ -5,7 +5,6 @@ import {
   isAdministrativeDiscoveryPath,
   isSafeProviderBaseUrl,
 } from "../providers/manifest.js";
-import type { RouteSurface } from "../catalog/types.js";
 
 const providerIdentityRefSchema = z
   .string()
@@ -154,6 +153,24 @@ const legacyRouteVisibilityRuleSchema = z
   .strict();
 
 const routeVisibilityPolicySchema = z
+  .array(routeVisibilityRuleSchema)
+  .default([])
+  .superRefine((rules, context) => {
+    const seen = new Set<string>();
+    rules.forEach((rule, index) => {
+      const key = rule.routeId;
+      if (seen.has(key)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "routeVisibility contains a duplicate routeId rule",
+        });
+      }
+      seen.add(key);
+    });
+  });
+
+const routeVisibilityMigrationInputSchema = z
   .array(z.union([routeVisibilityRuleSchema, legacyRouteVisibilityRuleSchema]))
   .default([])
   .superRefine((rules, context) => {
@@ -353,10 +370,27 @@ export const sharedConfigSchema = z.object({
 export type SharedConfig = z.infer<typeof sharedConfigSchema>;
 export type ProviderCatalogConfig = z.infer<typeof providerCatalogSchema>;
 
-export interface ExactRouteVisibilityRule {
-  routeId: string;
-  visibleOn: RouteSurface[];
-}
+export type ExactRouteVisibilityRule = z.infer<typeof routeVisibilityRuleSchema>;
+export type LegacyRouteVisibilityRule = z.infer<typeof legacyRouteVisibilityRuleSchema>;
+
+const sharedConfigMigrationRawSchema = sharedConfigSchema
+  .extend({ routeVisibility: routeVisibilityMigrationInputSchema })
+  .strict();
+
+export const sharedConfigMigrationInputSchema = sharedConfigMigrationRawSchema.transform(
+  (input) => {
+    const routeVisibility: ExactRouteVisibilityRule[] = [];
+    const routeVisibilityMigrationInput: LegacyRouteVisibilityRule[] = [];
+
+    for (const rule of input.routeVisibility) {
+      if ("routeId" in rule) routeVisibility.push(rule);
+      else routeVisibilityMigrationInput.push(rule);
+    }
+
+    const config = sharedConfigSchema.parse({ ...input, routeVisibility });
+    return { config, routeVisibilityMigrationInput };
+  },
+);
 
 /** Configuration entry shape shared by every provider in the approved wave. */
 export type WaveProviderConfig = z.infer<typeof openAiCompatibleProviderSchema>;

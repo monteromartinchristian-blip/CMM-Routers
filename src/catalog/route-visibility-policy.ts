@@ -1,4 +1,7 @@
-import type { SharedConfig } from "../config/schema.js";
+import type {
+  LegacyRouteVisibilityRule,
+  SharedConfig,
+} from "../config/schema.js";
 import type { RouteSurface, RouteVisibility } from "./types.js";
 
 export interface RouteVisibilityPolicyInput {
@@ -13,6 +16,10 @@ type DeferredRouteVisibilityPolicyInput = Omit<RouteVisibilityPolicyInput, "rout
 
 export type RouteVisibilityResolver = (routeId: string) => RouteVisibility;
 
+function legacyRuleKey(providerId: string, providerModelId: string): string {
+  return `${providerId}\u0000${providerModelId}`;
+}
+
 /**
  * Router-owned product visibility state. It is intentionally independent of
  * connection health, route activation/routability, billing and Usage
@@ -22,12 +29,20 @@ export type RouteVisibilityResolver = (routeId: string) => RouteVisibility;
  */
 export class RouteVisibilityPolicy {
   private readonly exactRules = new Map<string, readonly RouteSurface[]>();
+  private readonly legacyMigrationRules = new Map<string, readonly RouteSurface[]>();
 
-  constructor(rules: SharedConfig["routeVisibility"] = []) {
+  constructor(
+    rules: SharedConfig["routeVisibility"] = [],
+    legacyMigrationInput: readonly LegacyRouteVisibilityRule[] = [],
+  ) {
     for (const rule of rules) {
-      if ("routeId" in rule) {
-        this.exactRules.set(rule.routeId, [...rule.visibleOn]);
-      }
+      this.exactRules.set(rule.routeId, [...rule.visibleOn]);
+    }
+    for (const rule of legacyMigrationInput) {
+      this.legacyMigrationRules.set(
+        legacyRuleKey(rule.providerId, rule.providerModelId),
+        [...rule.visibleOn],
+      );
     }
   }
 
@@ -40,11 +55,19 @@ export class RouteVisibilityPolicy {
       return (routeId) => this.resolve({ ...input, routeId });
     }
 
-    const configured = this.exactRules.get(input.routeId);
+    const exactConfigured = this.exactRules.get(input.routeId);
+    const legacyConfigured = this.legacyMigrationRules.get(
+      legacyRuleKey(input.providerId, input.providerModelId),
+    );
     const defaultVisibleOn: RouteSurface[] = input.toolCapable
       ? ["cmmchat_model_picker", "cmmcode_model_picker", "admin_console"]
       : ["cmmchat_model_picker", "admin_console"];
-    const requested = configured === undefined ? defaultVisibleOn : [...configured];
+    const requested =
+      exactConfigured !== undefined
+        ? [...exactConfigured]
+        : legacyConfigured !== undefined
+          ? [...legacyConfigured]
+          : defaultVisibleOn;
 
     if (input.exactRouteExecutable) return { visibleOn: requested };
     return {

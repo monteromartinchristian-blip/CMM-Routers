@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sharedConfigSchema } from "../../src/config/schema.js";
+import { sharedConfigMigrationInputSchema } from "../../src/config/schema.js";
 import { loadConfig } from "../../src/config/load-config.js";
 
 const REPO = join(import.meta.dirname, "../..");
@@ -32,7 +32,7 @@ function runPreflight(configDir: string): { rc: number; output: string } {
 
 /** Production reference path: the schema loadConfig() parses with. */
 function productionAccepts(raw: unknown, dir: string): boolean {
-  if (!sharedConfigSchema.safeParse(raw).success) return false;
+  if (!sharedConfigMigrationInputSchema.safeParse(raw).success) return false;
   const saved = new Map(PAYG_VARS.map((k) => [k, process.env[k]]));
   for (const key of PAYG_VARS) delete process.env[key];
   try {

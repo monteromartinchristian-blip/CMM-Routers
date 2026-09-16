@@ -1,11 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { sharedConfigSchema, localConfigSchema, type SharedConfig } from "./schema.js";
+import {
+  sharedConfigMigrationInputSchema,
+  localConfigSchema,
+  type LegacyRouteVisibilityRule,
+  type SharedConfig,
+} from "./schema.js";
 import { getMachineId } from "./machine-id.js";
 import { assertNoPaygFallback } from "../security/payg-guard.js";
 
 export interface RouterConfig extends SharedConfig {
   machineId: string;
+  routeVisibilityMigrationInput?: readonly LegacyRouteVisibilityRule[];
 }
 
 const BOOTSTRAP_SHARED_CONFIG = {
@@ -71,7 +77,8 @@ export function loadConfig(configDir?: string): RouterConfig {
     sharedRaw = {};
   }
 
-  const shared = sharedConfigSchema.parse(sharedRaw);
+  const { config: shared, routeVisibilityMigrationInput } =
+    sharedConfigMigrationInputSchema.parse(sharedRaw);
 
   const localPath = resolve(baseDir, "local.json");
   let localRaw: unknown = {};
@@ -89,5 +96,6 @@ export function loadConfig(configDir?: string): RouterConfig {
   return {
     ...shared,
     machineId,
+    routeVisibilityMigrationInput,
   };
 }
