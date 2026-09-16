@@ -43,6 +43,29 @@ describe("config schema", () => {
     expect(result.success).toBe(true);
   });
 
+  it.each([
+    "env://OPENROUTER_API_KEY",
+    "https://user:raw-secret@example.com/credential",
+    "https://example.com/credential?apiKey=raw-secret",
+    "keychain://CMM%20Usage/openrouter-primary?secret=raw-secret",
+    "keychain://CMM%20Usage/openrouter-primary#raw-secret",
+    "keychain://Other%20Service/openrouter-primary",
+  ])("rejects unsupported or credential-bearing Router secret ref %s", (secretRef) => {
+    const result = sharedConfigSchema.safeParse({
+      mode: "standalone",
+      host: "127.0.0.1",
+      administrativeConnections: [{
+        connectionId: "connection:openrouter:primary",
+        providerId: "openrouter",
+        connectionKind: "openai-chat-completions",
+        executionSecretRef: secretRef,
+        enabled: true,
+      }],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("rejects raw values placed in Router secretRef fields", () => {
     const result = sharedConfigSchema.safeParse({
       mode: "standalone",

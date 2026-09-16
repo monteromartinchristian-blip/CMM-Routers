@@ -336,13 +336,35 @@ const waveProviderEntries = {
   "ollama-cloud": waveProviderSchema(WAVE_PROVIDER_SECRET_ENVS["ollama-cloud"]),
 };
 
+const USAGE_KEYCHAIN_REF_PREFIX = "keychain://CMM%20Usage/";
+
+function isCanonicalUsageKeychainRef(value: string): boolean {
+  if (!value.startsWith(USAGE_KEYCHAIN_REF_PREFIX)) return false;
+  const encodedAccount = value.slice(USAGE_KEYCHAIN_REF_PREFIX.length);
+  if (
+    encodedAccount.length === 0 ||
+    encodedAccount.includes("/") ||
+    encodedAccount.includes("?") ||
+    encodedAccount.includes("#") ||
+    /\s/.test(encodedAccount)
+  ) {
+    return false;
+  }
+
+  try {
+    const account = decodeURIComponent(encodedAccount);
+    return account.length > 0 && encodeURIComponent(account) === encodedAccount;
+  } catch {
+    return false;
+  }
+}
+
 const secureCredentialRefSchema = z
   .string()
   .min(1)
-  .regex(
-    /^[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+$/,
-    "secure credential refs must be opaque references, not raw credential values",
-  );
+  .refine(isCanonicalUsageKeychainRef, {
+    message: "secure credential refs must use canonical CMM Usage Keychain references",
+  });
 
 const administrativeConnectionSchema = z
   .object({
