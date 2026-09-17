@@ -161,7 +161,7 @@ export async function createProductionUsageRuntime(
     throw error;
   }
   const visibility = new VisibilityStore(store);
-  const providerDirectory = createDefaultProviderDirectory(config.integrations);
+  const providerDirectory = createDefaultProviderDirectory();
   const routerCatalog = demoFixture
     ? createPublicSafeDemoRouterCatalogSource(store)
     : options.routerCatalog ?? emptyRouterCatalogSource();

@@ -155,7 +155,7 @@ async function setup(
   await seedCatalogScenario(store);
   const queries = new UsageQueryService(store, { now: () => new Date("2026-09-14T18:10:00.000Z") });
   const visibility = new VisibilityStore(store);
-  const directory = createDefaultProviderDirectory([]);
+  const directory = createDefaultProviderDirectory();
   const catalog = new PresentationCatalogService(
     { read: () => options.projection ?? projection() },
     store,
@@ -394,7 +394,7 @@ describe("Router authority delegation for the Usage catalog", () => {
       },
       store,
       queries,
-      createDefaultProviderDirectory([]),
+      createDefaultProviderDirectory(),
     );
 
     expect((await catalog.listRoutes()).find((route) => route.routeId === "route:openrouter:claude")?.routable)

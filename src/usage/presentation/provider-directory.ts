@@ -1,4 +1,3 @@
-import type { UsageIntegrationDefinition } from "../runtime/configured-runtime.js";
 import type {
   ProviderDirectoryCapabilities,
   ProviderDirectoryEntry,
@@ -8,6 +7,11 @@ import type {
 
 interface ProviderDescriptor {
   integrationType: string;
+  /**
+   * Canonical Router provider id. This is the join key to Router connection
+   * truth; `integrationType` is only the stable product-facing identifier.
+   */
+  providerId: string;
   displayName: string;
   shortDescription: string;
   category: ProviderCategory;
@@ -18,6 +22,7 @@ interface ProviderDescriptor {
 const descriptors: readonly ProviderDescriptor[] = [
   {
     integrationType: "command-code",
+    providerId: "command-code",
     displayName: "Command Code",
     shortDescription: "Command Code subscription usage and quota metadata.",
     category: "subscription",
@@ -32,6 +37,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "chatgpt-subscription",
+    providerId: "chatgpt",
     displayName: "ChatGPT / Codex",
     shortDescription: "ChatGPT and Codex subscription usage.",
     category: "subscription",
@@ -46,6 +52,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "claude-subscription",
+    providerId: "claude",
     displayName: "Claude",
     shortDescription: "Claude subscription usage windows.",
     category: "subscription",
@@ -60,6 +67,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "google-ai-pro",
+    providerId: "google",
     displayName: "Google AI Pro",
     shortDescription: "Google AI Pro / Antigravity access and quota metadata.",
     category: "subscription",
@@ -74,6 +82,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "qwen-token-plan",
+    providerId: "qwen-token-plan",
     displayName: "Qwen Token Plan",
     shortDescription: "Qwen Cloud subscription token-plan capacity.",
     category: "subscription",
@@ -88,6 +97,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "openai-api",
+    providerId: "openai-api",
     displayName: "OpenAI API",
     shortDescription: "OpenAI API usage and costs.",
     category: "api",
@@ -102,6 +112,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "deepseek",
+    providerId: "deepseek",
     displayName: "DeepSeek",
     shortDescription: "DeepSeek API balance and usage metadata.",
     category: "api",
@@ -116,6 +127,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "qwen-payg",
+    providerId: "qwen-payg",
     displayName: "Qwen Model Studio",
     shortDescription: "Qwen Model Studio pay-as-you-go API access.",
     category: "api",
@@ -130,6 +142,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "openrouter",
+    providerId: "openrouter",
     displayName: "OpenRouter",
     shortDescription: "OpenRouter models and shared prepaid balance.",
     category: "aggregator",
@@ -144,6 +157,7 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
   {
     integrationType: "openai-compatible",
+    providerId: "custom-openai-compatible",
     displayName: "Custom Endpoint",
     shortDescription: "Connect an OpenAI-compatible local or remote endpoint.",
     category: "custom_endpoint",
@@ -158,45 +172,26 @@ const descriptors: readonly ProviderDescriptor[] = [
   },
 ];
 
+/**
+ * Static presentation metadata for the Providers product surface.
+ *
+ * No longer derives connected/disabled state from Usage integrations.
+ * Dynamic connection state comes from the Router projection and is joined
+ * by `PresentationCatalogService`.
+ */
 export class ProviderDirectory {
-  private definitions: UsageIntegrationDefinition[];
-
   constructor(
-    definitions: readonly UsageIntegrationDefinition[],
     private readonly providerDescriptors: readonly ProviderDescriptor[] = descriptors,
-  ) {
-    this.definitions = [...definitions];
-  }
-
-  replaceDefinitions(definitions: readonly UsageIntegrationDefinition[]): void {
-    this.definitions = [...definitions];
-  }
-
-  instanceIds(integrationType: string): string[] {
-    return this.definitions
-      .filter((definition) => definition.type === integrationType)
-      .map((definition) => definition.id)
-      .sort();
-  }
+  ) {}
 
   list(): ProviderDirectoryEntry[] {
-    return this.providerDescriptors.map((descriptor) => {
-      const instances = this.definitions.filter(
-        (definition) => definition.type === descriptor.integrationType,
-      );
-      const enabledCount = instances.filter((definition) => definition.enabled).length;
-      return {
-        ...descriptor,
-        state: instances.length === 0
-          ? "available"
-          : enabledCount === 0
-            ? "disabled"
-            : "connected",
-        connectedInstanceCount: instances.length,
-        connectionMethods: [...descriptor.connectionMethods],
-        capabilities: { ...descriptor.capabilities },
-      };
-    });
+    return this.providerDescriptors.map((descriptor) => ({
+      ...descriptor,
+      state: "available" as const,
+      connectedInstanceCount: 0,
+      connectionMethods: [...descriptor.connectionMethods],
+      capabilities: { ...descriptor.capabilities },
+    }));
   }
 
   get(integrationType: string): ProviderDirectoryEntry | undefined {
@@ -204,8 +199,6 @@ export class ProviderDirectory {
   }
 }
 
-export function createDefaultProviderDirectory(
-  definitions: readonly UsageIntegrationDefinition[],
-): ProviderDirectory {
-  return new ProviderDirectory(definitions);
+export function createDefaultProviderDirectory(): ProviderDirectory {
+  return new ProviderDirectory();
 }

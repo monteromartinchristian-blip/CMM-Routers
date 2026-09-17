@@ -4,8 +4,8 @@ import {
 } from "../../../src/usage/presentation/provider-directory.js";
 
 describe("ProviderDirectory", () => {
-  it("lists supported providers even when none are configured", () => {
-    const directory = createDefaultProviderDirectory([]);
+  it("lists supported providers as static metadata only", () => {
+    const directory = createDefaultProviderDirectory();
 
     expect(directory.list().map((entry) => entry.integrationType)).toEqual(
       expect.arrayContaining([
@@ -28,35 +28,12 @@ describe("ProviderDirectory", () => {
     });
   });
 
-  it("separates supported, connected, enabled and healthy state", () => {
-    const directory = createDefaultProviderDirectory([
-      { id: "cc", type: "command-code", enabled: false, settings: {} },
-    ]);
-
-    expect(directory.get("command-code")).toMatchObject({
-      state: "disabled",
-      connectedInstanceCount: 1,
-    });
-    expect(directory.get("openrouter")).toMatchObject({
-      state: "available",
-      connectedInstanceCount: 0,
-    });
-  });
-
   it("reports product-safe connection methods and capabilities without adapter settings", () => {
-    const directory = createDefaultProviderDirectory([
-      {
-        id: "router-live",
-        type: "openrouter",
-        enabled: true,
-        credentialRef: "env://OPENROUTER",
-        settings: { baseUrl: "https://example.invalid", internalOnly: "secretish" },
-      },
-    ]);
+    const directory = createDefaultProviderDirectory();
 
     const entry = directory.get("openrouter");
     expect(entry).toMatchObject({
-      state: "connected",
+      state: "available",
       connectionMethods: ["api_key"],
       capabilities: {
         modelDiscovery: true,
@@ -71,37 +48,23 @@ describe("ProviderDirectory", () => {
     expect(JSON.stringify(entry)).not.toContain("internalOnly");
   });
 
-  it("updates connected state and safe instance handles after runtime connection changes", () => {
-    const directory = createDefaultProviderDirectory([]);
-
-    expect(directory.instanceIds("openrouter")).toEqual([]);
-    directory.replaceDefinitions([
-      {
-        id: "openrouter-primary",
-        type: "openrouter",
-        enabled: true,
-        credentialRef: "keychain://CMM%20Usage/openrouter-primary",
-        settings: { baseUrl: "https://example.invalid", privateSetting: "do-not-expose" },
-      },
-    ]);
-
-    expect(directory.get("openrouter")).toMatchObject({ state: "connected", connectedInstanceCount: 1 });
-    expect(directory.instanceIds("openrouter")).toEqual(["openrouter-primary"]);
-    expect(JSON.stringify(directory.list())).not.toContain("credentialRef");
-    expect(JSON.stringify(directory.list())).not.toContain("privateSetting");
-
-    directory.replaceDefinitions([]);
-    expect(directory.get("openrouter")).toMatchObject({ state: "available", connectedInstanceCount: 0 });
-    expect(directory.instanceIds("openrouter")).toEqual([]);
-  });
-
   it("includes generic OpenAI-compatible custom endpoints in the supported directory", () => {
-    const directory = createDefaultProviderDirectory([]);
+    const directory = createDefaultProviderDirectory();
     expect(directory.get("openai-compatible")).toMatchObject({
       displayName: "Custom Endpoint",
       category: "custom_endpoint",
       connectionMethods: ["custom_endpoint"],
       state: "available",
     });
+  });
+
+  it("no longer derives state from Usage integration definitions", () => {
+    const directory = createDefaultProviderDirectory();
+    // Every entry returns the static default; dynamic state is joined by
+    // PresentationCatalogService from the Router projection.
+    for (const entry of directory.list()) {
+      expect(entry.state).toBe("available");
+      expect(entry.connectedInstanceCount).toBe(0);
+    }
   });
 });

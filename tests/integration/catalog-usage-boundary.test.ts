@@ -445,7 +445,7 @@ describe("Legacy Usage visibility migration boundary", () => {
       { read: () => buildRouterCatalogProjection(state.projectionInput) },
       usageStore,
       new UsageQueryService(usageStore),
-      createDefaultProviderDirectory([]),
+      createDefaultProviderDirectory(),
     );
   }
 

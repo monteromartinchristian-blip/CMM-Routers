@@ -13,7 +13,7 @@ export function registerCatalogRoutes(
   // Retained so the registration signature stays stable until the legacy
   // visibility plumbing is removed. Router owns effective route visibility
   // now, so this store is deliberately not consulted for any read below.
-  _legacyVisibility: VisibilityStore,
+  _legacyVisibility?: VisibilityStore,
 ): void {
   fastify.get("/v1/cmm/usage/catalog/providers", async () =>
     redactObject({ data: await catalog.listProviders() }),

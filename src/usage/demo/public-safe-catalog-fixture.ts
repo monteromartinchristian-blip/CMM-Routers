@@ -201,6 +201,36 @@ function demoProductKind(kind: string): ProductKind {
  * composition can never reach a demo identity: production injects the real
  * in-process Router projection instead.
  */
+/**
+ * Demo provider id → canonical Router provider id.
+ *
+ * The demo synthesizes Router truth, so it must emit connections for Router
+ * state (including connected/disabled) to be present at all. Connection rows
+ * therefore carry the canonical Router provider ids the Usage provider
+ * directory joins on, while the demo's own `*:demo:*` ids continue to
+ * namespace its synthetic providers, accounts, products and routes.
+ */
+const CANONICAL_PROVIDER_BY_DEMO: Readonly<Record<string, string>> = {
+  "provider:demo:command-code": "command-code",
+  "provider:demo:chatgpt": "chatgpt",
+  "provider:demo:openrouter": "openrouter",
+  "provider:demo:kira": "kira",
+  "provider:demo:trial": "trial",
+  "provider:demo:local": "custom-openai-compatible",
+};
+
+/**
+ * Demo Router connection id.
+ *
+ * A Router connection binds exactly one account and one product, so the demo
+ * keys its synthetic connection on both. Keying on the account alone would make
+ * routes that share an account but differ in product resolve the wrong product
+ * (and therefore the wrong offer).
+ */
+function demoConnectionId(route: { accountId: string; productId: string }): string {
+  return `demo-connection:${route.accountId}:${route.productId}`;
+}
+
 export function createPublicSafeDemoRouterCatalogSource(
   store: UsageStore,
 ): RouterCatalogSource {
@@ -224,6 +254,30 @@ export function createPublicSafeDemoRouterCatalogSource(
           accountIdByProduct.set(route.productId, route.accountId);
         }
       }
+      // One Router connection per demo account, keyed to the canonical Router
+      // provider id so the Usage provider directory can join to it.
+      const connections = [
+        ...new Map(
+          routes.map((route) => {
+            const demoProviderId =
+              providerIdByProduct.get(route.productId) ?? route.productId;
+            const connectionId = demoConnectionId(route);
+            return [
+              connectionId,
+              {
+                connectionId,
+                providerId:
+                  CANONICAL_PROVIDER_BY_DEMO[demoProviderId] ?? demoProviderId,
+                accountId: route.accountId,
+                productId: route.productId,
+                connectionKind: "openai-chat-completions",
+                status: "ready" as const,
+                identityStatus: "resolved" as const,
+              },
+            ] as const;
+          }),
+        ).values(),
+      ];
       return {
         providers: providers.map((provider) => ({
           providerId: provider.id,
@@ -241,7 +295,7 @@ export function createPublicSafeDemoRouterCatalogSource(
             label: product.displayName,
           }];
         }),
-        connections: [],
+        connections,
         models: models.map((model) => ({
           modelIdentityId: model.id,
           canonicalName: model.canonicalName,
@@ -253,7 +307,7 @@ export function createPublicSafeDemoRouterCatalogSource(
           return [{
             routeId: route.id,
             modelIdentityId: route.modelIdentityId,
-            connectionId: `demo-connection:${route.accountId}`,
+            connectionId: demoConnectionId(route),
             providerId: providerIdByProduct.get(route.productId) ?? route.productId,
             providerModelId: route.providerModelId,
             executionProfile: "default",

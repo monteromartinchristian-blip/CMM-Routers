@@ -252,7 +252,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   if (options.cmmUsageService !== undefined) {
     registerUsageRoutes(fastify, options.cmmUsageService);
   }
-  if (options.cmmUsageCatalog !== undefined && options.cmmUsageVisibility !== undefined) {
+  if (options.cmmUsageCatalog !== undefined) {
     registerCatalogRoutes(fastify, options.cmmUsageCatalog, options.cmmUsageVisibility);
   }
   if (

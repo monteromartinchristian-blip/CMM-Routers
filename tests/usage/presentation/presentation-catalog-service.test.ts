@@ -25,19 +25,19 @@ const stores: SqliteUsageStore[] = [];
  * sources disagree and prove which one the presentation obeys.
  */
 const routerProviders: readonly ProviderSummary[] = [
-  { providerId: "provider:command-code", displayName: "Command Code" },
-  { providerId: "provider:anthropic", displayName: "Anthropic" },
-  { providerId: "provider:google", displayName: "Google AI Pro" },
-  { providerId: "provider:openrouter", displayName: "OpenRouter" },
-  { providerId: "provider:kira", displayName: "Kira AI" },
+  { providerId: "command-code", displayName: "Command Code" },
+  { providerId: "anthropic", displayName: "Anthropic" },
+  { providerId: "google", displayName: "Google AI Pro" },
+  { providerId: "openrouter", displayName: "OpenRouter" },
+  { providerId: "kira", displayName: "Kira AI" },
 ];
 
 const routerProducts: readonly ProductSummary[] = [
-  { productId: "product:command-code:individual-goat", accountId: "account:command-code", providerId: "provider:command-code", kind: "subscription", label: "individual-goat" },
-  { productId: "product:anthropic", accountId: "account:anthropic", providerId: "provider:anthropic", kind: "subscription", label: "Claude subscription" },
-  { productId: "product:google", accountId: "account:google", providerId: "provider:google", kind: "subscription", label: "Google AI Pro" },
-  { productId: "product:openrouter", accountId: "account:openrouter", providerId: "provider:openrouter", kind: "api", label: "OpenRouter credits" },
-  { productId: "product:kira-promo", accountId: "account:kira", providerId: "provider:kira", kind: "promo_pool", label: "Kira free access" },
+  { productId: "product:command-code:individual-goat", accountId: "account:command-code", providerId: "command-code", kind: "subscription", label: "individual-goat" },
+  { productId: "product:anthropic", accountId: "account:anthropic", providerId: "anthropic", kind: "subscription", label: "Claude subscription" },
+  { productId: "product:google", accountId: "account:google", providerId: "google", kind: "subscription", label: "Google AI Pro" },
+  { productId: "product:openrouter", accountId: "account:openrouter", providerId: "openrouter", kind: "api", label: "OpenRouter credits" },
+  { productId: "product:kira-promo", accountId: "account:kira", providerId: "kira", kind: "promo_pool", label: "Kira free access" },
 ];
 
 const routerModels: readonly ModelIdentitySummary[] = [
@@ -91,12 +91,12 @@ function routerRoute(
 }
 
 const routerRoutes: readonly AccessRouteSummary[] = [
-  routerRoute("route:command-code", "provider:command-code", "model:command-code", "command-code"),
-  routerRoute("route:anthropic:claude", "provider:anthropic", "model:claude-sonnet", "claude-sonnet"),
-  routerRoute("route:google:claude", "provider:google", "model:claude-sonnet", "claude-sonnet"),
-  routerRoute("route:openrouter:claude", "provider:openrouter", "model:claude-sonnet", "anthropic/claude-sonnet"),
-  routerRoute("route:openrouter:qwen", "provider:openrouter", "model:qwen-flash", "qwen/qwen-flash"),
-  routerRoute("route:kira:qwen", "provider:kira", "model:qwen-flash", "qwen-flash"),
+  routerRoute("route:command-code", "command-code", "model:command-code", "command-code"),
+  routerRoute("route:anthropic:claude", "anthropic", "model:claude-sonnet", "claude-sonnet"),
+  routerRoute("route:google:claude", "google", "model:claude-sonnet", "claude-sonnet"),
+  routerRoute("route:openrouter:claude", "openrouter", "model:claude-sonnet", "anthropic/claude-sonnet"),
+  routerRoute("route:openrouter:qwen", "openrouter", "model:qwen-flash", "qwen/qwen-flash"),
+  routerRoute("route:kira:qwen", "kira", "model:qwen-flash", "qwen-flash"),
 ];
 
 function projection(
@@ -128,7 +128,7 @@ async function makeCatalog(
   await store.initialize();
   await seedCatalogScenario(store);
   const queries = new UsageQueryService(store, { now: () => new Date(now) });
-  const directory = createDefaultProviderDirectory([]);
+  const directory = createDefaultProviderDirectory();
   const catalog = new PresentationCatalogService(
     routerSource(options.projection ?? projection()),
     store,
@@ -252,7 +252,7 @@ describe("PresentationCatalogService", () => {
     expect(route?.quota).toContainEqual(expect.objectContaining({
       bucketId: "bucket:openrouter:credits",
     }));
-    expect(route?.provider).toEqual({ id: "provider:openrouter", displayName: "OpenRouter" });
+    expect(route?.provider).toEqual({ id: "openrouter", displayName: "OpenRouter" });
     expect(route?.model).toMatchObject({ id: "model:claude-sonnet", displayName: "Claude Sonnet" });
   });
 
@@ -309,15 +309,9 @@ describe("PresentationCatalogService", () => {
     stores.push(store);
     await store.initialize();
     const queries = new UsageQueryService(store);
-    const directory = createDefaultProviderDirectory([
-      {
-        id: "openrouter-primary",
-        type: "openrouter",
-        enabled: true,
-        credentialRef: "keychain://CMM%20Usage/openrouter-primary",
-        settings: { internal: "secretish" },
-      },
-    ]);
+    // Static metadata only: Usage integration definitions no longer feed
+    // connection state or instance handles.
+    const directory = createDefaultProviderDirectory();
     const catalog = new PresentationCatalogService(
       routerSource(projection()),
       store,
@@ -328,9 +322,11 @@ describe("PresentationCatalogService", () => {
     const provider = (await catalog.listProviders()).find(
       (entry) => entry.directory.integrationType === "openrouter",
     );
+    // Connection state and instance handles now come from the Router
+    // projection, never from Usage integration definitions.
     expect(provider).toMatchObject({
       directory: { state: "connected", connectedInstanceCount: 1 },
-      instanceIds: ["openrouter-primary"],
+      instanceIds: ["connection:openrouter"],
     });
     expect(JSON.stringify(provider)).not.toContain("credentialRef");
     expect(JSON.stringify(provider)).not.toContain("secretish");

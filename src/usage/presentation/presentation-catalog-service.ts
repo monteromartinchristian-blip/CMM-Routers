@@ -1,5 +1,6 @@
 import type {
   ProductSummary,
+  ProviderConnectionSummary,
   RouterCatalogProjection,
 } from "../../catalog/projection.js";
 import type { ProductKind, RouteSurface } from "../../catalog/types.js";
@@ -19,6 +20,7 @@ import type {
   CatalogProviderView,
   CatalogRouteEntry,
   CatalogRouteVisibilityView,
+  ProviderDirectoryState,
   QuotaSummary,
   UsageRouteStatus,
 } from "./types.js";
@@ -256,10 +258,31 @@ export class PresentationCatalogService {
   }
 
   async listProviders(): Promise<CatalogProviderView[]> {
-    return this.directory.list().map((entry) => ({
-      directory: entry,
-      instanceIds: this.directory.instanceIds(entry.integrationType),
-    }));
+    const projection = await this.routerCatalog.read();
+    const connectionsByProvider = new Map<string, ProviderConnectionSummary[]>();
+    for (const connection of projection.connections) {
+      const list = connectionsByProvider.get(connection.providerId) ?? [];
+      list.push(connection);
+      connectionsByProvider.set(connection.providerId, list);
+    }
+
+    return this.directory.list().map((entry) => {
+      const connections = connectionsByProvider.get(entry.providerId) ?? [];
+      const enabledCount = connections.filter((c) => c.status !== "disabled").length;
+      const state: ProviderDirectoryState = connections.length === 0
+        ? "available"
+        : enabledCount === 0
+          ? "disabled"
+          : "connected";
+      return {
+        directory: {
+          ...entry,
+          state,
+          connectedInstanceCount: enabledCount,
+        },
+        instanceIds: connections.map((c) => c.connectionId).sort(),
+      };
+    });
   }
 
   private async affectedRoutesByBucket(): Promise<Map<string, string[]>> {

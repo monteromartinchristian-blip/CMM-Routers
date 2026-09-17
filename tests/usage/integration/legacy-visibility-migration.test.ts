@@ -423,7 +423,7 @@ describe("migrateLegacyVisibility", () => {
       { read: () => state.projection },
       store,
       new UsageQueryService(store, { now: () => new Date("2026-09-16T12:00:00.000Z") }),
-      createDefaultProviderDirectory([]),
+      createDefaultProviderDirectory(),
     );
 
     const visibility = await catalog.listRouteVisibility();

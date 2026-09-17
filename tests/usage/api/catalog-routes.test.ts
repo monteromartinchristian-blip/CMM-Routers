@@ -51,18 +51,18 @@ function routerRoute(
  */
 function routerProjection(): RouterCatalogProjection {
   const providers = [
-    { providerId: "provider:command-code", displayName: "Command Code" },
-    { providerId: "provider:anthropic", displayName: "Anthropic" },
-    { providerId: "provider:google", displayName: "Google AI Pro" },
-    { providerId: "provider:openrouter", displayName: "OpenRouter" },
-    { providerId: "provider:kira", displayName: "Kira AI" },
+    { providerId: "command-code", displayName: "Command Code" },
+    { providerId: "anthropic", displayName: "Anthropic" },
+    { providerId: "google", displayName: "Google AI Pro" },
+    { providerId: "openrouter", displayName: "OpenRouter" },
+    { providerId: "kira", displayName: "Kira AI" },
   ];
   const products = [
-    { productId: "product:command-code:individual-goat", accountId: "account:command-code", providerId: "provider:command-code", kind: "subscription" as const, label: "individual-goat" },
-    { productId: "product:anthropic", accountId: "account:anthropic", providerId: "provider:anthropic", kind: "subscription" as const, label: "Claude subscription" },
-    { productId: "product:google", accountId: "account:google", providerId: "provider:google", kind: "subscription" as const, label: "Google AI Pro" },
-    { productId: "product:openrouter", accountId: "account:openrouter", providerId: "provider:openrouter", kind: "api" as const, label: "OpenRouter credits" },
-    { productId: "product:kira-promo", accountId: "account:kira", providerId: "provider:kira", kind: "promo_pool" as const, label: "Kira free access" },
+    { productId: "product:command-code:individual-goat", accountId: "account:command-code", providerId: "command-code", kind: "subscription" as const, label: "individual-goat" },
+    { productId: "product:anthropic", accountId: "account:anthropic", providerId: "anthropic", kind: "subscription" as const, label: "Claude subscription" },
+    { productId: "product:google", accountId: "account:google", providerId: "google", kind: "subscription" as const, label: "Google AI Pro" },
+    { productId: "product:openrouter", accountId: "account:openrouter", providerId: "openrouter", kind: "api" as const, label: "OpenRouter credits" },
+    { productId: "product:kira-promo", accountId: "account:kira", providerId: "kira", kind: "promo_pool" as const, label: "Kira free access" },
   ];
   const accounts: readonly AccountSummary[] = products.map((product) => ({
     accountId: product.accountId,
@@ -90,14 +90,14 @@ function routerProjection(): RouterCatalogProjection {
       { modelIdentityId: "model:command-code", canonicalName: "Command Code", family: "Command", aliases: [] },
     ],
     routes: [
-      routerRoute("route:command-code", "provider:command-code", "model:command-code", "command-code"),
-      routerRoute("route:anthropic:claude", "provider:anthropic", "model:claude-sonnet", "claude-sonnet"),
-      routerRoute("route:google:claude", "provider:google", "model:claude-sonnet", "claude-sonnet"),
-      routerRoute("route:openrouter:claude", "provider:openrouter", "model:claude-sonnet", "anthropic/claude-sonnet", {
+      routerRoute("route:command-code", "command-code", "model:command-code", "command-code"),
+      routerRoute("route:anthropic:claude", "anthropic", "model:claude-sonnet", "claude-sonnet"),
+      routerRoute("route:google:claude", "google", "model:claude-sonnet", "claude-sonnet"),
+      routerRoute("route:openrouter:claude", "openrouter", "model:claude-sonnet", "anthropic/claude-sonnet", {
         visibility: { visibleOn: ["admin_console"] },
       }),
-      routerRoute("route:openrouter:qwen", "provider:openrouter", "model:qwen-flash", "qwen/qwen-flash"),
-      routerRoute("route:kira:qwen", "provider:kira", "model:qwen-flash", "qwen-flash"),
+      routerRoute("route:openrouter:qwen", "openrouter", "model:qwen-flash", "qwen/qwen-flash"),
+      routerRoute("route:kira:qwen", "kira", "model:qwen-flash", "qwen-flash"),
     ],
   };
 }
@@ -117,15 +117,7 @@ async function fixture() {
     routeId: "route:openrouter:claude",
     state: "visible",
   });
-  const directory = createDefaultProviderDirectory([
-    {
-      id: "command-code-live",
-      type: "command-code",
-      enabled: true,
-      credentialRef: "keychain://CMM%20Usage/private-test-ref",
-      settings: { baseUrl: "https://api.commandcode.ai" },
-    },
-  ]);
+  const directory = createDefaultProviderDirectory();
   const routerCatalog: RouterCatalogSource = { read: () => routerProjection() };
   const catalog = new PresentationCatalogService(
     routerCatalog,

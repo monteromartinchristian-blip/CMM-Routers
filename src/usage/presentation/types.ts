@@ -107,6 +107,12 @@ export interface ProviderDirectoryCapabilities {
 
 export interface ProviderDirectoryEntry {
   integrationType: string;
+  /**
+   * Canonical Router provider id used to join this static metadata to Router
+   * connection truth. Router owns connection state; `integrationType` remains
+   * the stable product-facing identifier for this directory row.
+   */
+  providerId: string;
   displayName: string;
   shortDescription?: string;
   iconKey?: string;
