@@ -339,6 +339,52 @@ describe("RouterAdministrationService", () => {
     expect(state.credentialWriter.values.size).toBe(0);
   });
 
+  it("restores every sibling route changed by failed discovery reconciliation", async () => {
+    const state = setup({ discoveryFails: true });
+    const modelIdentity = {
+      modelIdentityId: buildModelIdentityId({ canonicalName: "openrouter:model-a" }),
+      canonicalName: "openrouter:model-a",
+      aliases: ["model-a"],
+    };
+    state.modelIdentities.upsertExplicit(modelIdentity);
+    state.modelIdentities.bindProviderModel({
+      providerId: "openrouter",
+      connectionId: "openrouter-primary",
+      providerModelId: "model-a",
+      modelIdentityId: modelIdentity.modelIdentityId,
+    });
+
+    for (const executionProfile of ["default", "tools"] as const) {
+      state.routeCatalog.upsert({
+        routeId: buildRouteId({
+          providerId: "openrouter",
+          connectionId: "openrouter-primary",
+          providerModelId: "model-a",
+          executionProfile,
+        }),
+        modelIdentityId: modelIdentity.modelIdentityId,
+        connectionId: "openrouter-primary",
+        providerId: "openrouter",
+        providerModelId: "model-a",
+        executionProfile,
+        capabilities: { chat: true, tools: executionProfile === "tools", streaming: true },
+        billingClass: executionProfile === "default" ? "legacy-default" : "legacy-tools",
+        routable: true,
+        visibility: {
+          visibleOn:
+            executionProfile === "default"
+              ? ["cmmchat_model_picker", "admin_console"]
+              : ["cmmcode_model_picker"],
+        },
+      });
+    }
+    const beforeRoutes = state.routeCatalog.list();
+
+    await expect(state.service.connect(connectInput())).rejects.toThrow(/reconciliation/i);
+
+    expect(state.routeCatalog.list()).toEqual(beforeRoutes);
+  });
+
   it("preserves unrelated catalog mutations that occur after connect rollback baseline", async () => {
     const state = setup({
       routePolicy: () => {

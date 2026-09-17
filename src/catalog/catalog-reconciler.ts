@@ -118,9 +118,12 @@ export class CatalogReconciler {
         .list()
         .filter((route) => route.connectionId === connectionId);
       const routeJournal = this.routeCatalog.beginMutationJournal();
+      // markUnavailable mutates every sibling route sharing this connection and
+      // provider model, so every route of this connection must be captured
+      // before the first mutation.
+      for (const route of existingRoutes) routeJournal.captureRoute(route.routeId);
       const unavailableRouteIds: string[] = [];
       for (const route of existingRoutes) {
-        routeJournal.captureRoute(route.routeId);
         this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
         unavailableRouteIds.push(route.routeId);
       }
@@ -155,6 +158,12 @@ export class CatalogReconciler {
     const modelJournal = this.modelIdentities.beginMutationJournal();
     const routeJournal = this.routeCatalog.beginMutationJournal();
     try {
+      // Capture every route of this connection up front: markUnavailable
+      // mutates all sibling routes sharing a connection and provider model, so
+      // capturing lazily inside the mutation loop would journal already-mutated
+      // siblings.
+      for (const route of existingRoutes) routeJournal.captureRoute(route.routeId);
+
       const discoveredModelIds = new Set<string>();
       const upsertedRouteIds: string[] = [];
       for (const model of discovered) {
@@ -216,7 +225,6 @@ export class CatalogReconciler {
       const unavailableRouteIds: string[] = [];
       for (const route of existingRoutes) {
         if (!discoveredModelIds.has(route.providerModelId)) {
-          routeJournal.captureRoute(route.routeId);
           this.routeCatalog.markUnavailable(connectionId, route.providerModelId);
           unavailableRouteIds.push(route.routeId);
         }
