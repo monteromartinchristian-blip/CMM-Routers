@@ -49,6 +49,9 @@ import { ProviderConnectionService } from "./catalog/provider-connections.js";
 import { ModelIdentityStore } from "./catalog/model-identities.js";
 import { RouteCatalog } from "./catalog/route-catalog.js";
 import { RouteVisibilityPolicy } from "./catalog/route-visibility-policy.js";
+import { RouterAdministrationService } from "./catalog/router-administration-service.js";
+import { RouterAdminConfigStore } from "./catalog/router-admin-config-store.js";
+import { LocalSecureCredentialWriter } from "./catalog/local-secure-credential-writer.js";
 import {
   CatalogReconciler,
   type CatalogRoutePolicy,
@@ -86,6 +89,13 @@ export interface ProductionComposition {
   routeVisibilityPolicy: RouteVisibilityPolicy;
   catalogReconciler: CatalogReconciler;
   runtimeBridge: CatalogRuntimeBridge;
+  /**
+   * Router-owned privileged administration authority. Built from the same
+   * canonical directory/connections/bindings/catalog/reconciler graph used by
+   * execution, so privileged HTTP mutation and inference share one Router
+   * state graph.
+   */
+  routerAdministration: RouterAdministrationService;
   accounts: Account[];
   products: ProviderProduct[];
   registeredProviders: string[];
@@ -128,6 +138,12 @@ export interface ProductionCompositionOptions {
   };
   /** Minimum interval between live catalog reconciliations. */
   catalogReconcileIntervalMs?: number | undefined;
+  /**
+   * Config directory backing Router administrative persistence. Defaults to
+   * `CMM_CONFIG_DIR` (or the process config directory) so privileged
+   * administration writes land beside the configuration it was loaded from.
+   */
+  configDir?: string | undefined;
 }
 
 function isWaveProviderId(id: string): id is WaveProviderId {
@@ -328,6 +344,7 @@ function composeSharedCatalog(
   registry: ProviderRegistry,
   registeredProviders: readonly string[],
   options: ProductionCompositionOptions,
+  configDir: string | undefined,
 ): Pick<
   ProductionComposition,
   | "providerDirectory"
@@ -338,6 +355,7 @@ function composeSharedCatalog(
   | "routeVisibilityPolicy"
   | "catalogReconciler"
   | "runtimeBridge"
+  | "routerAdministration"
   | "accounts"
   | "products"
 > {
@@ -572,6 +590,19 @@ function composeSharedCatalog(
     },
   });
 
+  // Privileged administration is constructed from the exact canonical graph
+  // above. It is the only Router mutation authority: no second directory,
+  // connection, binding or route state graph is created for administration.
+  const routerAdministration = new RouterAdministrationService({
+    directory: providerDirectory,
+    connections: providerConnections,
+    credentialBindings,
+    routeCatalog,
+    catalogReconciler,
+    configStore: new RouterAdminConfigStore(configDir),
+    credentialWriter: new LocalSecureCredentialWriter(),
+  });
+
   return {
     providerDirectory,
     credentialBindings,
@@ -581,6 +612,7 @@ function composeSharedCatalog(
     routeVisibilityPolicy,
     catalogReconciler,
     runtimeBridge,
+    routerAdministration,
     accounts,
     products,
   };
@@ -617,7 +649,7 @@ export async function createProductionRegistry(
   // config/shared.example.json. Install it as shared.json (never
   // overwriting, never secrets) before parsing. CMM_CONFIG_DIR isolates
   // the compiled-process E2E onto a temp config dir.
-  const configDir = process.env.CMM_CONFIG_DIR;
+  const configDir = options.configDir ?? process.env.CMM_CONFIG_DIR;
   if (!config) ensureSharedConfigFromExample(configDir);
   const resolved = config ?? loadConfig(configDir);
   // Inventory invariant before anything is registered: unique route ids and
@@ -643,7 +675,13 @@ export async function createProductionRegistry(
       skippedProviders,
       toolBroker,
       ...(await (async () => {
-        const shared = composeSharedCatalog(resolved, registry, registeredProviders, options);
+        const shared = composeSharedCatalog(
+          resolved,
+          registry,
+          registeredProviders,
+          options,
+          configDir,
+        );
         await shared.catalogReconciler.reconcileAll({ force: true });
         return shared;
       })()),
@@ -785,7 +823,13 @@ export async function createProductionRegistry(
 
   await registry.refresh();
 
-  const sharedCatalog = composeSharedCatalog(resolved, registry, registeredProviders, options);
+  const sharedCatalog = composeSharedCatalog(
+    resolved,
+    registry,
+    registeredProviders,
+    options,
+    configDir,
+  );
   await sharedCatalog.catalogReconciler.reconcileAll({ force: true });
 
   return {
@@ -832,6 +876,7 @@ export function createProductionServer(
           ...(usage.connections === undefined ? {} : { cmmUsageConnections: usage.connections }),
         }),
     runtimeBridge: composition.runtimeBridge,
+    routerAdministration: composition.routerAdministration,
     catalogProjectionInput: {
       directory: composition.providerDirectory,
       accounts: composition.accounts,

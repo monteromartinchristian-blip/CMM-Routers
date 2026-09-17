@@ -143,6 +143,63 @@ describe("production composition root", () => {
     });
   });
 
+  it("exposes router administration over the canonical production catalog", async () => {
+    process.env.CMM_TEST_PROVIDER = "scripted";
+    writeConfig();
+    const { loadConfig } = await import("../../src/config/load-config.js");
+    const composition = await createProductionRegistry(loadConfig(dir), { configDir: dir });
+    const usage = await createProductionUsageRuntime({
+      configDir: dir,
+      databasePath: ":memory:",
+      catalog: new UsageIntegrationCatalog(),
+    });
+    const server = createProductionServer(composition, "composition-test-secret", undefined, {
+      service: usage.runtime.service,
+      token: "usage-read-only",
+      managementToken: "router-administration",
+    });
+
+    const before = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: { authorization: "Bearer composition-test-secret" },
+    });
+    expect(before.statusCode).toBe(200);
+    const route = before.json().routes[0] as {
+      routeId: string;
+      visibility: { visibleOn: string[] };
+    };
+    expect(composition.routerAdministration).toBeDefined();
+    expect(composition.routeCatalog.get(route.routeId)).toBeDefined();
+
+    const mutation = await server.inject({
+      method: "PATCH",
+      url: `/v1/cmm/catalog/routes/${encodeURIComponent(route.routeId)}/visibility`,
+      headers: {
+        authorization: "Bearer router-administration",
+        "content-type": "application/json",
+      },
+      payload: { visibleOn: ["admin_console"] },
+    });
+    expect(mutation.statusCode).toBe(200);
+    expect(mutation.body).not.toMatch(/secret|keychain/i);
+
+    // The privileged handler must mutate the same canonical graph the read
+    // projection and execution path use, never a second Router state graph.
+    expect(composition.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
+    const after = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: { authorization: "Bearer composition-test-secret" },
+    });
+    expect(after.json().routes[0].visibility.visibleOn).toEqual(["admin_console"]);
+
+    await server.close();
+    await usage.close();
+  });
+
   it("/ready reflects provider health", { timeout: 60000 }, async () => {
     writeConfig();
     const { loadConfig } = await import("../../src/config/load-config.js");

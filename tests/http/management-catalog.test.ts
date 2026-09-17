@@ -1,16 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { CatalogReconciler, type CatalogRoutePolicy } from "../../src/catalog/catalog-reconciler.js";
 import { CredentialBindingStore } from "../../src/catalog/credential-bindings.js";
 import { buildModelIdentityId, buildRouteId } from "../../src/catalog/ids.js";
 import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
+import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
+import type { SecureCredentialWriter } from "../../src/catalog/secure-credential-writer.js";
 import type { AccessRoute } from "../../src/catalog/types.js";
 import { buildServer } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
 import { InMemorySecureCredentialResolver } from "../support/in-memory-secure-credential-resolver.js";
 
 const BEARER = "catalog-management-token";
+const MANAGEMENT_BEARER = "catalog-administration-token";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+const adminRoutePolicy: CatalogRoutePolicy = (connection, model) => ({
+  canonicalName: `${connection.providerId}:${model.providerModelId}`,
+  executionProfile: "default",
+  capabilities: { chat: true, tools: false, streaming: true },
+  billingClass: "subscription",
+  routable: false,
+  visibility: { visibleOn: ["admin_console"] },
+});
+
+const unusedCredentialWriter: SecureCredentialWriter = {
+  async write() {
+    throw new Error("catalog projection fixture must not write credentials");
+  },
+  async remove() {
+    throw new Error("catalog projection fixture must not remove credentials");
+  },
+};
+
 const SECRET_REF = "keychain://catalog/private";
 const RAW_SECRET = "catalog-private-secret";
 const PROFILE_PATH = "/Users/example/.config/catalog/private-profile.json";
@@ -140,6 +173,7 @@ function createCatalogState() {
       modelIdentities,
       routeCatalog,
     },
+    credentialBindings,
     routeCatalog,
     visibleRoute,
     hiddenRoute,
@@ -147,14 +181,34 @@ function createCatalogState() {
 }
 
 function createServer(state = createCatalogState()) {
+  const root = mkdtempSync(join(tmpdir(), "cmm-catalog-admin-"));
+  roots.push(root);
+  const { directory, connections, modelIdentities, routeCatalog } = state.projectionInput;
+  const routerAdministration = new RouterAdministrationService({
+    directory,
+    connections,
+    credentialBindings: state.credentialBindings,
+    routeCatalog,
+    catalogReconciler: new CatalogReconciler({
+      connections,
+      modelIdentities,
+      routeCatalog,
+      routePolicy: adminRoutePolicy,
+      minRefreshIntervalMs: 0,
+    }),
+    configStore: new RouterAdminConfigStore(root),
+    credentialWriter: unusedCredentialWriter,
+  });
   return {
     state,
     server: buildServer({
       host: "127.0.0.1",
       port: 0,
       bearerSecret: BEARER,
+      usageManagementToken: MANAGEMENT_BEARER,
       registry: new ProviderRegistry(),
       catalogProjectionInput: state.projectionInput,
+      routerAdministration,
     }),
   };
 }
@@ -256,6 +310,24 @@ describe("GET /v1/cmm/catalog", () => {
     const response = await server.inject({ method: "GET", url: "/v1/cmm/catalog" });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("keeps read-only catalog authentication separate from privileged mutation authentication", async () => {
+    const { server } = createServer();
+
+    const read = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: auth,
+    });
+    expect(read.statusCode).toBe(200);
+
+    const privileged = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: { authorization: `Bearer ${MANAGEMENT_BEARER}` },
+    });
+    expect(privileged.statusCode).toBe(403);
   });
 
   it.each(mutationMethods)(

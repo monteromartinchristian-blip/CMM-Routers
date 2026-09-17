@@ -13,7 +13,12 @@ import {
 } from "../core/consumer-capability.js";
 import type { CatalogRuntimeBridge } from "../catalog/runtime-bridge.js";
 import type { RouterCatalogProjectionInput } from "../catalog/projection.js";
-import { registerManagementCatalog } from "./catalog.js";
+import type { RouterAdministrationService } from "../catalog/router-administration-service.js";
+import {
+  isRouterAdministrationPath,
+  registerManagementCatalog,
+  registerRouterAdministration,
+} from "./catalog.js";
 import type { UsageService as CmmUsageService } from "../usage/service/usage-service.js";
 import { isUsageApiPath, verifyUsageBearer } from "../usage/api/usage-auth.js";
 import { registerUsageRoutes } from "../usage/api/usage-routes.js";
@@ -43,8 +48,20 @@ export interface ServerOptions {
   qoderToken?: string;
   /** Read-only credential scoped to the CMM Usage API surface. */
   usageToken?: string;
-  /** Privileged credential scoped only to CMM Usage connection/visibility mutation. */
+  /**
+   * Privileged credential authorizing Router administrative mutation
+   * (connections, custom endpoints and exact-route visibility). While the CMM
+   * Usage compatibility endpoints still exist, the same credential also
+   * authorizes CMM Usage connection/visibility mutation, which delegates to
+   * Router administration. It is never a read credential.
+   */
   usageManagementToken?: string;
+  /**
+   * Router-owned administration service backing privileged
+   * `/v1/cmm/catalog/**` mutation. Constructed from the same canonical Router
+   * graph used by execution; there is never a second Router state graph.
+   */
+  routerAdministration?: RouterAdministrationService;
   /** Canonical CMM Usage service. When present it owns /v1/cmm/usage*. */
   cmmUsageService?: CmmUsageService;
   /** Preserved product-facing Usage catalog WIP. */
@@ -108,10 +125,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       );
       if (managementCredential) {
         if (options.cmmUsageConnections !== undefined && isUsageMutationPath(request.url)) return;
+        if (
+          options.routerAdministration !== undefined &&
+          isRouterAdministrationPath(request.url)
+        ) {
+          return;
+        }
         return reply.code(403).send({
           error: {
-            type: "usage_management_scope_forbidden",
-            message: "Usage management credential is restricted to mutation endpoints",
+            type: "management_scope_forbidden",
+            message: "Privileged credential is restricted to mutation endpoints",
           },
         });
       }
@@ -194,6 +217,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       fastify,
       options.catalogProjectionInput,
       options.beforeCatalogRead,
+    );
+  }
+  if (
+    options.routerAdministration !== undefined &&
+    options.usageManagementToken !== undefined
+  ) {
+    registerRouterAdministration(
+      fastify,
+      options.routerAdministration,
+      options.usageManagementToken,
     );
   }
 
