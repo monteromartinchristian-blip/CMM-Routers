@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RouterCatalogProjection } from "../../catalog/projection.js";
+import type { RouterAdministrationService } from "../../catalog/router-administration-service.js";
 import type { ProductKind } from "../../catalog/types.js";
 import { SqliteUsageStore } from "../storage/sqlite-usage-store.js";
 import type { UsageStore } from "../storage/usage-store.js";
@@ -19,18 +20,11 @@ import {
   type RouterCatalogSource,
 } from "../presentation/presentation-catalog-service.js";
 import { VisibilityStore } from "../presentation/visibility-store.js";
-import { ManagedConfigStore } from "./managed-config-store.js";
-import {
-  LocalSecureCredentialWriter,
-  type CredentialWriter,
-} from "./credential-writer.js";
 import { ConnectionManagementService } from "../service/connection-management-service.js";
 import {
   PUBLIC_SAFE_DEMO_CONFIG,
   PUBLIC_SAFE_DEMO_MANAGEMENT_TOKEN,
   PUBLIC_SAFE_DEMO_READ_TOKEN,
-  PublicSafeDemoCredentialWriter,
-  PublicSafeDemoManagedConfigStore,
   createPublicSafeDemoIntegrationCatalog,
   seedPublicSafeCatalogFixture,
 } from "../demo/public-safe-catalog-fixture.js";
@@ -40,8 +34,6 @@ export interface ProductionUsageRuntimeOptions {
   databasePath?: string;
   catalog?: UsageIntegrationCatalog;
   credentialResolver?: SecureCredentialResolver;
-  credentialWriter?: CredentialWriter;
-  managedConfigStore?: ManagedConfigStore;
   service?: UsageServiceOptions;
   /**
    * Current canonical Router catalog truth. Production composition injects the
@@ -51,6 +43,15 @@ export interface ProductionUsageRuntimeOptions {
    * them from Usage SQLite.
    */
   routerCatalog?: RouterCatalogSource;
+  /**
+   * Canonical Router administration authority.
+   *
+   * The CMM Usage connection/visibility compatibility endpoints delegate to it
+   * and never hold operational authority of their own. When it is absent those
+   * endpoints fail closed instead of writing a second Router state graph into
+   * Usage storage.
+   */
+  routerAdministration?: RouterAdministrationService;
 }
 
 export interface ProductionUsageRuntime {
@@ -208,19 +209,10 @@ export async function createProductionUsageRuntime(
     runtime.service.queries,
     providerDirectory,
   );
-  const managedConfigStore = demoFixture
-    ? new PublicSafeDemoManagedConfigStore(config)
-    : options.managedConfigStore ?? new ManagedConfigStore(options.configDir);
-  const credentialWriter = demoFixture
-    ? new PublicSafeDemoCredentialWriter()
-    : options.credentialWriter ?? new LocalSecureCredentialWriter();
-  const connections = new ConnectionManagementService(
-    managedConfigStore,
-    credentialWriter,
-    runtime,
-    visibility,
-    (updated) => providerDirectory.replaceDefinitions(updated.integrations),
-  );
+  const connections = new ConnectionManagementService(options.routerAdministration, {
+    collectorRefresh: runtime.service,
+    routerCatalog,
+  });
 
   return {
     config,

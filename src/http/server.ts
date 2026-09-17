@@ -27,7 +27,11 @@ import type { PresentationCatalogService } from "../usage/presentation/presentat
 import type { VisibilityStore } from "../usage/presentation/visibility-store.js";
 import type { RouterTelemetrySink } from "../usage/service/router-telemetry-bridge.js";
 import type { ConnectionManagementService } from "../usage/service/connection-management-service.js";
-import { isUsageMutationPath, verifyUsageManagementBearer } from "../usage/api/connection-auth.js";
+import {
+  isUsageMutationPath,
+  isUsageMutationRequest,
+  verifyUsageManagementBearer,
+} from "../usage/api/connection-auth.js";
 import { registerConnectionRoutes } from "../usage/api/connection-routes.js";
 
 export interface ServerOptions {
@@ -68,7 +72,11 @@ export interface ServerOptions {
   cmmUsageCatalog?: PresentationCatalogService;
   /** Preserved Usage visibility WIP; authority migration follows reconciliation. */
   cmmUsageVisibility?: VisibilityStore;
-  /** Preserved Usage connection-management WIP; authority migration follows reconciliation. */
+  /**
+   * CMM Usage compatibility connection/visibility surface. It is a delegate
+   * over `RouterAdministrationService` and holds no operational authority of
+   * its own, so it is registered only alongside the privileged credential.
+   */
   cmmUsageConnections?: ConnectionManagementService;
   /** Optional sink for normalized inference consumption metadata. */
   routerTelemetry?: RouterTelemetrySink;
@@ -141,7 +149,18 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
       const usageCredential = verifyUsageBearer(request.headers.authorization, options.usageToken);
       if (usageCredential) {
-        if (options.cmmUsageService !== undefined && isUsageApiPath(request.url)) return;
+        // A read-only CMM Usage bearer is never a mutation credential. The
+        // legacy Usage connection/visibility endpoints are privileged
+        // Router-administration delegates, so the read bearer is refused here,
+        // before it can reach a mutation handler. The check is method-aware
+        // because the visibility path also carries a read.
+        if (
+          options.cmmUsageService !== undefined &&
+          isUsageApiPath(request.url) &&
+          !isUsageMutationRequest(request.method, request.url)
+        ) {
+          return;
+        }
         return reply.code(403).send({
           error: {
             type: "usage_scope_forbidden",

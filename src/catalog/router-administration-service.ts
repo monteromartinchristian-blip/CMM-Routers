@@ -135,6 +135,18 @@ export class RouterAdministrationService {
     return this.connectInternal(input);
   }
 
+  /**
+   * Canonical Router connection kind for a provider.
+   *
+   * The privileged administration surface always names the kind explicitly. The
+   * CMM Usage compatibility delegate does not carry one, so it asks the
+   * authority it already consumes instead of inventing a kind of its own. An
+   * unknown provider resolves to `undefined` and the caller must fail closed.
+   */
+  connectionKindFor(providerId: string): ConnectionKind | undefined {
+    return this.directory.get(providerId)?.supportedConnectionKinds[0];
+  }
+
   async disconnect(connectionId: string): Promise<void> {
     const connection = this.connections.get(connectionId);
     if (connection === undefined) throw new Error(`Unknown connection: ${connectionId}`);

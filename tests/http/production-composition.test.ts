@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProductionRegistry, createProductionServer } from "../../src/index.js";
@@ -211,6 +211,75 @@ describe("production composition root", () => {
     expect(composition.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual([
       "admin_console",
     ]);
+
+    await server.close();
+    await usage.close();
+  });
+
+  it("delegates the CMM Usage compatibility surface to the canonical Router administration", async () => {
+    process.env.CMM_TEST_PROVIDER = "scripted";
+    writeConfig();
+    const usageJsonPath = join(dir, "usage.json");
+    const usageJson = `${JSON.stringify({ version: 1, integrations: [] }, null, 2)}\n`;
+    writeFileSync(usageJsonPath, usageJson);
+    const { loadConfig } = await import("../../src/config/load-config.js");
+    const composition = await createProductionRegistry(loadConfig(dir), {
+      configDir: dir,
+      catalogReconcileIntervalMs: 0,
+    });
+    const usage = await createProductionUsageRuntime({
+      configDir: dir,
+      databasePath: ":memory:",
+      catalog: new UsageIntegrationCatalog(),
+      routerAdministration: composition.routerAdministration,
+    });
+    const server = createProductionServer(composition, "composition-test-secret", undefined, {
+      service: usage.runtime.service,
+      token: "usage-read-only",
+      managementToken: "router-administration",
+      connections: usage.connections,
+      visibility: usage.visibility,
+    });
+
+    const catalog = await server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: { authorization: "Bearer composition-test-secret" },
+    });
+    const route = catalog.json().routes[0] as { routeId: string };
+    expect(route.routeId).toBeDefined();
+
+    const readOnly = await server.inject({
+      method: "PATCH",
+      url: "/v1/cmm/usage/catalog/visibility",
+      headers: { authorization: "Bearer usage-read-only", "content-type": "application/json" },
+      payload: { routeId: route.routeId, state: "hidden" },
+    });
+    expect(readOnly.statusCode).toBe(403);
+    expect(composition.routeCatalog.get(route.routeId)?.visibility.visibleOn).not.toEqual([
+      "admin_console",
+    ]);
+
+    const mutation = await server.inject({
+      method: "PATCH",
+      url: "/v1/cmm/usage/catalog/visibility",
+      headers: { authorization: "Bearer router-administration", "content-type": "application/json" },
+      payload: { routeId: route.routeId, state: "hidden" },
+    });
+    expect(mutation.statusCode).toBe(200);
+    // The compatibility endpoint mutates the one canonical Router graph.
+    expect(composition.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
+    const persisted = JSON.parse(readFileSync(join(dir, "shared.json"), "utf8")) as {
+      routeVisibility?: Array<{ routeId: string; visibleOn: string[] }>;
+    };
+    expect(persisted.routeVisibility).toEqual([
+      { routeId: route.routeId, visibleOn: ["admin_console"] },
+    ]);
+    // Usage SQLite never becomes an effective-visibility authority.
+    expect(await usage.visibility.list()).toEqual([]);
+    expect(readFileSync(usageJsonPath, "utf8")).toBe(usageJson);
 
     await server.close();
     await usage.close();

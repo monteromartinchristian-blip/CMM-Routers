@@ -1,15 +1,35 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type {
-  AccessRouteSummary,
-  AccountSummary,
-  ProviderConnectionSummary,
-  RouterCatalogProjection,
+import {
+  CatalogReconciler,
+  type CatalogRoutePolicy,
+} from "../../../src/catalog/catalog-reconciler.js";
+import { CredentialBindingStore } from "../../../src/catalog/credential-bindings.js";
+import { ModelIdentityStore } from "../../../src/catalog/model-identities.js";
+import {
+  buildRouterCatalogProjection,
+  type AccessRouteSummary,
+  type AccountSummary,
+  type ProviderConnectionSummary,
+  type RouterCatalogProjection,
 } from "../../../src/catalog/projection.js";
+import { ProviderConnectionService } from "../../../src/catalog/provider-connections.js";
+import { ProviderDirectory } from "../../../src/catalog/provider-directory.js";
+import { RouteCatalog } from "../../../src/catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "../../../src/catalog/route-visibility-policy.js";
+import { RouterAdminConfigStore } from "../../../src/catalog/router-admin-config-store.js";
+import { RouterAdministrationService } from "../../../src/catalog/router-administration-service.js";
+import type { SecureCredentialResolver } from "../../../src/catalog/secure-credential-resolver.js";
+import type {
+  SecureCredentialWriteResult,
+  SecureCredentialWriter,
+} from "../../../src/catalog/secure-credential-writer.js";
+import type { DiscoveredModel } from "../../../src/core/provider.js";
 import { buildServer } from "../../../src/http/server.js";
 import { ProviderRegistry } from "../../../src/registry/provider-registry.js";
+import { ConnectionManagementService } from "../../../src/usage/service/connection-management-service.js";
 import { UsageAdapterManager } from "../../../src/usage/adapters/adapter-manager.js";
 import { createDefaultProviderDirectory } from "../../../src/usage/presentation/provider-directory.js";
 import {
@@ -426,5 +446,301 @@ describe("Router authority delegation for the Usage catalog", () => {
     } finally {
       await production.close();
     }
+  });
+});
+
+class DelegationCredentialWriter implements SecureCredentialWriter {
+  readonly values = new Map<string, string>();
+
+  async write(bindingId: string, secret: string): Promise<SecureCredentialWriteResult> {
+    const secretRef = `keychain://CMM%20Usage/${encodeURIComponent(bindingId)}`;
+    this.values.set(secretRef, secret);
+    return { secretRef, hint: "••••test" };
+  }
+
+  async remove(secretRef: string): Promise<void> {
+    this.values.delete(secretRef);
+  }
+}
+
+function delegationModel(
+  upstreamModel: string,
+  capability: NonNullable<DiscoveredModel["capability"]>,
+): DiscoveredModel {
+  return {
+    id: `openrouter/${upstreamModel}`,
+    provider: "openrouter",
+    upstreamModel,
+    displayName: upstreamModel,
+    capability,
+  };
+}
+
+const USAGE_JSON_ONLY = `${JSON.stringify({ version: 1, integrations: [] }, null, 2)}\n`;
+
+async function delegationSetup() {
+  const dir = mkdtempSync(join(tmpdir(), "cmm-usage-delegation-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "usage.json"), USAGE_JSON_ONLY);
+
+  const store = new SqliteUsageStore(":memory:");
+  stores.push(store);
+  await store.initialize();
+  await seedCatalogScenario(store);
+
+  const directory = new ProviderDirectory();
+  directory.register({
+    providerId: "openrouter",
+    displayName: "OpenRouter",
+    adapterKind: "openai-compatible",
+    supportedConnectionKinds: ["openai-chat-completions"],
+    discoveryCapabilities: ["models"],
+  });
+  const credentialBindings = new CredentialBindingStore();
+  const credentialWriter = new DelegationCredentialWriter();
+  const credentialResolver: SecureCredentialResolver = {
+    async resolve(secretRef) {
+      const value = credentialWriter.values.get(secretRef);
+      if (value === undefined) throw new Error("missing fixture secret");
+      return { value };
+    },
+  };
+  const providerConnections = new ProviderConnectionService({
+    directory,
+    credentialBindings,
+    credentialResolver,
+    administrativeDiscovery: new Map([
+      [
+        "openrouter",
+        async () => [
+          delegationModel("model-tools", "CHAT_AND_TOOLS"),
+          delegationModel("model-chat", "CHAT_ONLY"),
+        ],
+      ],
+    ]),
+  });
+  const modelIdentities = new ModelIdentityStore();
+  const routeCatalog = new RouteCatalog({ connections: providerConnections, modelIdentities });
+  const routeVisibilityPolicy = new RouteVisibilityPolicy();
+  const routePolicy: CatalogRoutePolicy = (connection, model) => {
+    const toolCapable = model.capabilities?.tools === true;
+    return {
+      canonicalName: `${connection.providerId}:${model.providerModelId}`,
+      executionProfile: "default",
+      capabilities: { chat: true, tools: toolCapable, streaming: true },
+      billingClass: "api",
+      routable: true,
+      visibility: routeVisibilityPolicy.resolve({
+        providerId: connection.providerId,
+        providerModelId: model.providerModelId,
+        toolCapable,
+        exactRouteExecutable: true,
+      }),
+    };
+  };
+  const catalogReconciler = new CatalogReconciler({
+    connections: providerConnections,
+    modelIdentities,
+    routeCatalog,
+    routePolicy,
+    minRefreshIntervalMs: 0,
+  });
+  const administration = new RouterAdministrationService({
+    directory,
+    connections: providerConnections,
+    credentialBindings,
+    routeCatalog,
+    catalogReconciler,
+    configStore: new RouterAdminConfigStore(dir),
+    credentialWriter,
+    routeVisibilityPolicy,
+  });
+  const visibility = new VisibilityStore(store);
+  const connections = new ConnectionManagementService(administration, {
+    routerCatalog: {
+      read: () =>
+        buildRouterCatalogProjection({
+          directory,
+          accounts: [],
+          products: [],
+          connections: providerConnections,
+          modelIdentities,
+          routeCatalog,
+        }),
+    },
+  });
+
+  return {
+    dir,
+    store,
+    visibility,
+    administration,
+    directory,
+    modelIdentities,
+    providerConnections,
+    routeCatalog,
+    routeVisibilityPolicy,
+    connections,
+    usageJson: () => readFileSync(join(dir, "usage.json"), "utf8"),
+    sharedConfig: () => {
+      const path = join(dir, "shared.json");
+      if (!existsSync(path)) return {} as { routeVisibility?: Array<{ routeId: string; visibleOn: string[] }> };
+      return JSON.parse(readFileSync(path, "utf8")) as {
+        routeVisibility?: Array<{ routeId: string; visibleOn: string[] }>;
+      };
+    },
+  };
+}
+
+describe("Router authority delegation for Usage mutations", () => {
+  it("delegates a compatibility connect to the canonical Router graph and not to Usage storage", async () => {
+    const state = await delegationSetup();
+    const before = state.usageJson();
+    const historyBefore = (await state.store.listAccessRoutes()).length;
+
+    const view = await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+
+    // Router owns the connection; Usage fabricates nothing.
+    expect(state.providerConnections.get("openrouter-primary")?.providerId).toBe("openrouter");
+    expect(state.routeCatalog.list().map((route) => route.providerModelId).sort())
+      .toEqual(["model-chat", "model-tools"]);
+    expect(view).toEqual({
+      id: "openrouter-primary",
+      type: "openrouter",
+      enabled: true,
+      executionAuthorized: true,
+      observabilityAuthorized: true,
+    });
+    // Router connection success is reported separately from observability.
+    expect(JSON.stringify(view)).not.toContain("secret-value");
+    expect(JSON.stringify(view)).not.toContain("keychain://");
+    expect(state.usageJson()).toBe(before);
+    expect((await state.store.listAccessRoutes()).length).toBe(historyBefore);
+  });
+
+  it("delegates disconnect without erasing Usage history or route visibility", async () => {
+    const state = await delegationSetup();
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const route = state.routeCatalog.list()[0]!;
+    await state.connections.setVisibility({ scope: "global", routeId: route.routeId, state: "hidden" });
+    const before = state.usageJson();
+    const historyBefore = (await state.store.listAccessRoutes()).map((entry) => entry.id).sort();
+
+    await state.connections.disconnect("openrouter-primary");
+
+    // Router owns connection lifecycle: the connection and its credential
+    // bindings are gone from the canonical graph.
+    expect(state.providerConnections.get("openrouter-primary")).toBeUndefined();
+    expect(state.providerConnections.list()).toEqual([]);
+    // Usage observability is untouched by a Router connection lifecycle change.
+    expect((await state.store.listAccessRoutes()).map((entry) => entry.id).sort()).toEqual(historyBefore);
+    expect(await state.visibility.list()).toEqual([]);
+    expect(state.usageJson()).toBe(before);
+  });
+
+  it("persists legacy visibility as Router-owned state and never into Usage SQLite", async () => {
+    const state = await delegationSetup();
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const routes = state.routeCatalog.list();
+    const toolRoute = routes.find((entry) => entry.providerModelId === "model-tools")!;
+    const chatRoute = routes.find((entry) => entry.providerModelId === "model-chat")!;
+    const before = state.usageJson();
+
+    await state.connections.setVisibility({ scope: "global", routeId: toolRoute.routeId, state: "hidden" });
+    expect(state.routeCatalog.get(toolRoute.routeId)?.visibility.visibleOn).toEqual(["admin_console"]);
+    // Hiding never changes routability, and never touches a sibling route.
+    expect(state.routeCatalog.get(toolRoute.routeId)?.routable).toBe(true);
+    expect(state.routeCatalog.get(chatRoute.routeId)?.visibility.visibleOn).toEqual([
+      "cmmchat_model_picker",
+      "admin_console",
+    ]);
+    // The exact-route rule is Router-owned persisted state.
+    expect(state.sharedConfig().routeVisibility).toEqual([
+      { routeId: toolRoute.routeId, visibleOn: ["admin_console"] },
+    ]);
+
+    await state.connections.setVisibility({ scope: "global", routeId: toolRoute.routeId, state: "visible" });
+    expect(state.routeCatalog.get(toolRoute.routeId)?.visibility.visibleOn).toEqual([
+      "cmmchat_model_picker",
+      "cmmcode_model_picker",
+      "admin_console",
+    ]);
+    await state.connections.setVisibility({ scope: "global", routeId: chatRoute.routeId, state: "visible" });
+    expect(state.routeCatalog.get(chatRoute.routeId)?.visibility.visibleOn).toEqual([
+      "cmmchat_model_picker",
+      "admin_console",
+    ]);
+
+    // Usage SQLite never becomes an effective-visibility authority.
+    expect(await state.visibility.list()).toEqual([]);
+    expect(state.usageJson()).toBe(before);
+  });
+
+  it("keeps an accepted legacy visibility change authoritative across a Router reconcile", async () => {
+    const state = await delegationSetup();
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const route = state.routeCatalog.list()[0]!;
+    await state.connections.setVisibility({ scope: "global", routeId: route.routeId, state: "hidden" });
+
+    await state.administration.refreshModels("openrouter-primary");
+
+    expect(state.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual(["admin_console"]);
+  });
+
+  it("rejects a legacy visibility mutation that names no exact route", async () => {
+    const state = await delegationSetup();
+
+    await expect(
+      state.connections.setVisibility({ scope: "global", providerId: "openrouter", state: "hidden" }),
+    ).rejects.toThrow();
+    expect(await state.visibility.list()).toEqual([]);
+    expect(state.sharedConfig().routeVisibility ?? []).toEqual([]);
+  });
+
+  it("serves the compatibility visibility mutation through the privileged HTTP endpoint", async () => {
+    const state = await delegationSetup();
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret: "chat-bearer",
+      usageToken: "catalog-read-token",
+      usageManagementToken: "router-administration",
+      registry: new ProviderRegistry(),
+      cmmUsageConnections: state.connections,
+      cmmUsageVisibility: state.visibility,
+      routerAdministration: state.administration,
+      catalogProjectionInput: {
+        directory: state.directory,
+        accounts: [],
+        products: [],
+        connections: state.providerConnections,
+        modelIdentities: state.modelIdentities,
+        routeCatalog: state.routeCatalog,
+      },
+    });
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const route = state.routeCatalog.list()[0]!;
+
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/v1/cmm/usage/catalog/visibility",
+      headers: { authorization: "Bearer router-administration", "content-type": "application/json" },
+      payload: { routeId: route.routeId, state: "hidden" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(state.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual(["admin_console"]);
+    expect(await state.visibility.list()).toEqual([]);
+    await server.close();
   });
 });

@@ -916,6 +916,9 @@ async function main() {
     routerCatalog: {
       read: () => buildRouterCatalogProjection(routerCatalogProjectionInput(composition)),
     },
+    // The one Router administration authority. The CMM Usage compatibility
+    // endpoints delegate to it instead of writing a second state graph.
+    routerAdministration: composition.routerAdministration,
   });
   cmmUsage.runtime.service.start();
   const usageToken = await cmmUsage.resolveApiToken();

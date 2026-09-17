@@ -293,7 +293,11 @@ describe("CMM Usage safe catalog API", () => {
       payload: { routeId: "route:openrouter:claude", state: "visible" },
     });
 
-    expect(response.statusCode).toBe(404);
+    // The read-only CMM Usage bearer is refused at the scope boundary: the
+    // legacy visibility path is a privileged Router-administration delegate,
+    // so a read credential never reaches a mutation handler.
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { type: "usage_scope_forbidden" } });
     await server.close();
   });
 });
