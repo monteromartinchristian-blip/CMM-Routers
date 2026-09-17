@@ -10,7 +10,10 @@ interface RouteParams {
 export function registerCatalogRoutes(
   fastify: FastifyInstance,
   catalog: PresentationCatalogService,
-  visibility: VisibilityStore,
+  // Retained so the registration signature stays stable until the legacy
+  // visibility plumbing is removed. Router owns effective route visibility
+  // now, so this store is deliberately not consulted for any read below.
+  _legacyVisibility: VisibilityStore,
 ): void {
   fastify.get("/v1/cmm/usage/catalog/providers", async () =>
     redactObject({ data: await catalog.listProviders() }),
@@ -41,7 +44,10 @@ export function registerCatalogRoutes(
     redactObject({ data: await catalog.listPromotions() }),
   );
 
+  // Compatibility view: reports Router effective visibility, not SQLite
+  // preferences, so a route hidden from every consumer surface reads as hidden
+  // even when a legacy preference row disagrees.
   fastify.get("/v1/cmm/usage/catalog/visibility", async () =>
-    redactObject({ data: await visibility.list() }),
+    redactObject({ data: await catalog.listRouteVisibility() }),
   );
 }

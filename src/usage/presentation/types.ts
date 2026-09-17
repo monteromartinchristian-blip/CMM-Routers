@@ -1,3 +1,5 @@
+import type { RouteSurface } from "../../catalog/types.js";
+import type { RouteCapabilitiesSummary } from "../../catalog/projection.js";
 import type { Confidence, Metric, QuotaStatus, Source, WindowPolicy } from "../domain/types.js";
 
 export type AccessOfferKind = "FREE" | "PROMO" | "INCLUDED" | "TRIAL" | "PAYG" | "UNKNOWN";
@@ -123,13 +125,42 @@ export interface VisibilityPreference {
   state: "visible" | "hidden" | "inherit";
 }
 
+/**
+ * Usage-observed route status.
+ *
+ * This is a historical observation collected by CMM Usage. It is deliberately
+ * named apart from Router routability so it can never be mistaken for current
+ * operational availability; Router owns whether a route can actually execute.
+ */
+export type UsageRouteStatus =
+  | "available"
+  | "temporarily_unavailable"
+  | "unknown";
+
+/**
+ * A current operational route: Router truth with Usage intelligence attached.
+ *
+ * Identity, provider/account/product/model/connection facts, capabilities,
+ * routability and visibility are copied unchanged from the canonical Router
+ * catalog projection. Usage only attaches its own observability fields
+ * (`offer`, `quota`, `usageStatus`, `freshness`) and never overwrites Router
+ * fields.
+ */
 export interface CatalogRouteEntry {
   routeId: string;
-  modelIdentityId?: string;
+  modelIdentityId: string;
+  connectionId: string;
+  providerId: string;
+  providerModelId: string;
+  executionProfile: string;
   provider: {
     id: string;
     displayName: string;
     iconKey?: string;
+  };
+  account?: {
+    id: string;
+    label: string;
   };
   product: {
     id: string;
@@ -140,16 +171,44 @@ export interface CatalogRouteEntry {
     id: string;
     displayName: string;
     family?: string;
-    capabilities?: readonly string[];
+    aliases: readonly string[];
   };
+  /** Router routability. Never derived from Usage observations. */
+  routable: boolean;
+  /** Router capabilities for the exact route. */
+  capabilities: RouteCapabilitiesSummary;
+  /** Router billing class for the exact route. */
+  billingClass: string;
+  /** Router effective visibility, by consumer surface. */
+  visibility: {
+    visibleOn: readonly RouteSurface[];
+  };
+  /** Usage offer intelligence for this exact route. */
   offer: AccessOfferSummary;
+  /** Usage quota intelligence bound to this exact route. */
   quota: readonly QuotaSummary[];
-  availability: "available" | "temporarily_unavailable" | "unknown";
-  visibility: "visible" | "hidden";
+  /** Usage freshness of the attached quota observations. */
   freshness?: {
     observedAt?: string;
     stale: boolean;
   };
+  /** Historical Usage observation. Never current Router availability. */
+  usageStatus: UsageRouteStatus;
+}
+
+/**
+ * Compatibility view of Router effective route visibility.
+ *
+ * It replaces the former SQLite-preference read: `state` is derived from
+ * Router `visibleOn`, so a route hidden from every consumer surface reports
+ * `hidden` even when a legacy preference says otherwise.
+ */
+export interface CatalogRouteVisibilityView {
+  scope: "global";
+  providerId: string;
+  productId: string;
+  routeId: string;
+  state: "visible" | "hidden";
 }
 
 export interface CatalogProviderView {

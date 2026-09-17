@@ -44,6 +44,7 @@ import type { PresentationCatalogService } from "./usage/presentation/presentati
 import type { VisibilityStore } from "./usage/presentation/visibility-store.js";
 import type { ConnectionManagementService } from "./usage/service/connection-management-service.js";
 import { ProviderDirectory } from "./catalog/provider-directory.js";
+import { buildRouterCatalogProjection, type RouterCatalogProjectionInput } from "./catalog/projection.js";
 import { CredentialBindingStore } from "./catalog/credential-bindings.js";
 import { ProviderConnectionService } from "./catalog/provider-connections.js";
 import { ModelIdentityStore } from "./catalog/model-identities.js";
@@ -853,6 +854,26 @@ export interface ProductionUsageServerBinding {
   connections?: ConnectionManagementService;
 }
 
+/**
+ * The one canonical Router graph projection input.
+ *
+ * Both the privileged `/v1/cmm/catalog` read and the CMM Usage catalog read
+ * this exact graph, so Usage never builds a second Router state graph and never
+ * has to call its own HTTP endpoint to learn Router truth.
+ */
+function routerCatalogProjectionInput(
+  composition: ProductionComposition,
+): RouterCatalogProjectionInput {
+  return {
+    directory: composition.providerDirectory,
+    accounts: composition.accounts,
+    products: composition.products,
+    connections: composition.providerConnections,
+    modelIdentities: composition.modelIdentities,
+    routeCatalog: composition.routeCatalog,
+  };
+}
+
 export function createProductionServer(
   composition: ProductionComposition,
   bearerSecret: string,
@@ -878,14 +899,7 @@ export function createProductionServer(
         }),
     runtimeBridge: composition.runtimeBridge,
     routerAdministration: composition.routerAdministration,
-    catalogProjectionInput: {
-      directory: composition.providerDirectory,
-      accounts: composition.accounts,
-      products: composition.products,
-      connections: composition.providerConnections,
-      modelIdentities: composition.modelIdentities,
-      routeCatalog: composition.routeCatalog,
-    },
+    catalogProjectionInput: routerCatalogProjectionInput(composition),
     beforeCatalogRead: async () => {
       await composition.catalogReconciler.reconcileAll();
     },
@@ -895,9 +909,14 @@ export function createProductionServer(
 async function main() {
   const composition = await createProductionRegistry();
   const { config, registry, usageStore, registeredProviders, skippedProviders } = composition;
-  const cmmUsage = await createProductionUsageRuntime(
-    process.env.CMM_CONFIG_DIR === undefined ? {} : { configDir: process.env.CMM_CONFIG_DIR },
-  );
+  const cmmUsage = await createProductionUsageRuntime({
+    ...(process.env.CMM_CONFIG_DIR === undefined ? {} : { configDir: process.env.CMM_CONFIG_DIR }),
+    // In-process Router truth: the same canonical graph that backs
+    // `/v1/cmm/catalog`, read directly instead of over HTTP.
+    routerCatalog: {
+      read: () => buildRouterCatalogProjection(routerCatalogProjectionInput(composition)),
+    },
+  });
   cmmUsage.runtime.service.start();
   const usageToken = await cmmUsage.resolveApiToken();
   const usageManagementToken = await cmmUsage.resolveManagementApiToken();
