@@ -8,6 +8,7 @@ import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "../../src/catalog/route-visibility-policy.js";
 import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
 import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
 import type { SecureCredentialResolver } from "../../src/catalog/secure-credential-resolver.js";
@@ -36,14 +37,24 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-const routePolicy: CatalogRoutePolicy = (connection, model) => ({
-  canonicalName: `${connection.providerId}:${model.providerModelId.replaceAll("/", "-")}`,
-  executionProfile: "default",
-  capabilities: { chat: true, tools: false, streaming: true },
-  billingClass: "api",
-  routable: true,
-  visibility: { visibleOn: ["cmmchat_model_picker", "admin_console"] },
-});
+const routePolicyFor = (
+  routeVisibilityPolicy: RouteVisibilityPolicy,
+): CatalogRoutePolicy => (connection, model) => {
+  const toolCapable = model.capabilities?.tools === true;
+  return {
+    canonicalName: `${connection.providerId}:${model.providerModelId.replaceAll("/", "-")}`,
+    executionProfile: "default",
+    capabilities: { chat: true, tools: toolCapable, streaming: true },
+    billingClass: "api",
+    routable: true,
+    visibility: routeVisibilityPolicy.resolve({
+      providerId: connection.providerId,
+      providerModelId: model.providerModelId,
+      toolCapable,
+      exactRouteExecutable: true,
+    }),
+  };
+};
 
 class TestSecureCredentialWriter implements SecureCredentialWriter {
   readonly values = new Map<string, string>();
@@ -118,11 +129,12 @@ function createRouterState() {
   });
   const modelIdentities = new ModelIdentityStore();
   const routeCatalog = new RouteCatalog({ connections, modelIdentities });
+  const routeVisibilityPolicy = new RouteVisibilityPolicy();
   const catalogReconciler = new CatalogReconciler({
     connections,
     modelIdentities,
     routeCatalog,
-    routePolicy,
+    routePolicy: routePolicyFor(routeVisibilityPolicy),
     minRefreshIntervalMs: 0,
   });
   const configStore = new RouterAdminConfigStore(root);
@@ -134,6 +146,7 @@ function createRouterState() {
     catalogReconciler,
     configStore,
     credentialWriter,
+    routeVisibilityPolicy,
   });
 
   const server = buildServer({
@@ -164,6 +177,7 @@ function createRouterState() {
     directory,
     modelIdentities,
     routeCatalog,
+    routeVisibilityPolicy,
     server,
   };
 }
@@ -290,6 +304,59 @@ describe("Router administration HTTP API", () => {
     ]);
   });
 
+  it("keeps an admin visibility change authoritative across a forced reconcile", async () => {
+    const state = createRouterState();
+    await connectProvider(state);
+    const [routeA, routeB] = state.routeCatalog.list();
+    expect(routeA).toBeDefined();
+    expect(routeB).toBeDefined();
+    const siblingBefore = state.routeCatalog.get(routeB!.routeId);
+
+    const patched = await state.server.inject({
+      method: "PATCH",
+      url: `/v1/cmm/catalog/routes/${encodeURIComponent(routeA!.routeId)}/visibility`,
+      headers: managementAuth,
+      payload: { visibleOn: ["admin_console"] },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(state.routeCatalog.get(routeA!.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
+
+    // A reconcile re-derives every route's visibility from the Router-owned
+    // policy. The operator's admin write must remain the authority afterwards,
+    // otherwise an accepted PATCH is silently reverted.
+    const refreshed = await state.server.inject({
+      method: "POST",
+      url: "/v1/cmm/catalog/connections/openrouter-primary/refresh",
+      headers: managementAuth,
+    });
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.json()).toMatchObject({ failed: false, skipped: false });
+
+    expect(state.routeCatalog.get(routeA!.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
+    expect(state.routeCatalog.get(routeB!.routeId)).toEqual(siblingBefore);
+    expect(state.configStore.read().routeVisibility).toEqual([
+      { routeId: routeA!.routeId, visibleOn: ["admin_console"] },
+    ]);
+
+    const read = await state.server.inject({
+      method: "GET",
+      url: "/v1/cmm/catalog",
+      headers: readAuth,
+    });
+    expect(read.statusCode).toBe(200);
+    const projected = (
+      read.json().routes as Array<{
+        routeId: string;
+        visibility: { visibleOn: string[] };
+      }>
+    ).find((route) => route.routeId === routeA!.routeId);
+    expect(projected?.visibility.visibleOn).toEqual(["admin_console"]);
+  });
+
   it("enables and disables a connection with the management credential", async () => {
     const state = createRouterState();
     await connectProvider(state);
@@ -402,8 +469,10 @@ describe("Router administration HTTP API", () => {
       payload: connectPayload({ providerId: "missing-provider" }),
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(response.statusCode).toBeLessThan(500);
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({
+      error: { type: "router_administration_unknown_target" },
+    });
     expect(state.connections.list()).toEqual(beforeConnections);
     expect(state.configStore.read()).toEqual(beforeConfig);
     expect(state.credentialWriter.writes).toEqual([]);
@@ -422,8 +491,10 @@ describe("Router administration HTTP API", () => {
       payload: connectPayload({ connectionKind: "unsupported-kind" }),
     });
 
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(response.statusCode).toBeLessThan(500);
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: { type: "router_administration_rejected" },
+    });
     expect(state.connections.list()).toEqual(beforeConnections);
     expect(state.configStore.read()).toEqual(beforeConfig);
     expect(state.credentialWriter.writes).toEqual([]);

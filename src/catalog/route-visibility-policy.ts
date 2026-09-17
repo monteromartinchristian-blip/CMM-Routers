@@ -74,4 +74,31 @@ export class RouteVisibilityPolicy {
       visibleOn: requested.filter((surface) => surface === "admin_console"),
     };
   }
+
+  /**
+   * Replaces the in-memory exact rule for one route. Router administration is
+   * the only writer: it calls this alongside `RouteCatalog.setVisibility` so a
+   * later reconcile re-derives the operator's intent instead of the boot-time
+   * snapshot. Legacy provider/model rules stay migration input only; an exact
+   * rule always wins over them.
+   *
+   * Returns the rule it replaced (or `undefined` when the route had none) so a
+   * failed config write can restore the previous authority exactly.
+   */
+  setExactRule(
+    routeId: string,
+    visibleOn: readonly RouteSurface[],
+  ): readonly RouteSurface[] | undefined {
+    const previous = this.exactRules.get(routeId);
+    this.exactRules.set(routeId, [...visibleOn]);
+    return previous === undefined ? undefined : [...previous];
+  }
+
+  /**
+   * Removes an exact rule. Used to undo a rule that did not exist before a
+   * failed administrative write.
+   */
+  clearExactRule(routeId: string): void {
+    this.exactRules.delete(routeId);
+  }
 }

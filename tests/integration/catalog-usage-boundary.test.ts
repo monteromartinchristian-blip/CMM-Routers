@@ -10,6 +10,7 @@ import { buildRouterCatalogProjection } from "../../src/catalog/projection.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "../../src/catalog/route-visibility-policy.js";
 import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
 import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
 import type { SecureCredentialWriter } from "../../src/catalog/secure-credential-writer.js";
@@ -385,6 +386,7 @@ describe("Routers ↔ Usage catalog responsibility boundary", () => {
       catalogReconciler: reconciler,
       configStore: new RouterAdminConfigStore(join(root, "router-config")),
       credentialWriter,
+      routeVisibilityPolicy: new RouteVisibilityPolicy(),
     });
 
     try {

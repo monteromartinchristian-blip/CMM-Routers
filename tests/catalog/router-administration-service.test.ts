@@ -10,6 +10,7 @@ import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "../../src/catalog/route-visibility-policy.js";
 import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
 import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
 import type {
@@ -26,23 +27,33 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-const policy: CatalogRoutePolicy = (connection, model) => {
+const routePolicyFor = (
+  routeVisibilityPolicy: RouteVisibilityPolicy,
+): CatalogRoutePolicy => (connection, model) => {
   if (connection.providerId !== "openrouter") {
     throw new Error("fixture policy only knows configured provider-wave entries");
   }
+  const toolCapable = model.capabilities?.tools === true;
   return {
     canonicalName: `${connection.providerId}:${model.providerModelId.replaceAll("/", "-")}`,
     executionProfile: "default",
     capabilities: {
       chat: true,
-      tools: model.capabilities?.tools === true,
+      tools: toolCapable,
       streaming: true,
     },
     billingClass: "api",
     routable: true,
-    visibility: { visibleOn: ["cmmchat_model_picker", "admin_console"] },
+    visibility: routeVisibilityPolicy.resolve({
+      providerId: connection.providerId,
+      providerModelId: model.providerModelId,
+      toolCapable,
+      exactRouteExecutable: true,
+    }),
   };
 };
+
+const policy = routePolicyFor(new RouteVisibilityPolicy());
 
 class TestSecureCredentialWriter implements SecureCredentialWriter {
   afterWrite?: () => void;
@@ -124,11 +135,12 @@ function setup(options: {
   });
   const modelIdentities = new ModelIdentityStore();
   const routeCatalog = new RouteCatalog({ connections, modelIdentities });
+  const routeVisibilityPolicy = new RouteVisibilityPolicy();
   const reconciler = new CatalogReconciler({
     connections,
     modelIdentities,
     routeCatalog,
-    routePolicy: options.routePolicy ?? policy,
+    routePolicy: options.routePolicy ?? routePolicyFor(routeVisibilityPolicy),
     minRefreshIntervalMs: 0,
   });
   const configStore = new TestRouterAdminConfigStore(root);
@@ -141,6 +153,7 @@ function setup(options: {
     catalogReconciler: reconciler,
     configStore,
     credentialWriter,
+    routeVisibilityPolicy,
   });
 
   return {
@@ -151,6 +164,7 @@ function setup(options: {
     directory,
     modelIdentities,
     routeCatalog,
+    routeVisibilityPolicy,
     service,
   };
 }
@@ -297,6 +311,44 @@ describe("RouterAdministrationService", () => {
     expect(state.configStore.read().routeVisibility).toEqual([
       { routeId: target!.routeId, visibleOn: ["admin_console"] },
     ]);
+  });
+
+  it("keeps an admin visibility change authoritative across a forced reconcile", async () => {
+    const state = setup({ models: ["model-a", "model-b"] });
+    await state.service.connect(connectInput());
+    const [target, sibling] = state.routeCatalog.list();
+
+    await state.service.setRouteVisibility(target!.routeId, ["admin_console"]);
+    await state.service.refreshModels("openrouter-primary");
+
+    expect(state.routeCatalog.get(target!.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
+    expect(state.routeCatalog.get(sibling!.routeId)?.visibility.visibleOn).toContain(
+      "cmmchat_model_picker",
+    );
+  });
+
+  it("restores the in-memory visibility rule when the admin write fails to persist", async () => {
+    const state = setup({ models: ["model-a", "model-b"] });
+    await state.service.connect(connectInput());
+    const [target, sibling] = state.routeCatalog.list();
+    const targetBefore = state.routeCatalog.get(target!.routeId);
+    const siblingBefore = state.routeCatalog.get(sibling!.routeId);
+
+    state.configStore.failWrites = true;
+    await expect(
+      state.service.setRouteVisibility(target!.routeId, ["admin_console"]),
+    ).rejects.toThrow(/persistence failure/i);
+
+    expect(state.routeCatalog.get(target!.routeId)).toEqual(targetBefore);
+    expect(state.configStore.read().routeVisibility).toEqual([]);
+
+    // The rejected rule must not resurface on the next reconcile either.
+    state.configStore.failWrites = false;
+    await state.service.refreshModels("openrouter-primary");
+    expect(state.routeCatalog.get(target!.routeId)).toEqual(targetBefore);
+    expect(state.routeCatalog.get(sibling!.routeId)).toEqual(siblingBefore);
   });
 
   it("creates custom endpoints with Router canonical connection and route identities", async () => {

@@ -9,6 +9,7 @@ import type { CredentialBindingStore } from "./credential-bindings.js";
 import type { ProviderConnectionService } from "./provider-connections.js";
 import type { ProviderDirectory } from "./provider-directory.js";
 import type { RouteCatalog } from "./route-catalog.js";
+import type { RouteVisibilityPolicy } from "./route-visibility-policy.js";
 import type { RouterAdminConfigStore } from "./router-admin-config-store.js";
 import type { SecureCredentialWriter } from "./secure-credential-writer.js";
 import type {
@@ -67,6 +68,12 @@ export interface RouterAdministrationServiceOptions {
   catalogReconciler: CatalogReconciler;
   configStore: RouterAdminConfigStore;
   credentialWriter: SecureCredentialWriter;
+  /**
+   * The single in-memory route visibility authority the reconciler re-derives
+   * from. Administrative visibility writes must update it too, otherwise the
+   * next reconcile silently reverts an accepted change.
+   */
+  routeVisibilityPolicy: RouteVisibilityPolicy;
 }
 
 function stableOpaqueRef(value: string): string {
@@ -111,6 +118,7 @@ export class RouterAdministrationService {
   private readonly reconciler: CatalogReconciler;
   private readonly configStore: RouterAdminConfigStore;
   private readonly credentialWriter: SecureCredentialWriter;
+  private readonly visibilityPolicy: RouteVisibilityPolicy;
 
   constructor(options: RouterAdministrationServiceOptions) {
     this.directory = options.directory;
@@ -120,6 +128,7 @@ export class RouterAdministrationService {
     this.reconciler = options.catalogReconciler;
     this.configStore = options.configStore;
     this.credentialWriter = options.credentialWriter;
+    this.visibilityPolicy = options.routeVisibilityPolicy;
   }
 
   async connect(input: ConnectProviderInput): Promise<SafeConnectionSummary> {
@@ -263,6 +272,10 @@ export class RouterAdministrationService {
     const before = this.routeCatalog.get(routeId);
     if (before === undefined) throw new Error(`Unknown route: ${routeId}`);
     const changed = this.routeCatalog.setVisibility(routeId, visibleOn);
+    // The route catalog is a projection of the visibility authority: updating
+    // only the catalog would let the next reconcile re-derive the route from
+    // the stale boot-time policy and silently revert this accepted write.
+    const previousRule = this.visibilityPolicy.setExactRule(routeId, visibleOn);
     try {
       await this.configStore.update((current) => {
         const nextRule = { routeId, visibleOn: [...visibleOn] };
@@ -274,6 +287,8 @@ export class RouterAdministrationService {
       });
     } catch (error) {
       this.routeCatalog.setVisibility(routeId, before.visibility.visibleOn);
+      if (previousRule === undefined) this.visibilityPolicy.clearExactRule(routeId);
+      else this.visibilityPolicy.setExactRule(routeId, previousRule);
       throw error;
     }
     return changed;

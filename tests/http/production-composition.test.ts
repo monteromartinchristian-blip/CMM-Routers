@@ -147,7 +147,14 @@ describe("production composition root", () => {
     process.env.CMM_TEST_PROVIDER = "scripted";
     writeConfig();
     const { loadConfig } = await import("../../src/config/load-config.js");
-    const composition = await createProductionRegistry(loadConfig(dir), { configDir: dir });
+    // `catalogReconcileIntervalMs: 0` disables the 30s refresh throttle so the
+    // read path below reconciles for real. With the production default the
+    // read would be skipped, which hides whether an accepted admin visibility
+    // write survives reconciliation.
+    const composition = await createProductionRegistry(loadConfig(dir), {
+      configDir: dir,
+      catalogReconcileIntervalMs: 0,
+    });
     const usage = await createProductionUsageRuntime({
       configDir: dir,
       databasePath: ":memory:",
@@ -194,7 +201,16 @@ describe("production composition root", () => {
       url: "/v1/cmm/catalog",
       headers: { authorization: "Bearer composition-test-secret" },
     });
-    expect(after.json().routes[0].visibility.visibleOn).toEqual(["admin_console"]);
+    expect(after.statusCode).toBe(200);
+    const afterRoute = after.json().routes[0] as {
+      routeId: string;
+      visibility: { visibleOn: string[] };
+    };
+    expect(afterRoute.routeId).toBe(route.routeId);
+    expect(afterRoute.visibility.visibleOn).toEqual(["admin_console"]);
+    expect(composition.routeCatalog.get(route.routeId)?.visibility.visibleOn).toEqual([
+      "admin_console",
+    ]);
 
     await server.close();
     await usage.close();

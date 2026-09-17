@@ -601,6 +601,7 @@ function composeSharedCatalog(
     catalogReconciler,
     configStore: new RouterAdminConfigStore(configDir),
     credentialWriter: new LocalSecureCredentialWriter(),
+    routeVisibilityPolicy,
   });
 
   return {

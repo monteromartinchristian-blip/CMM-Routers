@@ -9,6 +9,7 @@ import { ModelIdentityStore } from "../../src/catalog/model-identities.js";
 import { ProviderConnectionService } from "../../src/catalog/provider-connections.js";
 import { ProviderDirectory } from "../../src/catalog/provider-directory.js";
 import { RouteCatalog } from "../../src/catalog/route-catalog.js";
+import { RouteVisibilityPolicy } from "../../src/catalog/route-visibility-policy.js";
 import { RouterAdminConfigStore } from "../../src/catalog/router-admin-config-store.js";
 import { RouterAdministrationService } from "../../src/catalog/router-administration-service.js";
 import type { SecureCredentialWriter } from "../../src/catalog/secure-credential-writer.js";
@@ -198,6 +199,7 @@ function createServer(state = createCatalogState()) {
     }),
     configStore: new RouterAdminConfigStore(root),
     credentialWriter: unusedCredentialWriter,
+    routeVisibilityPolicy: new RouteVisibilityPolicy(),
   });
   return {
     state,
