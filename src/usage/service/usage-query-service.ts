@@ -6,6 +6,7 @@ import type {
   Product,
   Provider,
   QuotaBucket,
+  QuotaSnapshot,
   QuotaStatus,
   RouteHealth,
   SubscriptionPeriod,
@@ -18,6 +19,18 @@ import {
   type ReconciledQuotaState,
 } from "../reconciliation/reconciler.js";
 import type { UsageStore } from "../storage/usage-store.js";
+
+/**
+ * Historical Usage for one canonical route, with an explicit marker for
+ * whether that route is still a current operational (Router-owned) route.
+ */
+export interface HistoricalRouteUsageView {
+  routeId: string;
+  currentOperationalRoute: boolean;
+  usageEvents: UsageEvent[];
+  costEvents: CostEvent[];
+  quotaSnapshots: QuotaSnapshot[];
+}
 
 export interface QuotaStateView {
   bucketId: string;
@@ -247,6 +260,37 @@ export class UsageQueryService {
 
   async listSubscriptions(): Promise<SubscriptionPeriod[]> {
     return this.store.listSubscriptionPeriods();
+  }
+
+  /**
+   * Historical observations for one canonical route id.
+   *
+   * Usage history is indexed by the canonical Router route id stored on each
+   * row and is deliberately independent of whether that route is still part of
+   * the current Router projection: retiring or disconnecting a Router route
+   * must never delete the accounting Usage already observed for it.
+   *
+   * `currentOperationalRoute` is the explicit non-current marker — it is
+   * `false` when the route is no longer in the caller's current operational
+   * route set, while every observation is still returned.
+   */
+  async getRouteHistory(
+    routeId: string,
+    currentRouteIds: ReadonlySet<string> = new Set(),
+    limit = 100,
+  ): Promise<HistoricalRouteUsageView> {
+    const [usageEvents, costEvents, quotaSnapshots] = await Promise.all([
+      this.store.listRouteUsageEvents(routeId, limit),
+      this.store.listRouteCostEvents(routeId, limit),
+      this.store.listRouteQuotaSnapshots(routeId, limit),
+    ]);
+    return {
+      routeId,
+      currentOperationalRoute: currentRouteIds.has(routeId),
+      usageEvents,
+      costEvents,
+      quotaSnapshots,
+    };
   }
 
   async listAlerts(): Promise<UsageAlertView[]> {

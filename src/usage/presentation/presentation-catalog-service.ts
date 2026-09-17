@@ -10,7 +10,10 @@ import type {
   Product,
   Provider,
 } from "../domain/types.js";
-import type { UsageQueryService } from "../service/usage-query-service.js";
+import type {
+  HistoricalRouteUsageView,
+  UsageQueryService,
+} from "../service/usage-query-service.js";
 import type { UsageStore } from "../storage/usage-store.js";
 import { friendlyProductName, projectAccessOffer, projectRouteOffer } from "./access-offer.js";
 import type { ProviderDirectory } from "./provider-directory.js";
@@ -473,6 +476,22 @@ export class PresentationCatalogService {
 
   async getRoute(routeId: string): Promise<CatalogRouteEntry | undefined> {
     return (await this.listRoutes()).find((route) => route.routeId === routeId);
+  }
+
+  /**
+   * Historical Usage for one canonical route, whether or not it is still
+   * operational.
+   *
+   * Current operational truth and historical accounting are separate concerns:
+   * the current route list iterates the Router projection, while this reads
+   * Usage rows by the stored canonical route id. Removing or disconnecting a
+   * Router route therefore stops it being presented as executable without
+   * deleting the observations already recorded against it.
+   */
+  async getRouteHistory(routeId: string, limit = 100): Promise<HistoricalRouteUsageView> {
+    const projection = await this.routerCatalog.read();
+    const currentRouteIds = new Set(projection.routes.map((route) => route.routeId));
+    return this.queries.getRouteHistory(routeId, currentRouteIds, limit);
   }
 
   async listVisibleRoutes(): Promise<CatalogRouteEntry[]> {

@@ -331,4 +331,109 @@ describe("PresentationCatalogService", () => {
     expect(JSON.stringify(provider)).not.toContain("credentialRef");
     expect(JSON.stringify(provider)).not.toContain("secretish");
   });
+
+  it("keeps historical usage for a canonical route after Router removes it", async () => {
+    const store = new SqliteUsageStore(":memory:");
+    stores.push(store);
+    await store.initialize();
+    await seedCatalogScenario(store);
+
+    const routeId = "route:openrouter:claude";
+    // The canonical route row Usage keys its observations on.
+    await store.upsertAccessRoute({
+      id: routeId,
+      accountId: "account:openrouter",
+      productId: "product:openrouter",
+      providerModelId: "anthropic/claude-sonnet",
+      displayName: "Claude Sonnet",
+      status: "available",
+      metadata: {},
+    });
+    await store.appendUsageEvents([
+      {
+        id: "usage:history:1",
+        occurredAt: "2026-09-14T17:30:00.000Z",
+        providerId: "provider:openrouter",
+        accountId: "account:openrouter",
+        productId: "product:openrouter",
+        accessRouteId: routeId,
+        modelIdentityId: "model:claude-sonnet",
+        requests: 4,
+        source: "router_measured",
+        confidence: "measured",
+        metadata: {},
+      },
+    ]);
+    await store.appendCostEvents([
+      {
+        id: "cost:history:1",
+        occurredAt: "2026-09-14T17:30:00.000Z",
+        providerId: "provider:openrouter",
+        accountId: "account:openrouter",
+        productId: "product:openrouter",
+        accessRouteId: routeId,
+        amount: 0.42,
+        currency: "USD",
+        kind: "usage",
+        source: "provider_official_api",
+        confidence: "exact",
+        metadata: {},
+      },
+    ]);
+    await store.appendQuotaSnapshots([
+      {
+        id: "snapshot:history:1",
+        quotaBucketId: "bucket:openrouter:credits",
+        observedAt: "2026-09-14T18:00:00.000Z",
+        remainingValue: 7.31,
+        stalenessAfter: "2026-09-14T19:00:00.000Z",
+        source: "provider_official_api",
+        confidence: "exact",
+      },
+    ]);
+
+    // A mutable Router source so the route can be removed/disconnected.
+    let current = projection();
+    const queries = new UsageQueryService(store, {
+      now: () => new Date("2026-09-14T18:10:00.000Z"),
+    });
+    const catalog = new PresentationCatalogService(
+      { read: () => current },
+      store,
+      queries,
+      createDefaultProviderDirectory(),
+      { now: () => new Date("2026-09-14T18:10:00.000Z") },
+    );
+
+    // 1. While Router still has it, the route is current and history is readable.
+    const before = await catalog.getRouteHistory(routeId);
+    expect(before.currentOperationalRoute).toBe(true);
+    expect(before.usageEvents).toHaveLength(1);
+    expect(before.costEvents).toHaveLength(1);
+    // The bucket already carries a seeded snapshot; ours is alongside it.
+    expect(before.quotaSnapshots.some((snapshot) => snapshot.id === "snapshot:history:1"))
+      .toBe(true);
+
+    // 2. Router removes the route (disconnect/removal).
+    current = projection(current.routes.filter((route) => route.routeId !== routeId));
+
+    // 3. The current operational list no longer presents it as executable.
+    expect((await catalog.listRoutes()).some((route) => route.routeId === routeId)).toBe(false);
+
+    // 4. Historical Usage still returns every observation, explicitly non-current.
+    const after = await catalog.getRouteHistory(routeId);
+    expect(after.routeId).toBe(routeId);
+    expect(after.currentOperationalRoute).toBe(false);
+    expect(after.usageEvents).toHaveLength(1);
+    expect(after.costEvents).toHaveLength(1);
+    expect(after.quotaSnapshots.some((snapshot) => snapshot.id === "snapshot:history:1"))
+      .toBe(true);
+    expect(after.usageEvents[0]?.id).toBe("usage:history:1");
+    expect(after.costEvents[0]?.amount).toBe(0.42);
+
+    // 5. Disconnect deleted no rows: the Usage route row and its history survive.
+    expect(await store.getAccessRoute(routeId)).toBeDefined();
+    expect((await store.listUsageEvents(50)).some((event) => event.id === "usage:history:1"))
+      .toBe(true);
+  });
 });

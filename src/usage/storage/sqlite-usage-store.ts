@@ -371,6 +371,44 @@ export class SqliteUsageStore implements UsageStore {
     return decodeAll<CostEvent>(rows);
   }
 
+  async listRouteUsageEvents(routeId: string, limit = 100): Promise<UsageEvent[]> {
+    const rows = this.db()
+      .prepare(
+        `SELECT payload_json FROM usage_events
+         WHERE access_route_id = ?
+         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+      )
+      .all(routeId, limit) as PayloadRow[];
+    return decodeAll<UsageEvent>(rows);
+  }
+
+  async listRouteCostEvents(routeId: string, limit = 100): Promise<CostEvent[]> {
+    const rows = this.db()
+      .prepare(
+        `SELECT payload_json FROM cost_events
+         WHERE access_route_id = ?
+         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+      )
+      .all(routeId, limit) as PayloadRow[];
+    return decodeAll<CostEvent>(rows);
+  }
+
+  async listRouteQuotaSnapshots(routeId: string, limit = 100): Promise<QuotaSnapshot[]> {
+    // A snapshot belongs to a bucket; the bucket reaches a route through a
+    // quota binding. GROUP BY de-duplicates routes bound to one bucket more
+    // than once.
+    const rows = this.db()
+      .prepare(
+        `SELECT s.payload_json FROM quota_snapshots s
+         JOIN quota_bindings b ON b.quota_bucket_id = s.quota_bucket_id
+         WHERE b.access_route_id = ?
+         GROUP BY s.id
+         ORDER BY s.observed_at DESC, s.id DESC LIMIT ?`,
+      )
+      .all(routeId, limit) as PayloadRow[];
+    return decodeAll<QuotaSnapshot>(rows);
+  }
+
   async upsertVisibilityPreference(value: VisibilityPreference): Promise<void> {
     const id = visibilityPreferenceId(value);
     this.db()

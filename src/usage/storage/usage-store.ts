@@ -52,6 +52,16 @@ export interface UsageStore {
   getRouteGraph(accessRouteId: string): Promise<RouteGraph>;
   listUsageEvents(limit?: number): Promise<UsageEvent[]>;
   listCostEvents(limit?: number): Promise<CostEvent[]>;
+  /**
+   * Historical observations for one canonical route id.
+   *
+   * These read Usage rows by the stored canonical route id and are independent
+   * of whether the route is still present in the current Router projection, so
+   * history survives Router disconnect/removal.
+   */
+  listRouteUsageEvents(routeId: string, limit?: number): Promise<UsageEvent[]>;
+  listRouteCostEvents(routeId: string, limit?: number): Promise<CostEvent[]>;
+  listRouteQuotaSnapshots(routeId: string, limit?: number): Promise<QuotaSnapshot[]>;
   upsertVisibilityPreference(value: VisibilityPreference): Promise<void>;
   listVisibilityPreferences(scope?: VisibilityPreference["scope"]): Promise<VisibilityPreference[]>;
 }
