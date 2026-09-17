@@ -1,19 +1,22 @@
 import type { FastifyInstance } from "fastify";
 import { redactObject } from "../../security/secret-redaction.js";
 import type { PresentationCatalogService } from "../presentation/presentation-catalog-service.js";
-import type { VisibilityStore } from "../presentation/visibility-store.js";
 
 interface RouteParams {
   id: string;
 }
 
+/**
+ * Registers the product-facing Usage catalog reads.
+ *
+ * Every read below is served from Router canonical truth with Usage
+ * intelligence attached. The legacy `VisibilityStore` is deliberately absent:
+ * Router owns effective route visibility, so no read may consult SQLite
+ * visibility preferences.
+ */
 export function registerCatalogRoutes(
   fastify: FastifyInstance,
   catalog: PresentationCatalogService,
-  // Retained so the registration signature stays stable until the legacy
-  // visibility plumbing is removed. Router owns effective route visibility
-  // now, so this store is deliberately not consulted for any read below.
-  _legacyVisibility?: VisibilityStore,
 ): void {
   fastify.get("/v1/cmm/usage/catalog/providers", async () =>
     redactObject({ data: await catalog.listProviders() }),
