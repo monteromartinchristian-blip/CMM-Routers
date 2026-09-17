@@ -37,39 +37,30 @@ function stringMetadata(
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function explicitOfferKind(
-  route: AccessRoute,
-  product: Product,
-): AccessOfferKind | undefined {
-  for (const metadata of [route.metadata, product.metadata]) {
-    const value = stringMetadata(metadata, "offerKind");
-    if (value !== undefined && offerKinds.has(value as AccessOfferKind)) {
-      return value as AccessOfferKind;
-    }
-  }
-  return undefined;
+function offerKindFrom(metadata: Readonly<Record<string, unknown>>): AccessOfferKind | undefined {
+  const value = stringMetadata(metadata, "offerKind");
+  return value !== undefined && offerKinds.has(value as AccessOfferKind)
+    ? value as AccessOfferKind
+    : undefined;
 }
 
-export function projectAccessOffer(
+/**
+ * Offer evidence carried by the route row itself, falling back to the product
+ * row only when the caller states that the product row describes this route.
+ */
+function offerMetadata(
   route: AccessRoute,
-  product: Product,
-): AccessOfferSummary {
-  const kind = explicitOfferKind(route, product)
-    ?? (product.kind === "subscription"
-      ? "INCLUDED"
-      : product.kind === "api" || product.kind === "aggregator"
-        ? "PAYG"
-        : "UNKNOWN");
-
+  product: Product | undefined,
+): Omit<AccessOfferSummary, "kind"> {
   const inheritedMetadata = (key: string) =>
-    stringMetadata(route.metadata, key) ?? stringMetadata(product.metadata, key);
+    stringMetadata(route.metadata, key) ??
+    (product === undefined ? undefined : stringMetadata(product.metadata, key));
   const sourceValue = inheritedMetadata("offerSource");
   const confidenceValue = inheritedMetadata("offerConfidence");
   const observedAt = inheritedMetadata("offerObservedAt");
   const validUntil = inheritedMetadata("offerValidUntil");
 
   return {
-    kind,
     ...(sourceValue !== undefined && sources.has(sourceValue as Source)
       ? { source: sourceValue as Source }
       : {}),
@@ -78,6 +69,39 @@ export function projectAccessOffer(
       : {}),
     ...(observedAt === undefined ? {} : { observedAt }),
     ...(validUntil === undefined ? {} : { validUntil }),
+  };
+}
+
+export function projectAccessOffer(
+  route: AccessRoute,
+  product: Product,
+): AccessOfferSummary {
+  const kind = offerKindFrom(route.metadata)
+    ?? offerKindFrom(product.metadata)
+    ?? (product.kind === "subscription"
+      ? "INCLUDED"
+      : product.kind === "api" || product.kind === "aggregator"
+        ? "PAYG"
+        : "UNKNOWN");
+
+  return { kind, ...offerMetadata(route, product) };
+}
+
+/**
+ * Offer for a route whose Usage product row disagrees with Router identity.
+ *
+ * The disagreeing row describes a *different* product, so neither its kind nor
+ * its metadata may source this route's offer. Only the route row's own offer
+ * metadata — intelligence for this exact route — refines the Router-supplied
+ * fallback kind.
+ */
+export function projectRouteOffer(
+  route: AccessRoute,
+  fallbackKind: AccessOfferKind,
+): AccessOfferSummary {
+  return {
+    kind: offerKindFrom(route.metadata) ?? fallbackKind,
+    ...offerMetadata(route, undefined),
   };
 }
 

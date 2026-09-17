@@ -1,5 +1,26 @@
 export type Metadata = Readonly<Record<string, unknown>>;
 
+/**
+ * Reference to canonical Router operational identities.
+ *
+ * CMM Routers owns provider, account, product and route identity. CMM Usage
+ * stores observations *against* those identities so historical accounting
+ * survives route removal, but it never originates one: every value here is
+ * produced from the Router projection or Router administration state and is
+ * only ever referenced by Usage.
+ *
+ * This is deliberately distinct from an observation: an observation row
+ * (`UsageEvent`, `CostEvent`, `QuotaSnapshot`) carries Usage-owned measured
+ * values, while this reference carries Router-owned identity.
+ */
+export interface OperationalIdentityRef {
+  providerId: string;
+  accountId?: string;
+  productId?: string;
+  connectionId?: string;
+  routeIds: readonly string[];
+}
+
 export type ProviderKind =
   | "first_party"
   | "aggregator"

@@ -13,8 +13,10 @@ import type {
 import {
   ConfiguredUsageRuntime,
   UsageIntegrationCatalog,
+  type UsageCollectorBinding,
   type UsageIntegrationDefinition,
 } from "../../../src/usage/runtime/configured-runtime.js";
+import { createDefaultUsageIntegrationCatalog } from "../../../src/usage/runtime/integration-catalog.js";
 import { SqliteUsageStore } from "../../../src/usage/storage/sqlite-usage-store.js";
 
 let store: SqliteUsageStore;
@@ -261,5 +263,141 @@ describe("ConfiguredUsageRuntime", () => {
     expect(results.find(({ adapterId }) => adapterId === "broken")?.success).toBe(false);
     expect(results.find(({ adapterId }) => adapterId === "healthy")?.success).toBe(true);
     expect(adapters.get("healthy")?.collections).toBe(1);
+  });
+});
+
+/**
+ * A custom OpenAI-compatible endpoint is an operational Router entity. Usage
+ * may only attach a collector to the canonical Router identities, so the
+ * collector factory receives a binding instead of inventing `:custom:` IDs.
+ */
+function customIntegration(id: string, enabled = true): UsageIntegrationDefinition {
+  return {
+    id,
+    type: "openai-compatible",
+    enabled,
+    settings: { name: "Local Lab", baseUrl: "http://127.0.0.1:11434/v1", quotaMode: "unknown" },
+  };
+}
+
+function collectorBinding(overrides: Partial<UsageCollectorBinding> = {}): UsageCollectorBinding {
+  return {
+    integrationId: "lab",
+    providerId: "provider:lab",
+    accountId: "account:lab",
+    productId: "product:lab",
+    connectionId: "connection:lab",
+    routeIds: ["route:lab:alpha"],
+    observabilityBindingId: "observability:lab",
+    ...overrides,
+  };
+}
+
+function collectorStates(runtime: ConfiguredUsageRuntime): Array<{ id: string; enabled: boolean }> {
+  return runtime.adapters.list().map(({ id, enabled }) => ({ id, enabled }));
+}
+
+function customRuntime(): ConfiguredUsageRuntime {
+  return new ConfiguredUsageRuntime(
+    store,
+    createDefaultUsageIntegrationCatalog({ resolve: async () => undefined }),
+    { scheduler: { now: () => nowMs, jitterRatio: 0, random: () => 0 } },
+  );
+}
+
+describe("ConfiguredUsageRuntime collector bindings", () => {
+  it("binds a custom collector to canonical Router identities and fabricates no custom operational identity", async () => {
+    const runtime = customRuntime();
+    const binding = collectorBinding();
+
+    await runtime.applyConfig({ integrations: [customIntegration("lab")], bindings: [binding] });
+    await runtime.service.runCollectionCycle();
+
+    expect(runtime.collectorBindings()).toEqual([binding]);
+    expect((await store.listProviders()).map(({ id }) => id)).toEqual(["provider:lab"]);
+    expect((await store.listProducts()).map(({ id }) => id)).toEqual(["product:lab"]);
+    expect((await store.getAccount("account:lab"))?.providerId).toBe("provider:lab");
+    expect((await store.listAccessRoutes()).map(({ id }) => id)).toEqual(["route:lab:alpha"]);
+
+    const serializedUsageStore = JSON.stringify({
+      providers: await store.listProviders(),
+      accounts: [await store.getAccount("account:lab")],
+      products: await store.listProducts(),
+      routes: await store.listAccessRoutes(),
+      buckets: await store.listQuotaBuckets(),
+    });
+    expect(serializedUsageStore)
+      .not.toMatch(/provider:custom:|account:custom:|product:custom:|route:custom:/);
+    expect(serializedUsageStore).toContain("route:lab:alpha");
+  });
+
+  it("leaves an unbound custom collector inert instead of fabricating an operational identity", async () => {
+    const runtime = customRuntime();
+
+    await runtime.applyConfig({ integrations: [customIntegration("lab")] });
+    await runtime.service.runCollectionCycle();
+
+    expect(runtime.collectorBindings()).toEqual([]);
+    expect(await store.listProviders()).toEqual([]);
+    expect(await store.listAccessRoutes()).toEqual([]);
+    expect(JSON.stringify(await store.listProducts()))
+      .not.toMatch(/provider:custom:|account:custom:|product:custom:|route:custom:/);
+  });
+
+  it("keeps collector enablement separate from Router connection enablement", async () => {
+    const runtime = customRuntime();
+    const binding = collectorBinding();
+    const unauthorized = collectorBinding();
+    delete unauthorized.observabilityBindingId;
+
+    // Both: the collector is enabled and an explicit observability binding
+    // authorizes collection.
+    await runtime.applyConfig({ integrations: [customIntegration("lab")], bindings: [binding] });
+    expect(collectorStates(runtime)).toEqual([{ id: "lab", enabled: true }]);
+
+    // Executable-but-not-collected: the integration definition is still
+    // enabled, but without observability authorization the collector is not
+    // collectable. The binding itself is still reported: authorization and
+    // collector enablement are independent axes.
+    await runtime.applyConfig({ integrations: [customIntegration("lab")], bindings: [unauthorized] });
+    expect(collectorStates(runtime)).toEqual([{ id: "lab", enabled: false }]);
+    expect(runtime.collectorBindings()).toEqual([unauthorized]);
+
+    // Neither: an observability-authorized binding cannot make a disabled
+    // collector collect.
+    await runtime.applyConfig({
+      integrations: [customIntegration("lab", false)],
+      bindings: [binding],
+    });
+    expect(collectorStates(runtime)).toEqual([{ id: "lab", enabled: false }]);
+  });
+
+  it("rejects a collector binding that names no configured integration", async () => {
+    const runtime = customRuntime();
+
+    await expect(
+      runtime.applyConfig({
+        integrations: [customIntegration("lab")],
+        bindings: [collectorBinding({ integrationId: "elsewhere" })],
+      }),
+    ).rejects.toThrow(/integration/i);
+    expect(runtime.collectorBindings()).toEqual([]);
+  });
+
+  it("re-creates the collector when its canonical Router binding changes", async () => {
+    const runtime = customRuntime();
+    await runtime.applyConfig({ integrations: [customIntegration("lab")], bindings: [collectorBinding()] });
+    await runtime.service.runCollectionCycle();
+    expect((await store.listAccessRoutes()).map(({ id }) => id)).toEqual(["route:lab:alpha"]);
+
+    nowMs += 120_000;
+    await runtime.applyConfig({
+      integrations: [customIntegration("lab")],
+      bindings: [collectorBinding({ routeIds: ["route:lab:beta"] })],
+    });
+    await runtime.service.runCollectionCycle();
+
+    expect((await store.listAccessRoutes()).map(({ id }) => id).sort())
+      .toEqual(["route:lab:alpha", "route:lab:beta"]);
   });
 });

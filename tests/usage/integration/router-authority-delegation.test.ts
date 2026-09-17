@@ -37,7 +37,12 @@ import {
   type RouterCatalogSource,
 } from "../../../src/usage/presentation/presentation-catalog-service.js";
 import { VisibilityStore } from "../../../src/usage/presentation/visibility-store.js";
-import { UsageIntegrationCatalog } from "../../../src/usage/runtime/configured-runtime.js";
+import type { UsageAdapter } from "../../../src/usage/adapters/contract.js";
+import {
+  ConfiguredUsageRuntime,
+  UsageIntegrationCatalog,
+  type UsageCollectorBinding,
+} from "../../../src/usage/runtime/configured-runtime.js";
 import { createProductionUsageRuntime } from "../../../src/usage/runtime/production-runtime.js";
 import { UsageService } from "../../../src/usage/service/usage-service.js";
 import { UsageQueryService } from "../../../src/usage/service/usage-query-service.js";
@@ -233,8 +238,70 @@ describe("Router authority delegation for the Usage catalog", () => {
     expect(route?.product.id).toBe("product:anthropic");
     expect(route?.product.displayName).toBe("Claude subscription");
     expect(route?.product.category).toBe("subscription");
+    // The disagreeing Usage product is `product:openrouter` (kind `api`, which
+    // would project PAYG). The offer belongs to this exact Router route, so it
+    // must follow Router's `subscription` product kind: INCLUDED, never PAYG.
+    expect(route?.offer.kind).toBe("INCLUDED");
     // Only the explicitly historical Usage observation reflects the Usage row.
     expect(route?.usageStatus).toBe("temporarily_unavailable");
+  });
+
+  it("derives a disagreeing route offer from Router product kind, never from the disagreeing Usage product", async () => {
+    const { store, catalog } = await setup();
+    // The Usage row for this canonical route names a different product and
+    // carries no offer metadata of its own. Router's product kind is
+    // `promo_pool` (PROMO); the disagreeing Usage product is `product:openrouter`
+    // (kind `api`, which would project PAYG). The route must read PROMO.
+    await store.upsertAccessRoute({
+      id: "route:kira:qwen",
+      accountId: "account:openrouter",
+      productId: "product:openrouter",
+      modelIdentityId: "model:qwen-flash",
+      providerModelId: "usage/claimed-qwen",
+      displayName: "Usage claimed label",
+      status: "available",
+      metadata: {},
+    });
+
+    const route = (await catalog.listRoutes())
+      .find((entry) => entry.routeId === "route:kira:qwen");
+
+    expect(route?.product.id).toBe("product:kira-promo");
+    expect(route?.offer).toEqual({ kind: "PROMO" });
+  });
+
+  it("keeps the Usage route row's own offer metadata when its product disagrees with Router", async () => {
+    const { store, catalog } = await setup();
+    // Same disagreement, but now the Usage *route* row carries its own offer
+    // metadata. That metadata is intelligence for this exact route, so it must
+    // refine the Router product kind rather than being discarded (or replaced
+    // by the disagreeing product's `api`/PAYG kind).
+    await store.upsertAccessRoute({
+      id: "route:kira:qwen",
+      accountId: "account:openrouter",
+      productId: "product:openrouter",
+      modelIdentityId: "model:qwen-flash",
+      providerModelId: "usage/claimed-qwen",
+      displayName: "Usage claimed label",
+      status: "available",
+      metadata: {
+        offerKind: "FREE",
+        offerSource: "provider_official_api",
+        offerConfidence: "exact",
+        offerValidUntil: "2026-09-30T23:59:59.000Z",
+      },
+    });
+
+    const route = (await catalog.listRoutes())
+      .find((entry) => entry.routeId === "route:kira:qwen");
+
+    expect(route?.product.id).toBe("product:kira-promo");
+    expect(route?.offer).toMatchObject({
+      kind: "FREE",
+      source: "provider_official_api",
+      confidence: "exact",
+      validUntil: "2026-09-30T23:59:59.000Z",
+    });
   });
 
   it("still lets an agreeing Usage row refine the product label and category", async () => {
@@ -797,4 +864,120 @@ describe("Router authority delegation for Usage mutations", () => {
     expect(await state.visibility.list()).toEqual([]);
     await server.close();
   });
+
+  it("makes a connected provider collectable through an explicit observability binding without collapsing the four states", async () => {
+    const state = await delegationSetup();
+    const view = await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    // Router owns execution and observability credential authorization.
+    expect(view).toMatchObject({ executionAuthorized: true, observabilityAuthorized: true });
+
+    const projection = buildRouterCatalogProjection({
+      directory: state.directory,
+      accounts: [],
+      products: [],
+      connections: state.providerConnections,
+      modelIdentities: state.modelIdentities,
+      routeCatalog: state.routeCatalog,
+    });
+    const connection = projection.connections
+      .find((entry) => entry.connectionId === "openrouter-primary")!;
+    const routeIds = projection.routes
+      .filter((route) => route.connectionId === connection.connectionId)
+      .map((route) => route.routeId)
+      .sort();
+    expect(routeIds).toHaveLength(2);
+
+    // The binding is produced from the canonical Router projection plus the
+    // explicit observability binding, never from a Usage-invented identity.
+    const binding: UsageCollectorBinding = {
+      integrationId: "openrouter-primary",
+      providerId: connection.providerId,
+      ...(connection.accountId === undefined ? {} : { accountId: connection.accountId }),
+      ...(connection.productId === undefined ? {} : { productId: connection.productId }),
+      connectionId: connection.connectionId,
+      routeIds,
+      observabilityBindingId: "observability:openrouter-primary",
+    };
+    const unauthorized: UsageCollectorBinding = {
+      integrationId: binding.integrationId,
+      providerId: binding.providerId,
+      ...(binding.connectionId === undefined ? {} : { connectionId: binding.connectionId }),
+      routeIds: binding.routeIds,
+    };
+
+    const seen: Array<UsageCollectorBinding | undefined> = [];
+    const catalog = new UsageIntegrationCatalog();
+    catalog.register("openrouter", (_definition, collectorBinding) => {
+      seen.push(collectorBinding);
+      return inertAdapter("openrouter-primary");
+    });
+    const store = new SqliteUsageStore(":memory:");
+    stores.push(store);
+    await store.initialize();
+    const runtime = new ConfiguredUsageRuntime(store, catalog);
+    const definition = {
+      id: "openrouter-primary",
+      type: "openrouter",
+      enabled: true,
+      settings: {},
+    } as const;
+
+    // Both: collectable and executable.
+    await runtime.applyConfig({ integrations: [definition], bindings: [binding] });
+    expect(runtime.collectorBindings()).toEqual([binding]);
+    expect(runtime.adapters.list().map(({ id, enabled }) => ({ id, enabled }))).toEqual([{ id: "openrouter-primary", enabled: true }]);
+    expect(seen.at(-1)).toEqual(binding);
+
+    // Collected-but-not-executable is representable: Router connection
+    // enablement is independent of collector enablement.
+    await state.administration.setEnabled("openrouter-primary", false);
+    expect(state.providerConnections.get("openrouter-primary")?.status).toBe("disabled");
+    expect(runtime.adapters.list().map(({ id, enabled }) => ({ id, enabled }))).toEqual([{ id: "openrouter-primary", enabled: true }]);
+    expect(runtime.collectorBindings()).toEqual([binding]);
+
+    // Executable-but-not-collected: the Router connection is enabled again, but
+    // without an observability-authorized binding the collector is not
+    // collectable even though the integration definition is enabled.
+    await state.administration.setEnabled("openrouter-primary", true);
+    expect(state.providerConnections.get("openrouter-primary")?.status).not.toBe("disabled");
+    await runtime.applyConfig({ integrations: [definition], bindings: [unauthorized] });
+    expect(runtime.adapters.list().map(({ id, enabled }) => ({ id, enabled }))).toEqual([{ id: "openrouter-primary", enabled: false }]);
+    expect(runtime.collectorBindings()).toEqual([unauthorized]);
+
+    // Neither: an observability-authorized binding cannot make a disabled
+    // collector collect.
+    await runtime.applyConfig({
+      integrations: [{ ...definition, enabled: false }],
+      bindings: [binding],
+    });
+    expect(runtime.adapters.list().map(({ id, enabled }) => ({ id, enabled }))).toEqual([{ id: "openrouter-primary", enabled: false }]);
+  });
 });
+
+function inertAdapter(id: string): UsageAdapter {
+  return {
+    id,
+    manifest: () => ({
+      id,
+      displayName: id,
+      collectionSafety: "non_inference_only",
+      minimumRefreshIntervalMs: 60_000,
+    }),
+    capabilities: () => new Set(),
+    health: async () => ({ status: "healthy" }),
+    discover: async () => ({
+      status: "ok",
+      providers: [],
+      accounts: [],
+      products: [],
+      models: [],
+      accessRoutes: [],
+    }),
+    collectUsageEvents: async () => ({ status: "unsupported", capability: "collect_usage_events" }),
+    collectQuotaSnapshots: async () => ({ status: "unsupported", capability: "collect_quota_snapshots" }),
+    collectCostEvents: async () => ({ status: "unsupported", capability: "collect_costs" }),
+    refresh: async () => ({ status: "unsupported", capability: "manual_refresh" }),
+  };
+}

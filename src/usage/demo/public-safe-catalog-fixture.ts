@@ -1,3 +1,5 @@
+import type { RouterCatalogProjection } from "../../catalog/projection.js";
+import type { ProductKind } from "../../catalog/types.js";
 import type { UsageAdapter } from "../adapters/contract.js";
 import type {
   AccessRoute,
@@ -13,8 +15,12 @@ import type {
   UsageEvent,
 } from "../domain/types.js";
 import type { UsageStore } from "../storage/usage-store.js";
+import type { RouterCatalogSource } from "../presentation/presentation-catalog-service.js";
 import { parseUsageRuntimeConfig, type LoadedUsageRuntimeConfig } from "../runtime/config.js";
-import { UsageIntegrationCatalog } from "../runtime/configured-runtime.js";
+import {
+  UsageIntegrationCatalog,
+  type UsageCollectorBinding,
+} from "../runtime/configured-runtime.js";
 import type { CredentialWriter } from "../runtime/credential-writer.js";
 import { ManagedConfigStore } from "../runtime/managed-config-store.js";
 
@@ -39,9 +45,6 @@ export const PUBLIC_SAFE_DEMO_CONFIG: LoadedUsageRuntimeConfig = parseUsageRunti
       settings: {
         name: "Local Lab",
         baseUrl: "http://127.0.0.1:11434/v1",
-        defaultModel: "demo-local-model",
-        discoverModels: true,
-        useInCmmChat: true,
         quotaMode: "unknown",
       },
     },
@@ -174,6 +177,152 @@ export async function seedPublicSafeCatalogFixture(store: UsageStore): Promise<v
   await store.appendUsageEvents(usageEvents);
   await store.appendCostEvents(costEvents);
 }
+
+function demoProductKind(kind: string): ProductKind {
+  switch (kind) {
+    case "subscription":
+      return "subscription";
+    case "free_pool":
+    case "promo_pool":
+    case "enterprise":
+    case "local":
+      return kind;
+    default:
+      return "api";
+  }
+}
+
+/**
+ * Synthetic Router truth for the public-safe demo fixture.
+ *
+ * The demo runtime is a self-contained showcase with no Router process, so the
+ * seeded demo rows stand in for the canonical graph. This source lives with the
+ * fixture (rather than in the production composition) so a normal production
+ * composition can never reach a demo identity: production injects the real
+ * in-process Router projection instead.
+ */
+export function createPublicSafeDemoRouterCatalogSource(
+  store: UsageStore,
+): RouterCatalogSource {
+  return {
+    async read(): Promise<RouterCatalogProjection> {
+      const [providers, products, models, routes] = await Promise.all([
+        store.listProviders(),
+        store.listProducts(),
+        store.listModelIdentities(),
+        store.listAccessRoutes(),
+      ]);
+      const providerIdByProduct = new Map(
+        products.map((product) => [product.id, product.providerId] as const),
+      );
+      const productKindById = new Map(
+        products.map((product) => [product.id, product.kind] as const),
+      );
+      const accountIdByProduct = new Map<string, string>();
+      for (const route of routes) {
+        if (!accountIdByProduct.has(route.productId)) {
+          accountIdByProduct.set(route.productId, route.accountId);
+        }
+      }
+      return {
+        providers: providers.map((provider) => ({
+          providerId: provider.id,
+          displayName: provider.displayName,
+        })),
+        accounts: [],
+        products: products.flatMap((product) => {
+          const accountId = accountIdByProduct.get(product.id);
+          if (accountId === undefined) return [];
+          return [{
+            productId: product.id,
+            accountId,
+            providerId: product.providerId,
+            kind: demoProductKind(product.kind),
+            label: product.displayName,
+          }];
+        }),
+        connections: [],
+        models: models.map((model) => ({
+          modelIdentityId: model.id,
+          canonicalName: model.canonicalName,
+          ...(model.family === undefined ? {} : { family: model.family }),
+          aliases: model.aliases,
+        })),
+        routes: routes.flatMap((route) => {
+          if (route.modelIdentityId === undefined) return [];
+          return [{
+            routeId: route.id,
+            modelIdentityId: route.modelIdentityId,
+            connectionId: `demo-connection:${route.accountId}`,
+            providerId: providerIdByProduct.get(route.productId) ?? route.productId,
+            providerModelId: route.providerModelId,
+            executionProfile: "default",
+            capabilities: { chat: true, tools: true, streaming: true },
+            billingClass: productKindById.get(route.productId) ?? "unknown",
+            routable: route.status === "available",
+            visibility: { visibleOn: ["cmmchat_model_picker", "admin_console"] },
+          }];
+        }),
+      };
+    },
+  };
+}
+
+function demoCollectorBinding(
+  integrationId: string,
+  providerId: string,
+  accountId: string,
+  productId: string,
+  routeIds: string[],
+): UsageCollectorBinding {
+  return {
+    integrationId,
+    providerId,
+    accountId,
+    productId,
+    connectionId: `demo-connection:${accountId}`,
+    routeIds,
+    observabilityBindingId: `observability:demo:${integrationId}`,
+  };
+}
+
+/**
+ * In-memory collector bindings for the demo fixture.
+ *
+ * These are synthetic demo identities, never production Router state. They are
+ * applied only under `CMM_USAGE_DEMO_FIXTURE=1` so a normal composition cannot
+ * receive them.
+ */
+export const PUBLIC_SAFE_DEMO_COLLECTOR_BINDINGS: readonly UsageCollectorBinding[] = [
+  demoCollectorBinding(
+    "command-code-demo",
+    "provider:demo:command-code",
+    "account:demo:command-code",
+    "product:demo:command-code-goat",
+    ["route:demo:command-code"],
+  ),
+  demoCollectorBinding(
+    "chatgpt-demo",
+    "provider:demo:chatgpt",
+    "account:demo:chatgpt",
+    "product:demo:chatgpt",
+    ["route:demo:chatgpt"],
+  ),
+  demoCollectorBinding(
+    "openrouter-demo",
+    "provider:demo:openrouter",
+    "account:demo:openrouter",
+    "product:demo:openrouter",
+    ["route:demo:openrouter-claude", "route:demo:openrouter-qwen"],
+  ),
+  demoCollectorBinding(
+    "custom-demo",
+    "provider:demo:local",
+    "account:demo:local",
+    "product:demo:unknown",
+    ["route:demo:unknown"],
+  ),
+];
 
 function demoAdapter(id: string): UsageAdapter {
   return {

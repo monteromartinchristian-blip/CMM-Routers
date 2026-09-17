@@ -15,6 +15,13 @@ import { UsageAdapterManager } from "../../../src/usage/adapters/adapter-manager
 import { UsageRegistryService } from "../../../src/usage/registry/usage-registry.js";
 import { UsageService } from "../../../src/usage/service/usage-service.js";
 import { SqliteUsageStore } from "../../../src/usage/storage/sqlite-usage-store.js";
+import type {
+  AccessRoute,
+  Account,
+  Product,
+  Provider,
+  UsageEvent,
+} from "../../../src/usage/domain/types.js";
 
 let store: SqliteUsageStore;
 let nowMs: number;
@@ -23,6 +30,15 @@ class CollectionAdapter implements UsageAdapter {
   quotaCalls = 0;
   refreshCalls = 0;
   failQuota = false;
+  discovery: UsageDiscoveryResult = {
+    status: "ok",
+    providers: [],
+    accounts: [],
+    products: [],
+    models: [],
+    accessRoutes: [],
+  };
+  usageEvents: UsageEventBatch = { status: "ok", values: [] };
 
   constructor(
     readonly id: string,
@@ -52,11 +68,11 @@ class CollectionAdapter implements UsageAdapter {
   }
 
   async discover(): Promise<UsageDiscoveryResult> {
-    return { status: "ok", providers: [], accounts: [], products: [], models: [], accessRoutes: [] };
+    return this.discovery;
   }
 
   async collectUsageEvents(): Promise<UsageEventBatch> {
-    return { status: "ok", values: [] };
+    return this.usageEvents;
   }
 
   async collectQuotaSnapshots(): Promise<QuotaSnapshotBatch> {
@@ -299,5 +315,164 @@ describe("UsageService orchestration", () => {
     expect(provider.routes).toHaveLength(1);
     expect(quota.reconciled.selected?.remainingFraction).toBe(0.1);
     expect(quota.forecast.confidence).toBe("unknown");
+  });
+});
+
+function provider(id: string, displayName: string): Provider {
+  return {
+    id,
+    displayName,
+    kind: "generic",
+    status: "enabled",
+    metadata: {},
+    createdAt: "2026-09-13T12:00:00.000Z",
+    updatedAt: "2026-09-13T12:00:00.000Z",
+  };
+}
+
+function account(id: string, providerId: string): Account {
+  return {
+    id,
+    providerId,
+    label: id,
+    status: "active",
+    createdAt: "2026-09-13T12:00:00.000Z",
+    updatedAt: "2026-09-13T12:00:00.000Z",
+  };
+}
+
+function product(id: string, providerId: string): Product {
+  return { id, providerId, displayName: id, kind: "custom", metadata: {} };
+}
+
+function accessRoute(id: string, accountId: string, productId: string): AccessRoute {
+  return {
+    id,
+    accountId,
+    productId,
+    providerModelId: id,
+    displayName: id,
+    status: "available",
+    metadata: {},
+  };
+}
+
+function usageEvent(
+  id: string,
+  identity: Pick<UsageEvent, "providerId" | "accountId" | "productId" | "accessRouteId">,
+): UsageEvent {
+  return {
+    id,
+    occurredAt: "2026-09-13T11:00:00.000Z",
+    ...identity,
+    requests: 1,
+    source: "provider_official_api",
+    confidence: "exact",
+    metadata: {},
+  };
+}
+
+const boundScope = {
+  providerId: "provider:lab",
+  accountId: "account:lab",
+  productId: "product:lab",
+  routeIds: ["route:lab:alpha"],
+} as const;
+
+function boundAdapter(): CollectionAdapter {
+  const adapter = new CollectionAdapter("bound", "bucket:lab", 60_000, [
+    "discover_accounts",
+    "discover_products",
+    "collect_usage_events",
+    "manual_refresh",
+  ]);
+  adapter.discovery = {
+    status: "ok",
+    providers: [provider("provider:lab", "Lab"), provider("provider:custom:lab", "Fabricated")],
+    accounts: [
+      account("account:lab", "provider:lab"),
+      account("account:custom:lab", "provider:custom:lab"),
+    ],
+    products: [
+      product("product:lab", "provider:lab"),
+      product("product:custom:lab", "provider:custom:lab"),
+    ],
+    models: [],
+    accessRoutes: [
+      accessRoute("route:lab:alpha", "account:lab", "product:lab"),
+      accessRoute("route:custom:lab:default", "account:custom:lab", "product:custom:lab"),
+    ],
+  };
+  return adapter;
+}
+
+describe("UsageService collector binding scope", () => {
+  it("never lets a bound collector register an operational identity outside its canonical binding", async () => {
+    const adapter = boundAdapter();
+    const manager = new UsageAdapterManager();
+    manager.register(adapter);
+    const usage = service(manager);
+    usage.bindCollector(adapter.id, boundScope);
+
+    await usage.runCollectionCycle();
+
+    expect((await store.listProviders()).map(({ id }) => id)).toEqual(["provider:lab"]);
+    expect((await store.listProducts()).map(({ id }) => id)).toEqual(["product:lab"]);
+    expect((await store.listAccessRoutes()).map(({ id }) => id)).toEqual(["route:lab:alpha"]);
+    expect(await store.getAccount("account:custom:lab")).toBeUndefined();
+    expect(await store.getProduct("product:custom:lab")).toBeUndefined();
+    expect(await store.getAccessRoute("route:custom:lab:default")).toBeUndefined();
+
+    const serializedUsageStore = JSON.stringify({
+      providers: await store.listProviders(),
+      products: await store.listProducts(),
+      routes: await store.listAccessRoutes(),
+    });
+    expect(serializedUsageStore)
+      .not.toMatch(/provider:custom:|account:custom:|product:custom:|route:custom:/);
+  });
+
+  it("drops collector observations that reference an identity outside its canonical binding", async () => {
+    const adapter = boundAdapter();
+    adapter.usageEvents = {
+      status: "ok",
+      values: [
+        usageEvent("bound-observation", {
+          providerId: "provider:lab",
+          accountId: "account:lab",
+          productId: "product:lab",
+          accessRouteId: "route:lab:alpha",
+        }),
+        usageEvent("invented-observation", {
+          providerId: "provider:custom:lab",
+          accountId: "account:custom:lab",
+          productId: "product:custom:lab",
+          accessRouteId: "route:custom:lab:default",
+        }),
+      ],
+    };
+    const manager = new UsageAdapterManager();
+    manager.register(adapter);
+    const usage = service(manager);
+    usage.bindCollector(adapter.id, boundScope);
+
+    await usage.runCollectionCycle();
+
+    expect((await store.listUsageEvents()).map(({ id }) => id)).toEqual(["bound-observation"]);
+    expect(JSON.stringify(await store.listUsageEvents()))
+      .not.toMatch(/provider:custom:|account:custom:|product:custom:|route:custom:/);
+  });
+
+  it("keeps an unbound collector's discovery output unchanged", async () => {
+    const adapter = boundAdapter();
+    const manager = new UsageAdapterManager();
+    manager.register(adapter);
+    const usage = service(manager);
+
+    await usage.runCollectionCycle();
+
+    expect((await store.listProviders()).map(({ id }) => id).sort())
+      .toEqual(["provider:custom:lab", "provider:lab"]);
+    expect(usage.collectorBinding(adapter.id)).toBeUndefined();
   });
 });

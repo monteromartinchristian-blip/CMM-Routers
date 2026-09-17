@@ -11,7 +11,7 @@ import type {
 } from "../domain/types.js";
 import type { UsageQueryService } from "../service/usage-query-service.js";
 import type { UsageStore } from "../storage/usage-store.js";
-import { friendlyProductName, projectAccessOffer } from "./access-offer.js";
+import { friendlyProductName, projectAccessOffer, projectRouteOffer } from "./access-offer.js";
 import type { ProviderDirectory } from "./provider-directory.js";
 import { projectQuotaSummary } from "./quota-presentation.js";
 import type {
@@ -130,18 +130,49 @@ export function isVisibleToConsumer(
   return visibleOn.some((surface) => surface !== "admin_console");
 }
 
-function currentAccessOffer(
-  route: AccessRoute,
-  product: Product,
-  now: Date,
-): AccessOfferSummary {
-  const offer = projectAccessOffer(route, product);
+function withExpiry(offer: AccessOfferSummary, now: Date): AccessOfferSummary {
   const expiringKind =
     offer.kind === "FREE" || offer.kind === "PROMO" || offer.kind === "TRIAL";
   if (!expiringKind || offer.validUntil === undefined) return offer;
   const validUntilMs = Date.parse(offer.validUntil);
   if (Number.isFinite(validUntilMs) && validUntilMs > now.getTime()) return offer;
   return { ...offer, kind: "UNKNOWN" };
+}
+
+/**
+ * Where a route's offer evidence comes from.
+ *
+ * `usage_product` is used only when the Usage product row agrees with Router
+ * identity about this route (or Router has no product identity for it). A
+ * disagreeing Usage product describes a different product, so it can only
+ * contribute the route row's own offer metadata — never its own kind or
+ * metadata — which is what `router_product_with_route` expresses.
+ */
+type OfferSource =
+  | { readonly kind: "usage_product"; readonly route: AccessRoute; readonly product: Product }
+  | {
+      readonly kind: "router_product_with_route";
+      readonly route: AccessRoute;
+      readonly routerKind: ProductKind;
+    }
+  | {
+      readonly kind: "router_product";
+      readonly routerKind: ProductKind | undefined;
+      readonly usageKind: string | undefined;
+    };
+
+function renderOffer(source: OfferSource, now: Date): AccessOfferSummary {
+  switch (source.kind) {
+    case "usage_product":
+      return withExpiry(projectAccessOffer(source.route, source.product), now);
+    case "router_product_with_route":
+      return withExpiry(
+        projectRouteOffer(source.route, routerProductOffer(source.routerKind).kind),
+        now,
+      );
+    case "router_product":
+      return offerFromProductKinds(source.routerKind, source.usageKind);
+  }
 }
 
 /** Usage-side observability and presentation rows, indexed by canonical ID. */
@@ -157,14 +188,14 @@ interface ResolvedProduct {
   id: string;
   displayName: string;
   category: ProductCategory;
-  routerKind: ProductKind | undefined;
-  usageProduct: Product | undefined;
+  offer: OfferSource;
 }
 
 function resolveProduct(
   routerProduct: ProductSummary | undefined,
   usageProduct: Product | undefined,
   usageProvider: Provider | undefined,
+  usageRoute: AccessRoute | undefined,
 ): ResolvedProduct | undefined {
   if (routerProduct === undefined) {
     if (usageProduct === undefined) return undefined;
@@ -174,13 +205,15 @@ function resolveProduct(
       category: usageProvider === undefined
         ? routerProductCategory("api")
         : usageProductCategory(usageProduct, usageProvider),
-      routerKind: undefined,
-      usageProduct,
+      offer: usageRoute === undefined
+        ? { kind: "router_product", routerKind: undefined, usageKind: usageProduct.kind }
+        : { kind: "usage_product", route: usageRoute, product: usageProduct },
     };
   }
-  // Router owns product identity. Usage may refine the presentation label and
-  // category only when its row agrees with Router about the product identity;
-  // a disagreeing Usage row must never relabel or re-categorise the route.
+  // Router owns product identity. Usage may refine the presentation label,
+  // category and offer only when its row agrees with Router about the product
+  // identity; a disagreeing Usage row must never relabel, re-categorise or
+  // re-price the route.
   if (usageProduct !== undefined && usageProduct.id === routerProduct.productId) {
     return {
       id: routerProduct.productId,
@@ -188,16 +221,19 @@ function resolveProduct(
       category: usageProvider === undefined
         ? routerProductCategory(routerProduct.kind)
         : usageProductCategory(usageProduct, usageProvider),
-      routerKind: routerProduct.kind,
-      usageProduct,
+      offer: usageRoute === undefined
+        ? { kind: "router_product", routerKind: routerProduct.kind, usageKind: usageProduct.kind }
+        : { kind: "usage_product", route: usageRoute, product: usageProduct },
     };
   }
+  const disagrees = usageProduct !== undefined;
   return {
     id: routerProduct.productId,
     displayName: routerProduct.label,
     category: routerProductCategory(routerProduct.kind),
-    routerKind: routerProduct.kind,
-    usageProduct,
+    offer: disagrees && usageRoute !== undefined
+      ? { kind: "router_product_with_route", route: usageRoute, routerKind: routerProduct.kind }
+      : { kind: "router_product", routerKind: routerProduct.kind, usageKind: undefined },
   };
 }
 
@@ -338,6 +374,7 @@ export class PresentationCatalogService {
           ?? (usageProduct === undefined ? undefined : productById.get(usageProduct.id)),
         usageProduct,
         usageProvider,
+        usageRoute,
       );
       if (product === undefined) {
         // No real product identity exists anywhere for this route. Emitting one
@@ -395,9 +432,7 @@ export class PresentationCatalogService {
         capabilities: { ...route.capabilities },
         billingClass: route.billingClass,
         visibility: { visibleOn: route.visibility.visibleOn.slice() },
-        offer: usageRoute !== undefined && product.usageProduct !== undefined
-          ? currentAccessOffer(usageRoute, product.usageProduct, now)
-          : offerFromProductKinds(product.routerKind, product.usageProduct?.kind),
+        offer: renderOffer(product.offer, now),
         quota: routeQuotas,
         ...(freshest === undefined
           ? {}

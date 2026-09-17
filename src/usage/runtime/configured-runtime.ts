@@ -2,6 +2,7 @@ import type {
   AccessRoute,
   Account,
   CostEvent,
+  OperationalIdentityRef,
   QuotaBinding,
   QuotaBucket,
   QuotaSnapshot,
@@ -30,11 +31,40 @@ export interface UsageIntegrationDefinition {
   settings: Readonly<Record<string, unknown>>;
 }
 
-export interface UsageRuntimeConfig {
-  integrations: readonly UsageIntegrationDefinition[];
+/**
+ * Canonical Router identity binding for one Usage collector.
+ *
+ * Produced from the Router projection and Router administration state (the
+ * `observabilityBindingId` is the explicit observability credential binding
+ * that authorizes collection). A collector receives this instead of
+ * constructing current operational IDs of its own.
+ *
+ * Collector enablement is deliberately *not* part of this object: a provider
+ * may be executable-but-not-collected, collected-but-not-executable, both, or
+ * neither, and those states must stay explicit.
+ */
+export interface UsageCollectorBinding extends OperationalIdentityRef {
+  integrationId: string;
+  routeIds: string[];
+  observabilityBindingId?: string;
 }
 
-export type UsageIntegrationFactory = (definition: UsageIntegrationDefinition) => UsageAdapter;
+export interface UsageRuntimeConfig {
+  integrations: readonly UsageIntegrationDefinition[];
+  /**
+   * Canonical Router identity bindings, keyed by Usage integration id.
+   *
+   * Supplied by the composition that owns Router truth. A binding without an
+   * `observabilityBindingId` is configured but not authorized to collect, so
+   * the collector stays disabled rather than inferring permission to observe.
+   */
+  bindings?: readonly UsageCollectorBinding[];
+}
+
+export type UsageIntegrationFactory = (
+  definition: UsageIntegrationDefinition,
+  binding?: UsageCollectorBinding,
+) => UsageAdapter;
 
 export class UsageIntegrationCatalog {
   private readonly factories = new Map<string, UsageIntegrationFactory>();
@@ -44,10 +74,13 @@ export class UsageIntegrationCatalog {
     this.factories.set(type, factory);
   }
 
-  create(definition: UsageIntegrationDefinition): UsageAdapter {
+  create(
+    definition: UsageIntegrationDefinition,
+    binding?: UsageCollectorBinding,
+  ): UsageAdapter {
     const factory = this.factories.get(definition.type);
     if (factory === undefined) throw new Error(`Unsupported usage integration type: ${definition.type}`);
-    return factory(definition);
+    return factory(definition, binding);
   }
 
   types(): string[] {
@@ -59,12 +92,22 @@ function scopedId(id: string, instanceId: string): string {
   return `${id}@${encodeURIComponent(instanceId)}`;
 }
 
+/**
+ * Instance isolation for collectors that supply their own operational IDs.
+ *
+ * Two instances of the same integration must not collide in Usage SQLite, so
+ * their account/route observations are namespaced per instance. A collector
+ * bound to canonical Router identities is exempt: its IDs already come from
+ * Router (distinct connections and routes per instance) and must be stored
+ * verbatim so the Usage rows join back to the canonical Router route.
+ */
 class InstanceScopedUsageAdapter implements UsageAdapter {
   readonly id: string;
 
   constructor(
     private readonly inner: UsageAdapter,
     private readonly instanceId: string,
+    private readonly scopeInstanceIdentities: boolean,
   ) {
     this.id = inner.id;
   }
@@ -81,43 +124,47 @@ class InstanceScopedUsageAdapter implements UsageAdapter {
     return this.inner.health();
   }
 
+  private scoped(id: string): string {
+    return this.scopeInstanceIdentities ? scopedId(id, this.instanceId) : id;
+  }
+
   private account(value: Account): Account {
-    return { ...value, id: scopedId(value.id, this.instanceId) };
+    return { ...value, id: this.scoped(value.id) };
   }
 
   private subscription(value: SubscriptionPeriod): SubscriptionPeriod {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accountId: scopedId(value.accountId, this.instanceId),
+      id: this.scoped(value.id),
+      accountId: this.scoped(value.accountId),
     };
   }
 
   private route(value: AccessRoute): AccessRoute {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accountId: scopedId(value.accountId, this.instanceId),
+      id: this.scoped(value.id),
+      accountId: this.scoped(value.accountId),
       ...(value.subscriptionPeriodId === undefined
         ? {}
-        : { subscriptionPeriodId: scopedId(value.subscriptionPeriodId, this.instanceId) }),
+        : { subscriptionPeriodId: this.scoped(value.subscriptionPeriodId) }),
     };
   }
 
   private bucket(value: QuotaBucket): QuotaBucket {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accountId: scopedId(value.accountId, this.instanceId),
+      id: this.scoped(value.id),
+      accountId: this.scoped(value.accountId),
     };
   }
 
   private binding(value: QuotaBinding): QuotaBinding {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accessRouteId: scopedId(value.accessRouteId, this.instanceId),
-      quotaBucketId: scopedId(value.quotaBucketId, this.instanceId),
+      id: this.scoped(value.id),
+      accessRouteId: this.scoped(value.accessRouteId),
+      quotaBucketId: this.scoped(value.quotaBucketId),
     };
   }
 
@@ -143,11 +190,11 @@ class InstanceScopedUsageAdapter implements UsageAdapter {
   private usageEvent(value: UsageEvent): UsageEvent {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accountId: scopedId(value.accountId, this.instanceId),
+      id: this.scoped(value.id),
+      accountId: this.scoped(value.accountId),
       ...(value.accessRouteId === undefined
         ? {}
-        : { accessRouteId: scopedId(value.accessRouteId, this.instanceId) }),
+        : { accessRouteId: this.scoped(value.accessRouteId) }),
     };
   }
 
@@ -160,8 +207,8 @@ class InstanceScopedUsageAdapter implements UsageAdapter {
   private snapshot(value: QuotaSnapshot): QuotaSnapshot {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      quotaBucketId: scopedId(value.quotaBucketId, this.instanceId),
+      id: this.scoped(value.id),
+      quotaBucketId: this.scoped(value.quotaBucketId),
     };
   }
 
@@ -174,11 +221,11 @@ class InstanceScopedUsageAdapter implements UsageAdapter {
   private costEvent(value: CostEvent): CostEvent {
     return {
       ...value,
-      id: scopedId(value.id, this.instanceId),
-      accountId: scopedId(value.accountId, this.instanceId),
+      id: this.scoped(value.id),
+      accountId: this.scoped(value.accountId),
       ...(value.accessRouteId === undefined
         ? {}
-        : { accessRouteId: scopedId(value.accessRouteId, this.instanceId) }),
+        : { accessRouteId: this.scoped(value.accessRouteId) }),
     };
   }
 
@@ -198,11 +245,15 @@ interface ActiveIntegration {
   adapter: UsageAdapter;
 }
 
-function definitionKey(definition: UsageIntegrationDefinition): string {
+function definitionKey(
+  definition: UsageIntegrationDefinition,
+  binding: UsageCollectorBinding | undefined,
+): string {
   return JSON.stringify({
     type: definition.type,
     credentialRef: definition.credentialRef,
     settings: definition.settings,
+    binding,
   });
 }
 
@@ -210,6 +261,7 @@ export class ConfiguredUsageRuntime {
   readonly adapters = new UsageAdapterManager();
   readonly service: UsageService;
   private readonly active = new Map<string, ActiveIntegration>();
+  private readonly bindings = new Map<string, UsageCollectorBinding>();
 
   constructor(
     store: UsageStore,
@@ -219,31 +271,71 @@ export class ConfiguredUsageRuntime {
     this.service = new UsageService(store, this.adapters, options);
   }
 
+  /**
+   * Canonical Router identity bindings currently configured, in configuration
+   * order. Reported independently of collector enablement so the two states
+   * stay explicit.
+   */
+  collectorBindings(): UsageCollectorBinding[] {
+    return [...this.bindings.values()];
+  }
+
   async applyConfig(config: UsageRuntimeConfig): Promise<void> {
     const configuredIds = new Set(config.integrations.map(({ id }) => id));
     if (configuredIds.size !== config.integrations.length) {
       throw new Error("Usage integration ids must be unique");
     }
 
+    const bindings = new Map<string, UsageCollectorBinding>();
+    for (const binding of config.bindings ?? []) {
+      if (!configuredIds.has(binding.integrationId)) {
+        throw new Error(
+          `Usage collector binding references an unconfigured integration: ${binding.integrationId}`,
+        );
+      }
+      if (bindings.has(binding.integrationId)) {
+        throw new Error("Usage collector bindings must be unique per integration");
+      }
+      bindings.set(binding.integrationId, binding);
+    }
+
     for (const [id] of this.active) {
-      if (!configuredIds.has(id)) this.adapters.setEnabled(id, false);
+      if (!configuredIds.has(id)) {
+        this.adapters.setEnabled(id, false);
+        this.service.clearCollectorBinding(id);
+      }
     }
 
     for (const definition of config.integrations) {
+      const binding = bindings.get(definition.id);
+      if (binding === undefined) this.service.clearCollectorBinding(definition.id);
+      else this.service.bindCollector(definition.id, binding);
+
+      // Collector enablement is its own axis. Router connection enablement is
+      // never consulted here, and a binding only authorizes collection when it
+      // carries an explicit observability binding.
+      const collectable = binding === undefined || binding.observabilityBindingId !== undefined;
       const existing = this.active.get(definition.id);
-      if (!definition.enabled) {
+      if (!definition.enabled || !collectable) {
         if (existing !== undefined) this.adapters.setEnabled(definition.id, false);
         continue;
       }
 
-      const key = definitionKey(definition);
+      const key = definitionKey(definition, binding);
       if (existing === undefined || existing.definitionKey !== key) {
-        const adapter = new InstanceScopedUsageAdapter(this.catalog.create(definition), definition.id);
+        const adapter = new InstanceScopedUsageAdapter(
+          this.catalog.create(definition, binding),
+          definition.id,
+          binding === undefined,
+        );
         this.adapters.register(adapter, true, definition.id);
         this.active.set(definition.id, { definitionKey: key, adapter });
       } else {
         this.adapters.setEnabled(definition.id, true);
       }
     }
+
+    this.bindings.clear();
+    for (const [id, binding] of bindings) this.bindings.set(id, binding);
   }
 }

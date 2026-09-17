@@ -8,8 +8,11 @@ import { OpenAiApiUsageAdapter } from "../adapters/openai-api/adapter.js";
 import { OpenRouterUsageAdapter } from "../adapters/openrouter/adapter.js";
 import { OpenAiCompatibleUsageAdapter } from "../adapters/openai-compatible/adapter.js";
 import { QwenModelStudioUsageAdapter } from "../adapters/qwen-model-studio/adapter.js";
+import type { AccessRoute, Account, Product } from "../domain/types.js";
+import type { ManualUsageAdapterDefinition } from "../adapters/manual/adapter.js";
 import {
   UsageIntegrationCatalog,
+  type UsageCollectorBinding,
   type UsageIntegrationDefinition,
 } from "./configured-runtime.js";
 
@@ -77,16 +80,96 @@ const openRouterSettings = z.object({
   managementCredentialRef: z.string().min(1).optional(),
 }).strict();
 
+/**
+ * Collector-only settings for a custom OpenAI-compatible endpoint.
+ *
+ * The endpoint itself (provider, account, product, connection, access routes,
+ * model discovery and route visibility) is an operational Router entity. Usage
+ * owns only the observability endpoints and the quota mode used to interpret
+ * what it collects, and it references the canonical Router identity through a
+ * `UsageCollectorBinding`. `useInCmmChat` is not a Usage setting: CMMChat
+ * exposure is represented only through Router route visibility.
+ */
 const openAiCompatibleSettings = z.object({
   name: z.string().min(1),
   baseUrl: z.string().url(),
-  defaultModel: z.string().min(1).optional(),
-  discoverModels: z.boolean().default(true),
-  useInCmmChat: z.boolean().default(true),
   usageEndpoint: z.string().min(1).optional(),
   billingEndpoint: z.string().min(1).optional(),
   quotaMode: z.enum(["automatic", "manual", "unknown"]).default("unknown"),
 }).strict();
+
+type OpenAiCompatibleSettings = z.infer<typeof openAiCompatibleSettings>;
+
+/**
+ * The collector's observation graph for one canonical Router identity.
+ *
+ * Every operational identity here is a *reference* supplied by the Router
+ * binding; the collector constructs none of them. The rows exist so Usage
+ * SQLite can key observations by canonical IDs and keep historical accounting
+ * after a route is removed from Router.
+ */
+function collectorGraphFromBinding(
+  definition: UsageIntegrationDefinition,
+  settings: OpenAiCompatibleSettings,
+  binding: UsageCollectorBinding,
+): ManualUsageAdapterDefinition {
+  const now = new Date().toISOString();
+  const { providerId, accountId, productId } = binding;
+  const accounts: Account[] = accountId === undefined
+    ? []
+    : [{
+        id: accountId,
+        providerId,
+        label: settings.name,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      }];
+  const products: Product[] = productId === undefined
+    ? []
+    : [{
+        id: productId,
+        providerId,
+        displayName: settings.name,
+        kind: "custom",
+        metadata: {
+          quotaMode: settings.quotaMode,
+          ...(settings.usageEndpoint === undefined ? {} : { usageEndpoint: settings.usageEndpoint }),
+          ...(settings.billingEndpoint === undefined ? {} : { billingEndpoint: settings.billingEndpoint }),
+        },
+      }];
+  const accessRoutes: AccessRoute[] = accountId === undefined || productId === undefined
+    ? []
+    : binding.routeIds.map((routeId) => ({
+        id: routeId,
+        accountId,
+        productId,
+        providerModelId: routeId,
+        displayName: settings.name,
+        status: "available",
+        metadata: { collectorBinding: true },
+      }));
+
+  return {
+    id: `openai-compatible:${definition.id}`,
+    displayName: settings.name,
+    provider: {
+      id: providerId,
+      displayName: settings.name,
+      kind: "generic",
+      status: "enabled",
+      metadata: { collectorBinding: true },
+      createdAt: now,
+      updatedAt: now,
+    },
+    accounts,
+    products,
+    accessRoutes,
+    quotaBuckets: [],
+    quotaBindings: [],
+    quotaSnapshots: [],
+  };
+}
 
 function credentialFor(
   definition: UsageIntegrationDefinition,
@@ -220,76 +303,20 @@ export function createDefaultUsageIntegrationCatalog(
     });
   });
 
-  catalog.register("openai-compatible", (definition) => {
+  catalog.register("openai-compatible", (definition, binding) => {
     const settings = openAiCompatibleSettings.parse(definition.settings);
-    const now = new Date().toISOString();
-    const suffix = encodeURIComponent(definition.id);
-    const providerId = `provider:custom:${suffix}`;
-    const accountId = `account:custom:${suffix}`;
-    const productId = `product:custom:${suffix}`;
-    const routeId = `route:custom:${suffix}:default`;
     const credential = optionalCredentialFor(definition, resolver);
+    // Without a canonical Router binding there is no operational identity to
+    // reference, so the collector stays inert rather than inventing one.
+    const manual = binding === undefined
+      ? undefined
+      : collectorGraphFromBinding(definition, settings, binding);
     return new OpenAiCompatibleUsageAdapter({
       id: `openai-compatible:${definition.id}`,
       displayName: settings.name,
       baseUrl: settings.baseUrl,
       ...(credential === undefined ? {} : { credential }),
-      manual: {
-        id: `openai-compatible:${definition.id}`,
-        displayName: settings.name,
-        provider: {
-          id: providerId,
-          displayName: settings.name,
-          kind: "generic",
-          status: "enabled",
-          metadata: { customEndpoint: true },
-          createdAt: now,
-          updatedAt: now,
-        },
-        accounts: [{
-          id: accountId,
-          providerId,
-          label: settings.name,
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-        }],
-        products: [{
-          id: productId,
-          providerId,
-          displayName: settings.name,
-          kind: "custom",
-          metadata: {
-            quotaMode: settings.quotaMode,
-            useInCmmChat: settings.useInCmmChat,
-            ...(settings.usageEndpoint === undefined ? {} : { usageEndpoint: settings.usageEndpoint }),
-            ...(settings.billingEndpoint === undefined ? {} : { billingEndpoint: settings.billingEndpoint }),
-          },
-        }],
-        accessRoutes: settings.defaultModel === undefined
-          ? []
-          : [{
-              id: routeId,
-              accountId,
-              productId,
-              providerModelId: settings.defaultModel,
-              displayName: settings.defaultModel,
-              status: "available",
-              metadata: { customEndpoint: true },
-            }],
-        quotaBuckets: [],
-        quotaBindings: [],
-        quotaSnapshots: [],
-      },
-      ...(settings.discoverModels
-        ? {
-            modelDiscovery: {
-              path: "models",
-              accountId,
-              productId,
-            },
-          }
-        : {}),
+      ...(manual === undefined ? {} : { manual }),
     });
   });
 

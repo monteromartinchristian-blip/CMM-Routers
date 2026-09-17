@@ -141,6 +141,36 @@ describe("reconcileQuotaSnapshots", () => {
     ).toThrow(/bucket/i);
   });
 
+  it("retains historical observations for a canonical bucket whose operational route was removed", () => {
+    // Usage keeps observations keyed by the canonical quota bucket reference.
+    // Reconciliation only ever echoes that reference: it never derives a
+    // provider, product or route identity, so accounting survives route
+    // removal.
+    const historical = snapshot("historical", {
+      quotaBucketId: "bucket_0123456789abcdef",
+      remainingFraction: 0.2,
+      source: "provider_official_api",
+      confidence: "exact",
+    });
+
+    const state = reconcileQuotaSnapshots([historical], now);
+
+    expect(state.bucketId).toBe("bucket_0123456789abcdef");
+    expect(state.selected).toBe(historical);
+    expect(state.observations).toEqual([historical]);
+    expect(Object.keys(state).sort())
+      .toEqual(["bucketId", "conflict", "observations", "selected", "stale"]);
+  });
+
+  it("does not invent a bucket identity when there is nothing to reconcile", () => {
+    const state = reconcileQuotaSnapshots([], now);
+
+    expect(state).not.toHaveProperty("bucketId");
+    expect(state.selected).toBeUndefined();
+    expect(state.observations).toEqual([]);
+    expect(state.stale).toBe(true);
+  });
+
   it("reports stale when every retained observation is stale", () => {
     const state = reconcileQuotaSnapshots(
       [

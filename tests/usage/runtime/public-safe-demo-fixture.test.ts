@@ -186,6 +186,38 @@ describe("public-safe CMM Usage demo fixture", () => {
 
       const safePayload = JSON.stringify({ routes, providers, quotas });
       expect(safePayload).not.toMatch(/credentialRef|keychain:\/\/|managementApiCredentialRef|apiCredentialRef/i);
+
+      // The demo collectors are bound in memory to the synthetic demo
+      // identities, so the demo runtime never has to invent an operational ID.
+      const bindings = production.runtime.collectorBindings();
+      expect(bindings.length).toBeGreaterThan(0);
+      expect(JSON.stringify(bindings)).toMatch(/provider:demo:/);
+    } finally {
+      await production.close();
+    }
+  });
+
+  it("never receives demo collector identities or bindings outside demo mode", async () => {
+    vi.stubEnv("CMM_USAGE_DEMO_FIXTURE", "0");
+    const dir = mkdtempSync(join(tmpdir(), "cmm-usage-demo-isolation-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "usage.json"), JSON.stringify({ version: 1, integrations: [] }));
+
+    const production = await createProductionUsageRuntime({
+      configDir: dir,
+      databasePath: ":memory:",
+      credentialResolver: { resolve: () => undefined },
+    });
+
+    try {
+      expect(production.runtime.collectorBindings()).toEqual([]);
+      const payload = JSON.stringify({
+        bindings: production.runtime.collectorBindings(),
+        providers: await production.store.listProviders(),
+        routes: await production.store.listAccessRoutes(),
+        catalogRoutes: await production.presentationCatalog.listRoutes(),
+      });
+      expect(payload).not.toMatch(/provider:demo:|account:demo:|product:demo:|route:demo:/);
     } finally {
       await production.close();
     }

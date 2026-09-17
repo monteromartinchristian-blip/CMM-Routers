@@ -42,7 +42,7 @@ describe("default CMM Usage integration catalog", () => {
       { id: "qwen-plan", type: "qwen-token-plan", enabled: true, credentialRef: "env://QWEN_PLAN", settings: { baseUrl: "https://token-plan.example/v1", plan: { edition: "personal" } } },
       { id: "qwen-payg", type: "qwen-payg", enabled: true, credentialRef: "env://QWEN_PAYG", settings: { baseUrl: "https://dashscope.example/v1" } },
       { id: "openrouter", type: "openrouter", enabled: true, credentialRef: "env://OPENROUTER", settings: {} },
-      { id: "custom", type: "openai-compatible", enabled: true, settings: { name: "Custom", baseUrl: "https://example.com/v1", discoverModels: false } },
+      { id: "custom", type: "openai-compatible", enabled: true, settings: { name: "Custom", baseUrl: "https://example.com/v1" } },
     ] as const;
 
     for (const definition of definitions) expect(catalog.create(definition).manifest().collectionSafety).toBe("non_inference_only");

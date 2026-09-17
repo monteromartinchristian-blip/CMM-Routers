@@ -1,7 +1,13 @@
 import type { Confidence, QuotaSnapshot, Source } from "../domain/types.js";
 
 export interface ReconciledQuotaState {
-  bucketId: string;
+  /**
+   * The observed canonical quota bucket reference, echoed back unchanged.
+   *
+   * Omitted when there is nothing to reconcile: Usage must not manufacture an
+   * identity it has not observed.
+   */
+  bucketId?: string;
   selected?: QuotaSnapshot;
   observations: QuotaSnapshot[];
   conflict: boolean;
@@ -88,13 +94,21 @@ function observationsDisagree(a: QuotaSnapshot, b: QuotaSnapshot): boolean {
   return false;
 }
 
+/**
+ * Selects the most trustworthy observation for one canonical quota bucket.
+ *
+ * Reconciliation is deliberately identity-agnostic: it only ever echoes the
+ * bucket reference already present on the observations it is given, so
+ * historical accounting for a bucket whose operational route has been removed
+ * reconciles exactly like any other. It never derives a provider, product or
+ * route identity.
+ */
 export function reconcileQuotaSnapshots(
   snapshots: readonly QuotaSnapshot[],
   now: Date,
 ): ReconciledQuotaState {
   if (snapshots.length === 0) {
     return {
-      bucketId: "",
       observations: [],
       conflict: false,
       stale: true,

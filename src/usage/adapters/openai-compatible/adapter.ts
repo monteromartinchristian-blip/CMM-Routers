@@ -37,7 +37,15 @@ export interface OpenAiCompatibleUsageAdapterOptions {
   displayName: string;
   baseUrl: string;
   credential?: OpenAiCompatibleCredential;
-  manual: ManualUsageAdapterDefinition;
+  /**
+   * Observation graph referencing canonical Router identities.
+   *
+   * Supplied only when a `UsageCollectorBinding` exists. Without it the
+   * collector has no canonical identity to reference, so it declares no
+   * discovery capability and collects nothing rather than inventing an
+   * operational identity of its own.
+   */
+  manual?: ManualUsageAdapterDefinition;
   modelDiscovery?: OpenAiCompatibleModelDiscovery;
   quotaEndpoint?: OpenAiCompatibleQuotaEndpoint;
   fetch?: typeof fetch;
@@ -98,14 +106,21 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
   private readonly baseUrl: URL;
   private readonly modelDiscoveryUrl: URL | undefined;
   private readonly quotaUrl: URL | undefined;
-  private readonly manualAdapter: ManualUsageAdapter;
+  private readonly manualAdapter: ManualUsageAdapter | undefined;
   private readonly capabilitiesSet: ReadonlySet<UsageAdapterCapability>;
   private readonly fetcher: typeof fetch;
   private readonly now: () => Date;
 
   constructor(private readonly options: OpenAiCompatibleUsageAdapterOptions) {
-    if (options.manual.id !== options.id) {
+    const manual = options.manual;
+    if (manual !== undefined && manual.id !== options.id) {
       throw new Error("Generic adapter id must match its manual graph id");
+    }
+    if (
+      manual === undefined &&
+      (options.modelDiscovery !== undefined || options.quotaEndpoint !== undefined)
+    ) {
+      throw new Error("Metadata endpoints require a canonical collector binding");
     }
     this.id = options.id;
     this.baseUrl = new URL(options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`);
@@ -117,15 +132,15 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
       options.quotaEndpoint === undefined
         ? undefined
         : safeMetadataUrl(this.baseUrl, options.quotaEndpoint.path);
-    this.manualAdapter = new ManualUsageAdapter(options.manual);
+    this.manualAdapter = manual === undefined ? undefined : new ManualUsageAdapter(manual);
     this.fetcher = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date());
 
-    if (options.modelDiscovery !== undefined) {
-      const account = options.manual.accounts.find(
+    if (options.modelDiscovery !== undefined && manual !== undefined) {
+      const account = manual.accounts.find(
         (value) => value.id === options.modelDiscovery?.accountId,
       );
-      const product = options.manual.products.find(
+      const product = manual.products.find(
         (value) => value.id === options.modelDiscovery?.productId,
       );
       if (account === undefined || product === undefined || account.providerId !== product.providerId) {
@@ -133,7 +148,7 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
       }
       if (
         options.modelDiscovery.subscriptionPeriodId !== undefined &&
-        !(options.manual.subscriptionPeriods ?? []).some(
+        !(manual.subscriptionPeriods ?? []).some(
           (value) => value.id === options.modelDiscovery?.subscriptionPeriodId,
         )
       ) {
@@ -141,17 +156,17 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
       }
     }
 
-    const declared = new Set<UsageAdapterCapability>([
-      "discover_accounts",
-      "discover_products",
-      "discover_quota_graph",
-      "manual_refresh",
-    ]);
-    if (options.modelDiscovery !== undefined || (options.manual.models?.length ?? 0) > 0) {
-      declared.add("discover_models");
-    }
-    if (options.quotaEndpoint !== undefined || options.manual.quotaSnapshots.length > 0) {
-      declared.add("collect_quota_snapshots");
+    const declared = new Set<UsageAdapterCapability>(["manual_refresh"]);
+    if (manual !== undefined) {
+      declared.add("discover_accounts");
+      declared.add("discover_products");
+      declared.add("discover_quota_graph");
+      if (options.modelDiscovery !== undefined || (manual.models?.length ?? 0) > 0) {
+        declared.add("discover_models");
+      }
+      if (options.quotaEndpoint !== undefined || manual.quotaSnapshots.length > 0) {
+        declared.add("collect_quota_snapshots");
+      }
     }
     this.capabilitiesSet = declared;
   }
@@ -211,6 +226,9 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
   }
 
   async discover(): Promise<UsageDiscoveryResult> {
+    if (this.manualAdapter === undefined) {
+      return { status: "ok", providers: [], accounts: [], products: [], models: [], accessRoutes: [] };
+    }
     const manual = await this.manualAdapter.discover();
     if (manual.status !== "ok") return manual;
     if (this.options.modelDiscovery === undefined || this.modelDiscoveryUrl === undefined) return manual;
@@ -239,6 +257,9 @@ export class OpenAiCompatibleUsageAdapter implements UsageAdapter {
   }
 
   async collectQuotaSnapshots(): Promise<QuotaSnapshotBatch> {
+    if (this.manualAdapter === undefined || this.options.manual === undefined) {
+      return unsupported("collect_quota_snapshots");
+    }
     const manual = await this.manualAdapter.collectQuotaSnapshots();
     if (manual.status !== "ok") return manual;
     if (this.options.quotaEndpoint === undefined || this.quotaUrl === undefined) return manual;
