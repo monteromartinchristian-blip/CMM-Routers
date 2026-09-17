@@ -30,12 +30,22 @@ import {
 } from "../demo/public-safe-catalog-fixture.js";
 
 /**
- * The one demo-mode discriminator for the whole process.
+ * The demo-mode discriminator for the Node process.
  *
- * Demo mode is triggered by `CMM_USAGE_DEMO_FIXTURE=1`. Both the Usage runtime
- * and the composition root (`createProductionServer`) derive it through this
- * function, so the synthetic-fixture boundary and the real-Router isolation
- * boundary can never diverge.
+ * Demo mode is triggered by `CMM_USAGE_DEMO_FIXTURE=1`. Within this process
+ * both the Usage runtime and the composition root (`createProductionServer`)
+ * derive it through this function, so the synthetic-fixture boundary and the
+ * real-Router isolation boundary can never diverge here.
+ *
+ * This is not the only place the key is read: the macOS client is a separate
+ * process and evaluates the same environment variable independently, only to
+ * select its credential store
+ * (`apps/cmm-usage-macos/Sources/CMMUsageCore/Module.swift`), which this
+ * function cannot observe. That split is not a privilege boundary that can
+ * widen: the server-side demo checks stand on their own, so a client and
+ * server that disagree about demo mode fail closed. The demo management bearer
+ * is a public constant and never matches a real-mode server, and a real
+ * keychain token never matches a demo server.
  */
 export function isDemoFixtureEnabled(): boolean {
   return process.env.CMM_USAGE_DEMO_FIXTURE === "1";

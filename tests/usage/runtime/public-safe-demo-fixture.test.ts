@@ -218,26 +218,46 @@ describe("public-safe CMM Usage demo fixture", () => {
           authorizeObservability: false,
         },
       });
-      expect(canonical.statusCode).toBeGreaterThanOrEqual(400);
+      // The canonical administration routes are not registered for a demo
+      // composition, so the privileged pre-handler has no administration to
+      // admit and refuses the public demo management bearer outright.
+      expect(canonical.statusCode).toBe(403);
+      expect(canonical.json()).toMatchObject({
+        error: { type: "management_scope_forbidden" },
+      });
 
       // Destructive and refresh canonical verbs must fail closed the same way.
+      // Each request carries a well-formed (empty) JSON body: with the
+      // `content-type: application/json` header above, a body-less request is
+      // rejected by Fastify's parser with `400 FST_ERR_CTP_EMPTY_JSON_BODY`
+      // before the pre-handler or routing runs, which would make the assertion
+      // pass even with the demo guard reverted and the routes registered.
       for (const request of [
         { method: "DELETE" as const, url: "/v1/cmm/catalog/connections/demo-canonical-breach" },
         { method: "POST" as const, url: "/v1/cmm/catalog/connections/demo-canonical-breach/refresh" },
         { method: "POST" as const, url: "/v1/cmm/catalog/connections/demo-canonical-breach/validate" },
       ]) {
-        const response = await server.inject({ ...request, headers: managementAuth });
-        expect(response.statusCode).toBeGreaterThanOrEqual(400);
+        const response = await server.inject({
+          ...request,
+          headers: managementAuth,
+          payload: {},
+        });
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toMatchObject({
+          error: { type: "management_scope_forbidden" },
+        });
       }
 
       // The canonical catalog read must not project real Router state into a
-      // demo process either.
+      // demo process either: with the projection withheld at the composition
+      // root the route is never registered, so this is a plain 404 rather than
+      // a scope rejection.
       const canonicalRead = await server.inject({
         method: "GET",
         url: "/v1/cmm/catalog",
         headers: { authorization: "Bearer chat-bearer" },
       });
-      expect(canonicalRead.statusCode).toBeGreaterThanOrEqual(400);
+      expect(canonicalRead.statusCode).toBe(404);
 
       // No real Router connection was created, and no real administrative
       // state was persisted. `shared.json` is the real Router config file, so
