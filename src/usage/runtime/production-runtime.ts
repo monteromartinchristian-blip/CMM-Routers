@@ -209,10 +209,19 @@ export async function createProductionUsageRuntime(
     runtime.service.queries,
     providerDirectory,
   );
-  const connections = new ConnectionManagementService(options.routerAdministration, {
-    collectorRefresh: runtime.service,
-    routerCatalog,
-  });
+  // Demo mode must never receive the real Router administration. The demo
+  // management bearer is a public constant, so a compatibility mutation that
+  // reached the real authority would let anyone write real `shared.json`
+  // administrative state, the real OS keychain and real provider discovery.
+  // Withholding it makes every demo mutation fail closed (503) instead. Real
+  // mode delegates to the injected authority exactly as before.
+  const connections = new ConnectionManagementService(
+    demoFixture ? undefined : options.routerAdministration,
+    {
+      collectorRefresh: runtime.service,
+      routerCatalog,
+    },
+  );
 
   return {
     config,
