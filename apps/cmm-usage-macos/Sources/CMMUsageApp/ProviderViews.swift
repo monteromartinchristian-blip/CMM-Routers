@@ -473,7 +473,7 @@ private struct CustomEndpointsView: View {
                             Image(systemName: "server.rack").foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(route.provider.displayName).font(.subheadline.weight(.semibold))
-                                Text("\(route.model.displayName) · \(route.availability == .available ? "Available" : "Status unknown")")
+                                Text("\(route.model.displayName) · \(route.usageStatus == .temporarilyUnavailable ? "Unavailable" : "Available")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

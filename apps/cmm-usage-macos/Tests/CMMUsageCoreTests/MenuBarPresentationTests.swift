@@ -27,7 +27,7 @@ final class MenuBarPresentationTests: XCTestCase {
     func testFreeCapacityCountIncludesClaimableAllowance() throws {
         let promotions = try JSONDecoder().decode(
             UsageListResponse<CatalogRouteEntry>.self,
-            from: Data(#"{"data":[{"routeId":"route:free","provider":{"id":"provider:kira","displayName":"Kira AI"},"product":{"id":"product:kira","displayName":"Community access","category":"api"},"model":{"id":"model:qwen","displayName":"Qwen Free"},"offer":{"kind":"FREE"},"quota":[],"availability":"available","visibility":"visible"}]}"#.utf8)
+            from: Data(#"{"data":[{"routeId":"route:free","provider":{"id":"provider:kira","displayName":"Kira AI"},"product":{"id":"product:kira","displayName":"Community access","category":"api"},"model":{"id":"model:qwen","displayName":"Qwen Free"},"offer":{"kind":"FREE"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}}]}"#.utf8)
         ).data
 
         XCTAssertEqual(MenuBarPresenter.freeCapacityCount(promotions: promotions, quotas: try decodeQuotas()), 2)
@@ -36,7 +36,7 @@ final class MenuBarPresentationTests: XCTestCase {
     private func decodeRoutes() throws -> [CatalogRouteEntry] {
         let json = #"""
         {"data":[
-          {"routeId":"route:goat","provider":{"id":"provider:command","displayName":"Command Code"},"product":{"id":"product:goat","displayName":"individual-goat","category":"subscription"},"model":{"id":"model:command","displayName":"Command Code"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"}
+          {"routeId":"route:goat","provider":{"id":"provider:command","displayName":"Command Code"},"product":{"id":"product:goat","displayName":"individual-goat","category":"subscription"},"model":{"id":"model:command","displayName":"Command Code"},"offer":{"kind":"INCLUDED"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}}
         ]}
         """#
         return try JSONDecoder().decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(json.utf8)).data

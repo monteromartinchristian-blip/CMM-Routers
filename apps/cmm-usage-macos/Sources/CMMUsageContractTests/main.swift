@@ -106,8 +106,8 @@ func testCatalogDecodingContract() throws {
             }
           ]
           """ : "[]"),
-          "availability":"available",
-          "visibility":"visible"
+
+          "visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}
         }
         """
     }.joined(separator: ",")
@@ -171,10 +171,10 @@ func testProviderPresentationContract() throws {
 func testModelCatalogPresentationContract() throws {
     let json = #"""
     {"data":[
-      {"routeId":"anthropic-claude","provider":{"id":"anthropic","displayName":"Anthropic"},"product":{"id":"anthropic-pro","displayName":"Claude Max","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"},
-      {"routeId":"google-claude","provider":{"id":"google","displayName":"Google AI Pro"},"product":{"id":"google-pro","displayName":"AI Pro","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"},
-      {"routeId":"openrouter-claude","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"PAYG"},"quota":[],"availability":"available","visibility":"hidden"},
-      {"routeId":"openrouter-qwen","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"qwen","displayName":"Qwen Flash"},"offer":{"kind":"PROMO"},"quota":[],"availability":"available","visibility":"visible"}
+      {"routeId":"anthropic-claude","provider":{"id":"anthropic","displayName":"Anthropic"},"product":{"id":"anthropic-pro","displayName":"Claude Max","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}},
+      {"routeId":"google-claude","provider":{"id":"google","displayName":"Google AI Pro"},"product":{"id":"google-pro","displayName":"AI Pro","category":"subscription"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"INCLUDED"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}},
+      {"routeId":"openrouter-claude","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"claude","displayName":"Claude Sonnet"},"offer":{"kind":"PAYG"},"quota":[],"visibility":{"visibleOn":["admin_console"]}},
+      {"routeId":"openrouter-qwen","provider":{"id":"openrouter","displayName":"OpenRouter"},"product":{"id":"router","displayName":"Prepaid API","category":"aggregator"},"model":{"id":"qwen","displayName":"Qwen Flash"},"offer":{"kind":"PROMO"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}}
     ]}
     """#
     let routes = try JSONDecoder().decode(UsageListResponse<CatalogRouteEntry>.self, from: Data(json.utf8)).data
@@ -230,7 +230,7 @@ func testClaimableQuotaEntitlementContract() throws {
 }
 
 func testModelQuotaHierarchyContract() throws {
-    let routeJSON = #"{"routeId":"route:kira:qwen-38","provider":{"id":"kira","displayName":"Kira AI"},"product":{"id":"kira-free","displayName":"Free models","category":"api"},"model":{"id":"qwen-38","displayName":"Qwen 3.8 Flash Free"},"offer":{"kind":"FREE"},"quota":[{"bucketId":"model","displayName":"Model allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":true},{"bucketId":"general","displayName":"General Kira pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}],"availability":"available","visibility":"visible"}"#
+    let routeJSON = #"{"routeId":"route:kira:qwen-38","provider":{"id":"kira","displayName":"Kira AI"},"product":{"id":"kira-free","displayName":"Free models","category":"api"},"model":{"id":"qwen-38","displayName":"Qwen 3.8 Flash Free"},"offer":{"kind":"FREE"},"quota":[{"bucketId":"model","displayName":"Model allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":true},{"bucketId":"general","displayName":"General Kira pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}}"#
     let quotasJSON = #"{"data":[{"bucketId":"model","displayName":"Model allowance","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"route","routeId":"route:kira:qwen-38"},"status":"healthy","remaining":24000000,"limit":30000000,"constraining":true,"affectedRouteIds":["route:kira:qwen-38"]},{"bucketId":"general","displayName":"General Kira pool","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"fixed_calendar","calendarUnit":"day","timezone":"UTC"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":68000000,"limit":80000000,"constraining":false,"affectedRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]},{"bucketId":"bonus","displayName":"Check-in bonus","metric":{"kind":"tokens"},"unit":"tokens","windowPolicy":{"kind":"none"},"scope":{"kind":"shared_pool","productId":"kira-free"},"status":"healthy","remaining":50000000,"limit":50000000,"constraining":false,"entitlement":{"state":"claimable","eligibility":"requires_auth","amount":50000000,"unit":"tokens","actionLabel":"Sign in to claim","requiresExplicitUserAction":true,"appliesToRouteIds":["route:kira:qwen-37","route:kira:qwen-38"]}}]}"#
     let route = try JSONDecoder().decode(CatalogRouteEntry.self, from: Data(routeJSON.utf8))
     let quotas = try JSONDecoder().decode(UsageListResponse<CatalogQuotaSummary>.self, from: Data(quotasJSON.utf8)).data
@@ -244,7 +244,7 @@ func testModelQuotaHierarchyContract() throws {
 func testMenuBarPresentationContract() throws {
     let routesJSON = #"""
     {"data":[
-      {"routeId":"route:goat","provider":{"id":"provider:command","displayName":"Command Code"},"product":{"id":"product:goat","displayName":"individual-goat","category":"subscription"},"model":{"id":"model:command","displayName":"Command Code"},"offer":{"kind":"INCLUDED"},"quota":[],"availability":"available","visibility":"visible"}
+      {"routeId":"route:goat","provider":{"id":"provider:command","displayName":"Command Code"},"product":{"id":"product:goat","displayName":"individual-goat","category":"subscription"},"model":{"id":"model:command","displayName":"Command Code"},"offer":{"kind":"INCLUDED"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}}
     ]}
     """#
     let quotasJSON = #"""

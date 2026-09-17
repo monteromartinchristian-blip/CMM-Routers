@@ -219,9 +219,9 @@ private struct ModelRouteRow: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 11) {
-                Image(systemName: route.visibility == .visible ? "circle.fill" : "circle")
+                Image(systemName: route.isVisibleInModelCatalog ? "circle.fill" : "circle")
                     .font(.system(size: 7))
-                    .foregroundStyle(route.visibility == .visible ? .primary : .tertiary)
+                    .foregroundStyle(route.isVisibleInModelCatalog ? .primary : .tertiary)
                     .frame(width: 18)
                     .accessibilityHidden(true)
 
@@ -248,7 +248,7 @@ private struct ModelRouteRow: View {
                             Label("Bonus available", systemImage: "gift")
                                 .labelStyle(.titleAndIcon)
                         }
-                        if route.availability != .available {
+                        if route.usageStatus == .temporarilyUnavailable {
                             Text("·")
                             Text("Unavailable")
                         }
@@ -275,7 +275,7 @@ private struct ModelRouteRow: View {
                 Toggle(
                     "Show \(route.model.displayName) through \(route.provider.displayName)",
                     isOn: Binding(
-                        get: { route.visibility == .visible },
+                        get: { route.isVisibleInModelCatalog },
                         set: { visible in
                             onSetVisibility([route], visible ? .visible : .hidden)
                         }
@@ -284,7 +284,7 @@ private struct ModelRouteRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                .accessibilityValue(route.visibility == .visible ? "Visible" : "Hidden")
+                .accessibilityValue(route.isVisibleInModelCatalog ? "Visible" : "Hidden")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 6)

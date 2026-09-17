@@ -109,7 +109,7 @@ struct QuotasSectionView: View {
 
     private func hiddenRouteCount(for quota: CatalogQuotaSummary) -> Int {
         let ids = Set(quota.affectedRouteIds ?? [])
-        return model.catalogRoutes.filter { ids.contains($0.routeId) && $0.visibility == .hidden }.count
+        return model.catalogRoutes.filter { ids.contains($0.routeId) && !$0.isVisibleInModelCatalog }.count
     }
 
     private func claimableRouteLabels(for quota: CatalogQuotaSummary) -> [String] {

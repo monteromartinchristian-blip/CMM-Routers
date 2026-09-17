@@ -240,8 +240,8 @@ final class UsageDecodingTests: XCTestCase {
                   }
                 ]
               """ : "[]"),
-              "availability": "available",
-              "visibility": "visible"
+
+              "visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]}
             }
             """
         }.joined(separator: ",")

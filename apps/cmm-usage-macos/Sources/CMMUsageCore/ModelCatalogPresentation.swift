@@ -59,7 +59,7 @@ public struct ModelQuotaHierarchy: Sendable {
 
 public enum ModelCatalogPresenter {
     public static func visibleRoutes(_ routes: [CatalogRouteEntry]) -> [CatalogRouteEntry] {
-        routes.filter { $0.visibility == .visible }
+        routes.filter { $0.isVisibleInModelCatalog }
     }
 
     public static func pickerRoutes(_ routes: [CatalogRouteEntry]) -> [CatalogRouteEntry] {
@@ -68,7 +68,7 @@ public enum ModelCatalogPresenter {
 
     public static func selectionState(_ routes: [CatalogRouteEntry]) -> CatalogSelectionState {
         guard !routes.isEmpty else { return .hidden }
-        let visibleCount = routes.lazy.filter { $0.visibility == .visible }.count
+        let visibleCount = routes.lazy.filter { $0.isVisibleInModelCatalog }.count
         if visibleCount == 0 { return .hidden }
         if visibleCount == routes.count { return .visible }
         return .mixed
@@ -149,7 +149,7 @@ public enum ModelCatalogPresenter {
         case .promo: return route.offer.kind == .promo
         case .trial: return route.offer.kind == .trial
         case .payg: return route.offer.kind == .payg
-        case .hidden: return route.visibility == .hidden
+        case .hidden: return route.isHiddenFromConsumers
         }
     }
 

@@ -117,10 +117,30 @@ public enum CatalogProductCategory: String, Decodable, Sendable {
     case local
 }
 
-public enum CatalogRouteAvailability: String, Decodable, Sendable {
+/// Historical Usage observation of a route. Never current Router availability.
+public enum CatalogRouteUsageStatus: String, Decodable, Sendable {
     case available
     case temporarilyUnavailable = "temporarily_unavailable"
     case unknown
+}
+
+/// Router effective visibility for one exact route, by consumer surface.
+///
+/// Router owns visibility and expresses it as the set of surfaces the route is
+/// visible on, not as a single boolean. A route hidden from every consumer
+/// surface is still routable, so this must never be read as availability.
+public struct CatalogRouteVisibility: Decodable, Sendable {
+    public let visibleOn: [String]
+
+    /// True when the route is exposed on either model picker.
+    public var isVisibleInModelCatalog: Bool {
+        visibleOn.contains { surface in
+            surface == "cmmchat_model_picker" || surface == "cmmcode_model_picker"
+        }
+    }
+
+    /// True when no consumer picker surface can see the route.
+    public var isHiddenFromConsumers: Bool { !isVisibleInModelCatalog }
 }
 
 public enum CatalogVisibilityState: String, Codable, Sendable {
@@ -237,11 +257,17 @@ public struct CatalogRouteEntry: Decodable, Sendable, Identifiable {
     public let model: CatalogRouteModel
     public let offer: AccessOfferSummary
     public let quota: [CatalogQuotaSummary]
-    public let availability: CatalogRouteAvailability
-    public let visibility: CatalogVisibilityState
+    public let visibility: CatalogRouteVisibility
     public let freshness: CatalogFreshness?
+    public let usageStatus: CatalogRouteUsageStatus?
 
     public var id: String { routeId }
+
+    /// True when Router exposes this route on a consumer model picker.
+    public var isVisibleInModelCatalog: Bool { visibility.isVisibleInModelCatalog }
+
+    /// True when no consumer picker surface can see this route.
+    public var isHiddenFromConsumers: Bool { visibility.isHiddenFromConsumers }
 }
 
 public struct CatalogVisibilityPreference: Decodable, Sendable, Identifiable {

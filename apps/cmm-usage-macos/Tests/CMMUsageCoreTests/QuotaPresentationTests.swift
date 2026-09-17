@@ -47,7 +47,7 @@ final class QuotaPresentationTests: XCTestCase {
     func testOfferExpiryUsesFriendlyProductDate() throws {
         let route = try decoder.decode(
             CatalogRouteEntry.self,
-            from: Data(#"{"routeId":"r","provider":{"id":"provider","displayName":"Provider"},"product":{"id":"product","displayName":"Promo","category":"api"},"model":{"id":"model","displayName":"Model"},"offer":{"kind":"PROMO","validUntil":"2026-09-30T23:59:59.000Z"},"quota":[],"availability":"available","visibility":"visible","freshness":{"stale":false}}"#.utf8)
+            from: Data(#"{"routeId":"r","provider":{"id":"provider","displayName":"Provider"},"product":{"id":"product","displayName":"Promo","category":"api"},"model":{"id":"model","displayName":"Model"},"offer":{"kind":"PROMO","validUntil":"2026-09-30T23:59:59.000Z"},"quota":[],"visibility":{"visibleOn":["cmmchat_model_picker","admin_console"]},"freshness":{"stale":false}}"#.utf8)
         )
 
         XCTAssertEqual(route.offer.validUntilText, "Until 30 Sep 2026")

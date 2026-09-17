@@ -224,7 +224,7 @@ private struct PromotionRouteRow: View {
     }
 
     private var visibilityText: String {
-        route.visibility == .visible ? "Visible in model catalog" : "Hidden from model picker"
+        route.isVisibleInModelCatalog ? "Visible in model catalog" : "Hidden from model picker"
     }
 }
 
