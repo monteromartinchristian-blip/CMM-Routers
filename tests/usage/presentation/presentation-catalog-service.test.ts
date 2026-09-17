@@ -13,7 +13,6 @@ import {
   PresentationCatalogService,
   type RouterCatalogSource,
 } from "../../../src/usage/presentation/presentation-catalog-service.js";
-import { VisibilityStore } from "../../../src/usage/presentation/visibility-store.js";
 import { UsageQueryService } from "../../../src/usage/service/usage-query-service.js";
 import { SqliteUsageStore } from "../../../src/usage/storage/sqlite-usage-store.js";
 import { seedCatalogScenario } from "../fixtures/catalog-scenarios.js";
@@ -128,9 +127,6 @@ async function makeCatalog(
   stores.push(store);
   await store.initialize();
   await seedCatalogScenario(store);
-  // The legacy preference store is still constructed so a test can prove that
-  // SQLite visibility preferences no longer decide operational visibility.
-  const visibility = new VisibilityStore(store);
   const queries = new UsageQueryService(store, { now: () => new Date(now) });
   const directory = createDefaultProviderDirectory([]);
   const catalog = new PresentationCatalogService(
@@ -140,7 +136,7 @@ async function makeCatalog(
     directory,
     { now: () => new Date(now) },
   );
-  return { store, visibility, queries, catalog };
+  return { store, queries, catalog };
 }
 
 afterEach(async () => {
@@ -229,7 +225,7 @@ describe("PresentationCatalogService", () => {
   });
 
   it("takes Router hidden and non-routable truth over disagreeing Usage preferences", async () => {
-    const { catalog, visibility } = await makeCatalog({
+    const { store, catalog } = await makeCatalog({
       projection: projection(routerRoutes.map((route) =>
         route.routeId === "route:openrouter:claude"
           ? { ...route, routable: false, visibility: { visibleOn: ["admin_console" as const] } }
@@ -237,7 +233,11 @@ describe("PresentationCatalogService", () => {
     });
     // Usage SQLite deliberately disagrees: the legacy preference store records
     // the route as visible while its Usage row records it as available.
-    await visibility.set({ scope: "global", routeId: "route:openrouter:claude", state: "visible" });
+    await store.upsertVisibilityPreference({
+      scope: "global",
+      routeId: "route:openrouter:claude",
+      state: "visible",
+    });
 
     const route = (await catalog.listRoutes())
       .find((entry) => entry.routeId === "route:openrouter:claude");

@@ -1,72 +1,46 @@
 import type { VisibilityPreference } from "./types.js";
 
-export interface VisibilityTarget {
-  providerId: string;
-  productId: string;
-  routeId: string;
+/**
+ * Read-only access to the legacy Usage `visibility_preferences` rows.
+ *
+ * Deliberately narrower than the storage repository: this phase of the
+ * migration may only *read* the legacy table, never write it. Router
+ * administration is the single writable visibility authority.
+ */
+export interface LegacyVisibilityPreferenceReader {
+  listVisibilityPreferences(
+    scope?: VisibilityPreference["scope"],
+  ): Promise<VisibilityPreference[]>;
 }
 
-export interface VisibilityPreferenceRepository {
-  listVisibilityPreferences(scope?: VisibilityPreference["scope"]): Promise<VisibilityPreference[]>;
-  upsertVisibilityPreference(preference: VisibilityPreference): Promise<void>;
-}
-
-export type ResolvedVisibility = "visible" | "hidden";
-export type VisibilityGroupState = ResolvedVisibility | "mixed";
-
-function matches(preference: VisibilityPreference, target: VisibilityTarget): boolean {
-  if (preference.providerId !== undefined && preference.providerId !== target.providerId) return false;
-  if (preference.productId !== undefined && preference.productId !== target.productId) return false;
-  if (preference.routeId !== undefined && preference.routeId !== target.routeId) return false;
-  return true;
-}
-
-function specificity(preference: VisibilityPreference): number {
-  return Number(preference.providerId !== undefined)
-    + Number(preference.productId !== undefined) * 2
-    + Number(preference.routeId !== undefined) * 4;
-}
-
+/**
+ * Legacy Usage visibility preferences, now migration/history read-only.
+ *
+ * `visibility_preferences` was the effective route-visibility authority before
+ * the Router authority migration. It no longer is:
+ *
+ * - Router owns effective visibility; `PresentationCatalogService` reads it
+ *   from the Router projection, and the `/v1/cmm/usage/catalog/visibility`
+ *   compatibility read derives its state from Router `visibleOn`.
+ * - Visibility mutations go only through `RouterAdministrationService`; the
+ *   compatibility mutation surface delegates to it.
+ *
+ * What remains here is the legacy row *record*: the one-time
+ * `migrateLegacyVisibility` reader consumes `list()`, and historical reads may
+ * still scope-filter it. The effective-visibility resolver and the preference
+ * writer were removed with the authority, so no current route rendering or
+ * mutation can depend on this store — that is enforced by the type, not by
+ * convention.
+ */
 export class VisibilityStore {
-  constructor(private readonly repository: VisibilityPreferenceRepository) {}
+  constructor(private readonly repository: LegacyVisibilityPreferenceReader) {}
 
-  async set(preference: VisibilityPreference): Promise<void> {
-    if (preference.scope !== "global") {
-      throw new Error("CMM Usage v1 writes only global visibility preferences");
-    }
-    await this.repository.upsertVisibilityPreference(preference);
-  }
-
-  async list(): Promise<VisibilityPreference[]> {
-    return this.repository.listVisibilityPreferences("global");
-  }
-
-  async resolveRoute(
-    target: VisibilityTarget,
-    workspaceId?: string,
-  ): Promise<ResolvedVisibility> {
-    const scopes: VisibilityPreference["scope"][] = workspaceId === undefined
-      ? ["global"]
-      : [`workspace:${workspaceId}`, "global"];
-
-    for (const scope of scopes) {
-      const candidates = (await this.repository.listVisibilityPreferences(scope))
-        .filter((preference) => matches(preference, target))
-        .sort((left, right) => specificity(right) - specificity(left));
-
-      for (const preference of candidates) {
-        if (preference.state === "inherit") continue;
-        return preference.state;
-      }
-    }
-    return "visible";
-  }
-
-  async groupState(targets: readonly VisibilityTarget[]): Promise<VisibilityGroupState> {
-    if (targets.length === 0) return "visible";
-    const states = await Promise.all(targets.map((target) => this.resolveRoute(target)));
-    if (states.every((state) => state === "visible")) return "visible";
-    if (states.every((state) => state === "hidden")) return "hidden";
-    return "mixed";
+  /**
+   * Lists legacy rows. Unscoped by default, so the one-time migration sees
+   * every row — including the workspace-scoped rows it must report as skipped
+   * rather than silently drop.
+   */
+  async list(scope?: VisibilityPreference["scope"]): Promise<VisibilityPreference[]> {
+    return this.repository.listVisibilityPreferences(scope);
   }
 }

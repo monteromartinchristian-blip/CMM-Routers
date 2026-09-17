@@ -220,10 +220,9 @@ describe("CMM Usage privileged connection API", () => {
   });
 
   it("delegates an api-key connect to Router administration exactly once", async () => {
-    const { server, administration, providerConnections, dir } = await setup();
+    const { server, administration, providerConnections, visibility, dir } = await setup();
     const connect = vi.spyOn(RouterAdministrationService.prototype, "connect");
     const configUpdate = vi.spyOn(ManagedConfigStore.prototype, "update");
-    const visibilitySet = vi.spyOn(VisibilityStore.prototype, "set");
 
     const response = await server.inject({
       method: "POST",
@@ -247,7 +246,7 @@ describe("CMM Usage privileged connection API", () => {
     expect(administration.connectionKindFor("openrouter")).toBe("openai-chat-completions");
     // No compatibility operation writes Router-owned state to Usage storage.
     expect(configUpdate).not.toHaveBeenCalled();
-    expect(visibilitySet).not.toHaveBeenCalled();
+    expect(await visibility.list()).toEqual([]);
     expect(usageJson(dir)).toBe(USAGE_JSON);
 
     expect(response.json()).toMatchObject({
@@ -274,7 +273,6 @@ describe("CMM Usage privileged connection API", () => {
     });
     const route = routeCatalog.list().find((entry) => entry.providerModelId === "model-tools");
     expect(route).toBeDefined();
-    const visibilitySet = vi.spyOn(VisibilityStore.prototype, "set");
     const setRouteVisibility = vi.spyOn(RouterAdministrationService.prototype, "setRouteVisibility");
 
     const response = await server.inject({
@@ -290,9 +288,38 @@ describe("CMM Usage privileged connection API", () => {
     expect(routeCatalog.get(route!.routeId)?.visibility.visibleOn).toEqual(["admin_console"]);
     // Hiding is a visibility-only change: routability and siblings are untouched.
     expect(routeCatalog.get(route!.routeId)?.routable).toBe(true);
-    expect(visibilitySet).not.toHaveBeenCalled();
     expect(await visibility.list()).toEqual([]);
     expect(usageJson(dir)).toBe(USAGE_JSON);
+    await server.close();
+  });
+
+  it("fails closed on an inherit visibility mutation instead of pinning a default", async () => {
+    const { server, routeCatalog, visibility } = await setup();
+    await server.inject({
+      method: "POST",
+      url: "/v1/cmm/usage/connections/api-key",
+      headers: { authorization: `Bearer ${managementToken}`, "content-type": "application/json" },
+      payload: { integrationType: "openrouter", instanceId: "openrouter-primary", secret: RAW_SECRET },
+    });
+    const route = routeCatalog.list().find((entry) => entry.providerModelId === "model-tools")!;
+    await server.inject({
+      method: "PATCH",
+      url: "/v1/cmm/usage/catalog/visibility",
+      headers: { authorization: `Bearer ${managementToken}`, "content-type": "application/json" },
+      payload: { routeId: route.routeId, state: "hidden" },
+    });
+    const hidden = routeCatalog.get(route.routeId)!.visibility.visibleOn;
+
+    const response = await server.inject({
+      method: "PATCH",
+      url: "/v1/cmm/usage/catalog/visibility",
+      headers: { authorization: `Bearer ${managementToken}`, "content-type": "application/json" },
+      payload: { routeId: route.routeId, state: "inherit" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(routeCatalog.get(route.routeId)!.visibility.visibleOn).toEqual(hidden);
+    expect(await visibility.list()).toEqual([]);
     await server.close();
   });
 

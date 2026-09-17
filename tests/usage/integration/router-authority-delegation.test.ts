@@ -350,7 +350,11 @@ describe("Router authority delegation for the Usage catalog", () => {
       projection: withRoute("route:openrouter:claude", { visibility: { visibleOn: ["admin_console"] } }),
     });
     // SQLite still records the opposite preference.
-    await visibility.set({ scope: "global", routeId: "route:openrouter:claude", state: "visible" });
+    await store.upsertVisibilityPreference({
+      scope: "global",
+      routeId: "route:openrouter:claude",
+      state: "visible",
+    });
 
     const service = new UsageService(store, new UsageAdapterManager(), {
       scheduler: { now: () => Date.parse("2026-09-14T18:10:00.000Z") },
@@ -703,6 +707,56 @@ describe("Router authority delegation for Usage mutations", () => {
     ).rejects.toThrow();
     expect(await state.visibility.list()).toEqual([]);
     expect(state.sharedConfig().routeVisibility ?? []).toEqual([]);
+  });
+
+  it("rejects a workspace-scoped mutation instead of applying it globally", async () => {
+    const state = await delegationSetup();
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const route = state.routeCatalog.list()[0]!;
+    const before = state.routeCatalog.get(route.routeId)!.visibility.visibleOn;
+
+    // Router has no workspace visibility surface. Applying this as a global
+    // exact rule would silently widen a workspace preference into Router truth.
+    await expect(
+      state.connections.setVisibility({
+        scope: "workspace:team-a",
+        routeId: route.routeId,
+        state: "hidden",
+      }),
+    ).rejects.toThrow(/global/i);
+    expect(state.routeCatalog.get(route.routeId)!.visibility.visibleOn).toEqual(before);
+    expect(state.sharedConfig().routeVisibility ?? []).toEqual([]);
+  });
+
+  it("rejects an inherit mutation instead of pinning the capability default over an exact rule", async () => {
+    const state = await delegationSetup();
+    await state.connections.connectWithApiKey("openrouter", "secret-value", {
+      instanceId: "openrouter-primary",
+    });
+    const route = state.routeCatalog.list()[0]!;
+    await state.connections.setVisibility({
+      scope: "global",
+      routeId: route.routeId,
+      state: "hidden",
+    });
+    const hidden = state.routeCatalog.get(route.routeId)!.visibility.visibleOn;
+
+    // `inherit` has no Router analogue: mapping it onto the capability default
+    // would silently overwrite the exact Router rule (including a migrated
+    // legacy rule) instead of failing closed.
+    await expect(
+      state.connections.setVisibility({
+        scope: "global",
+        routeId: route.routeId,
+        state: "inherit",
+      }),
+    ).rejects.toThrow();
+    expect(state.routeCatalog.get(route.routeId)!.visibility.visibleOn).toEqual(hidden);
+    expect(state.sharedConfig().routeVisibility).toEqual([
+      { routeId: route.routeId, visibleOn: ["admin_console"] },
+    ]);
   });
 
   it("serves the compatibility visibility mutation through the privileged HTTP endpoint", async () => {

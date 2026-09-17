@@ -2,82 +2,57 @@ import { describe, expect, it } from "vitest";
 import type { VisibilityPreference } from "../../../src/usage/presentation/types.js";
 import { VisibilityStore } from "../../../src/usage/presentation/visibility-store.js";
 
-class MemoryVisibilityRepository {
-  private readonly values: VisibilityPreference[] = [];
+class MemoryLegacyRows {
+  constructor(private readonly rows: readonly VisibilityPreference[]) {}
 
-  async listVisibilityPreferences(scope?: VisibilityPreference["scope"]): Promise<VisibilityPreference[]> {
-    return this.values.filter((value) => scope === undefined || value.scope === scope);
-  }
-
-  async upsertVisibilityPreference(preference: VisibilityPreference): Promise<void> {
-    const index = this.values.findIndex((value) =>
-      value.scope === preference.scope
-      && value.providerId === preference.providerId
-      && value.productId === preference.productId
-      && value.routeId === preference.routeId
-    );
-    if (index >= 0) this.values[index] = preference;
-    else this.values.push(preference);
+  async listVisibilityPreferences(
+    scope?: VisibilityPreference["scope"],
+  ): Promise<VisibilityPreference[]> {
+    return this.rows
+      .filter((row) => scope === undefined || row.scope === scope)
+      .map((row) => ({ ...row }));
   }
 }
 
-const anthropicClaude = {
-  providerId: "provider:anthropic",
-  productId: "product:claude-subscription",
-  routeId: "route:anthropic:claude-sonnet",
-};
-
-const openRouterClaude = {
-  providerId: "provider:openrouter",
-  productId: "product:openrouter",
-  routeId: "route:openrouter:claude-sonnet",
-};
+const globalRoute = { scope: "global", routeId: "route:one", state: "hidden" } as const;
+const workspaceRoute = {
+  scope: "workspace:team-a",
+  routeId: "route:one",
+  state: "hidden",
+} as const;
+const globalProvider = { scope: "global", providerId: "provider:one", state: "visible" } as const;
 
 describe("VisibilityStore", () => {
-  it("hides one route without hiding a sibling route for the same conceptual model", async () => {
-    const visibility = new VisibilityStore(new MemoryVisibilityRepository());
-    await visibility.set({
-      scope: "global",
-      routeId: openRouterClaude.routeId,
-      state: "hidden",
-    });
+  it("reads every legacy row for migration, including non-global scopes", async () => {
+    const visibility = new VisibilityStore(
+      new MemoryLegacyRows([globalRoute, workspaceRoute, globalProvider]),
+    );
 
-    expect(await visibility.resolveRoute(openRouterClaude)).toBe("hidden");
-    expect(await visibility.resolveRoute(anthropicClaude)).toBe("visible");
+    // The one-time migration must be able to see workspace-scoped rows so it
+    // can report them as skipped instead of silently dropping them.
+    expect(await visibility.list()).toEqual([globalRoute, workspaceRoute, globalProvider]);
   });
 
-  it("resolves product and provider defaults while allowing route overrides", async () => {
-    const visibility = new VisibilityStore(new MemoryVisibilityRepository());
-    await visibility.set({ scope: "global", providerId: "provider:openrouter", state: "hidden" });
-    await visibility.set({
-      scope: "global",
-      providerId: "provider:openrouter",
-      productId: "product:openrouter",
-      state: "hidden",
-    });
-    await visibility.set({ scope: "global", routeId: openRouterClaude.routeId, state: "visible" });
+  it("still filters legacy rows by scope for history reads", async () => {
+    const visibility = new VisibilityStore(
+      new MemoryLegacyRows([globalRoute, workspaceRoute]),
+    );
 
-    expect(await visibility.resolveRoute(openRouterClaude)).toBe("visible");
-    expect(await visibility.resolveRoute({
-      ...openRouterClaude,
-      routeId: "route:openrouter:qwen",
-    })).toBe("hidden");
+    expect(await visibility.list("workspace:team-a")).toEqual([workspaceRoute]);
   });
 
-  it("reports mixed group state when only some routes are visible", async () => {
-    const visibility = new VisibilityStore(new MemoryVisibilityRepository());
-    await visibility.set({ scope: "global", routeId: openRouterClaude.routeId, state: "hidden" });
+  it("no longer resolves effective visibility from legacy rows", async () => {
+    const visibility = new VisibilityStore(new MemoryLegacyRows([globalRoute])) as unknown as
+      Record<string, unknown>;
 
-    expect(await visibility.groupState([openRouterClaude, anthropicClaude])).toBe("mixed");
+    expect(visibility.resolveRoute).toBeUndefined();
+    expect(visibility.groupState).toBeUndefined();
   });
 
-  it("keeps v1 writes global while preserving a future-ready scope type", async () => {
-    const visibility = new VisibilityStore(new MemoryVisibilityRepository());
+  it("no longer writes legacy visibility rows", async () => {
+    const visibility = new VisibilityStore(new MemoryLegacyRows([])) as unknown as
+      Record<string, unknown>;
 
-    await expect(visibility.set({
-      scope: "workspace:future",
-      routeId: openRouterClaude.routeId,
-      state: "hidden",
-    })).rejects.toThrow(/global/i);
+    expect(visibility.set).toBeUndefined();
   });
 });

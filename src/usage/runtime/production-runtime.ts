@@ -13,6 +13,10 @@ import {
   type SecureCredentialResolver,
 } from "./integration-catalog.js";
 import type { UsageServiceOptions } from "../service/usage-service.js";
+import {
+  migrateLegacyVisibility as runLegacyVisibilityMigration,
+  type LegacyVisibilityMigrationResult,
+} from "../migration/legacy-visibility-migration.js";
 import { createDefaultProviderDirectory } from "../presentation/provider-directory.js";
 import {
   emptyRouterCatalogSource,
@@ -83,6 +87,22 @@ export interface ProductionUsageRuntime {
   presentationCatalog: PresentationCatalogService;
   visibility: VisibilityStore;
   connections: ConnectionManagementService;
+  /**
+   * One-time legacy visibility migration into the Router authority.
+   *
+   * Deliberately *not* run automatically. Re-running it after Router has
+   * become authoritative would let a stale legacy row override a later Router
+   * decision (for example re-hiding a route an operator has since re-enabled),
+   * so the migration window is an explicit operation rather than a boot step.
+   * Callers invoke it once during the migration window.
+   *
+   * It is fail-closed: with no Router administration wired (a Usage-only
+   * harness, or demo mode, where the real authority is withheld at the
+   * composition root) it reports nothing migrated and mutates no Router state.
+   * Ambiguous, workspace-scoped, `inherit` and unknown rows are reported rather
+   * than guessed, and migration never broadens visibility.
+   */
+  migrateLegacyVisibility(): Promise<LegacyVisibilityMigrationResult>;
   resolveApiToken(): Promise<string | undefined>;
   resolveManagementApiToken(): Promise<string | undefined>;
   close(): Promise<void>;
@@ -256,6 +276,20 @@ export async function createProductionUsageRuntime(
     presentationCatalog,
     visibility,
     connections,
+    migrateLegacyVisibility: async (): Promise<LegacyVisibilityMigrationResult> => {
+      // Demo mode never reaches the real Router authority, and a Usage-only
+      // composition has none to reach. Both report nothing to migrate rather
+      // than promoting legacy rows into invented Router state.
+      const administration = demoFixture ? undefined : options.routerAdministration;
+      if (administration === undefined) {
+        return { migratedRouteIds: [], skippedAmbiguous: [], skippedUnknown: [] };
+      }
+      return runLegacyVisibilityMigration(
+        visibility,
+        await routerCatalog.read(),
+        administration,
+      );
+    },
     resolveApiToken: async () => resolver.resolve(config.apiCredentialRef),
     resolveManagementApiToken: async () => resolver.resolve(config.managementApiCredentialRef),
     close: async () => {

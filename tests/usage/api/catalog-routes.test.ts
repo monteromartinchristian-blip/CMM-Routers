@@ -112,7 +112,7 @@ async function fixture() {
   // The legacy preference store deliberately disagrees with Router: it records
   // the admin-only route as visible.
   const visibility = new VisibilityStore(store);
-  await visibility.set({
+  await store.upsertVisibilityPreference({
     scope: "global",
     routeId: "route:openrouter:claude",
     state: "visible",

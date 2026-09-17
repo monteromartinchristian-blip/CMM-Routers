@@ -20,6 +20,11 @@ import type {
   ProviderProduct,
 } from "../../src/catalog/types.js";
 import type { UsageEvent } from "../../src/usage/domain/types.js";
+import { migrateLegacyVisibility } from "../../src/usage/migration/legacy-visibility-migration.js";
+import { PresentationCatalogService } from "../../src/usage/presentation/presentation-catalog-service.js";
+import { createDefaultProviderDirectory } from "../../src/usage/presentation/provider-directory.js";
+import { VisibilityStore } from "../../src/usage/presentation/visibility-store.js";
+import { UsageQueryService } from "../../src/usage/service/usage-query-service.js";
 import { SqliteUsageStore } from "../../src/usage/storage/sqlite-usage-store.js";
 import { InMemorySecureCredentialResolver } from "../support/in-memory-secure-credential-resolver.js";
 
@@ -394,6 +399,170 @@ describe("Routers ↔ Usage catalog responsibility boundary", () => {
 
       expect(state.providerConnections.get(CONNECTION_ID)).toBeUndefined();
       expect(await usageStore.listUsageEvents()).toEqual([history]);
+    } finally {
+      await usageStore.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Legacy Usage visibility migration boundary", () => {
+  function migrationAdministration(state: ReturnType<typeof setup>, root: string) {
+    const reconciler = new CatalogReconciler({
+      connections: state.providerConnections,
+      modelIdentities: state.modelIdentities,
+      routeCatalog: state.routeCatalog,
+      routePolicy: (_connection, model) => ({
+        canonicalName: model.providerModelId,
+        executionProfile: "default",
+        capabilities: { chat: true, tools: false, streaming: true },
+        billingClass: "api",
+        routable: true,
+        visibility: { visibleOn: ["admin_console"] },
+      }),
+      minRefreshIntervalMs: 0,
+    });
+    const credentialWriter: SecureCredentialWriter = {
+      async write() {
+        throw new Error("unused in legacy visibility migration test");
+      },
+      async remove() {},
+    };
+    return new RouterAdministrationService({
+      directory: state.directory,
+      connections: state.providerConnections,
+      credentialBindings: state.credentialBindings,
+      routeCatalog: state.routeCatalog,
+      catalogReconciler: reconciler,
+      configStore: new RouterAdminConfigStore(join(root, "router-config")),
+      credentialWriter,
+      routeVisibilityPolicy: new RouteVisibilityPolicy(),
+    });
+  }
+
+  function usageCatalog(state: ReturnType<typeof setup>, usageStore: SqliteUsageStore) {
+    return new PresentationCatalogService(
+      { read: () => buildRouterCatalogProjection(state.projectionInput) },
+      usageStore,
+      new UsageQueryService(usageStore),
+      createDefaultProviderDirectory([]),
+    );
+  }
+
+  it("promotes only an unambiguous route-scoped preference into exact Router state", async () => {
+    const state = setup({ observability: true, execution: true });
+    const root = mkdtempSync(join(tmpdir(), "cmm-usage-legacy-visibility-"));
+    const usageStore = new SqliteUsageStore(join(root, "usage.sqlite"));
+    await usageStore.initialize();
+
+    // A sibling route on the same connection: an exact-route migration must
+    // never take it with it.
+    const siblingModelIdentityId = buildModelIdentityId({ canonicalName: "Sibling Model" });
+    const siblingProviderModelId = "openrouter/sibling-boundary";
+    state.modelIdentities.upsertExplicit({
+      modelIdentityId: siblingModelIdentityId,
+      canonicalName: "Sibling Model",
+      aliases: [],
+    });
+    state.modelIdentities.bindProviderModel({
+      providerId: PROVIDER_ID,
+      connectionId: CONNECTION_ID,
+      providerModelId: siblingProviderModelId,
+      modelIdentityId: siblingModelIdentityId,
+    });
+    const siblingRoute: AccessRoute = {
+      ...state.route,
+      routeId: buildRouteId({
+        providerId: PROVIDER_ID,
+        connectionId: CONNECTION_ID,
+        providerModelId: siblingProviderModelId,
+        executionProfile: "default",
+      }),
+      modelIdentityId: siblingModelIdentityId,
+      providerModelId: siblingProviderModelId,
+    };
+    state.routeCatalog.upsert(siblingRoute);
+
+    await usageStore.upsertVisibilityPreference({
+      scope: "global",
+      routeId: state.route.routeId,
+      state: "hidden",
+    });
+    await usageStore.upsertVisibilityPreference({
+      scope: "workspace:team-a",
+      routeId: state.route.routeId,
+      state: "hidden",
+    });
+    await usageStore.upsertVisibilityPreference({
+      scope: "global",
+      routeId: "route:retired",
+      state: "hidden",
+    });
+
+    try {
+      const result = await migrateLegacyVisibility(
+        new VisibilityStore(usageStore),
+        buildRouterCatalogProjection(state.projectionInput),
+        migrationAdministration(state, root),
+      );
+
+      expect(result.migratedRouteIds).toEqual([state.route.routeId]);
+      expect(result.skippedAmbiguous).toEqual([`workspace:team-a route=${state.route.routeId}`]);
+      expect(result.skippedUnknown).toEqual(["route:retired"]);
+
+      const migrated = state.routeCatalog.get(state.route.routeId)!;
+      expect(migrated.visibility.visibleOn).toEqual(["admin_console"]);
+      // Visibility is independent of routability and of sibling routes.
+      expect(migrated.routable).toBe(true);
+      expect(state.routeCatalog.get(siblingRoute.routeId)!.visibility.visibleOn)
+        .toEqual(state.route.visibility.visibleOn);
+      // No Router route is invented for an unknown legacy route id.
+      expect(buildRouterCatalogProjection(state.projectionInput).routes.map((route) => route.routeId))
+        .toEqual([state.route.routeId, siblingRoute.routeId]);
+      // Router state, not SQLite: every legacy row is still stored.
+      expect((await usageStore.listVisibilityPreferences()).length).toBe(3);
+
+      const catalog = usageCatalog(state, usageStore);
+      const visibility = await catalog.listRouteVisibility();
+      expect(visibility.find((entry) => entry.routeId === state.route.routeId)?.state).toBe("hidden");
+      expect((await catalog.listVisibleRoutes()).map((route) => route.routeId))
+        .toEqual([siblingRoute.routeId]);
+    } finally {
+      await usageStore.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never broadens Router visibility from a disagreeing legacy preference", async () => {
+    const state = setup({ observability: true, execution: true, hidden: true });
+    const root = mkdtempSync(join(tmpdir(), "cmm-usage-legacy-no-broaden-"));
+    const usageStore = new SqliteUsageStore(join(root, "usage.sqlite"));
+    await usageStore.initialize();
+    // Router hides the route; the legacy row asks for it to be visible.
+    await usageStore.upsertVisibilityPreference({
+      scope: "global",
+      routeId: state.route.routeId,
+      state: "visible",
+    });
+
+    try {
+      const result = await migrateLegacyVisibility(
+        new VisibilityStore(usageStore),
+        buildRouterCatalogProjection(state.projectionInput),
+        migrationAdministration(state, root),
+      );
+
+      expect(result).toEqual({
+        migratedRouteIds: [],
+        skippedAmbiguous: [`global route=${state.route.routeId}`],
+        skippedUnknown: [],
+      });
+      expect(state.routeCatalog.get(state.route.routeId)!.visibility.visibleOn)
+        .toEqual(["admin_console"]);
+      // Usage reads Router truth, so the route stays hidden.
+      const catalog = usageCatalog(state, usageStore);
+      expect((await catalog.listRouteVisibility()).find((entry) => entry.routeId === state.route.routeId)?.state)
+        .toBe("hidden");
     } finally {
       await usageStore.close();
       rmSync(root, { recursive: true, force: true });

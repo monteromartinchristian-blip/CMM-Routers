@@ -253,16 +253,31 @@ export class ConnectionManagementService {
    * Maps the legacy `{ routeId, state }` preference onto exact Router surfaces.
    *
    * `hidden` becomes `["admin_console"]`, which can never broaden visibility.
-   * `visible` (and `inherit`, a Usage-scope concept with no Router analogue)
-   * restores the route's capability-derived executable surfaces. A preference
-   * that does not name an exact route is rejected: Router visibility belongs to
-   * the exact `AccessRoute`, never to a provider, product or model identity.
+   * `visible` restores the route's capability-derived executable surfaces. A
+   * preference that does not name an exact route is rejected: Router visibility
+   * belongs to the exact `AccessRoute`, never to a provider, product or model
+   * identity.
+   *
+   * Two legacy shapes fail closed instead of being guessed:
+   *
+   * - a workspace-scoped preference, because Router has no workspace/tenant
+   *   visibility surface and applying it globally would silently widen it;
+   * - `inherit`, because Router has no fall-through rule. Mapping it onto the
+   *   capability default would silently pin that default over whatever exact
+   *   Router rule already exists — including a rule produced by the legacy
+   *   visibility migration.
    */
   async setVisibility(preference: VisibilityPreference): Promise<void> {
     const administration = this.requireAdministration();
+    if (preference.scope !== "global") {
+      throw new Error("Router route visibility is global; workspace scope is unsupported");
+    }
     const routeId = preference.routeId;
     if (routeId === undefined) {
       throw new Error("Router route visibility requires an exact route");
+    }
+    if (preference.state === "inherit") {
+      throw new Error("Router route visibility requires an explicit visible or hidden state");
     }
     const visibleOn = preference.state === "hidden"
       ? (["admin_console"] as const)
