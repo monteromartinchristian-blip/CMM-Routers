@@ -208,8 +208,41 @@ describe("Router authority delegation for the Usage catalog", () => {
     expect(route?.model.displayName).toBe("Claude Sonnet");
     expect(route?.routable).toBe(true);
     expect(route?.visibility).toEqual({ visibleOn: ["cmmchat_model_picker", "admin_console"] });
+    // The disagreeing Usage row claims product:openrouter, but Router's product
+    // identity, user-facing label and category are all authoritative.
+    expect(route?.product.id).toBe("product:anthropic");
+    expect(route?.product.displayName).toBe("Claude subscription");
+    expect(route?.product.category).toBe("subscription");
     // Only the explicitly historical Usage observation reflects the Usage row.
     expect(route?.usageStatus).toBe("temporarily_unavailable");
+  });
+
+  it("still lets an agreeing Usage row refine the product label and category", async () => {
+    const { catalog } = await setup();
+    const routes = await catalog.listRoutes();
+
+    // Usage and Router agree on product identity for these routes, so the
+    // Usage-side friendly label and provider-kind category refinement apply.
+    expect(routes.find((route) => route.routeId === "route:command-code")?.product)
+      .toEqual({
+        id: "product:command-code:individual-goat",
+        displayName: "GOAT",
+        category: "subscription",
+      });
+    expect(routes.find((route) => route.routeId === "route:openrouter:claude")?.product)
+      .toEqual({
+        id: "product:openrouter",
+        displayName: "OpenRouter credits",
+        category: "aggregator",
+      });
+    // Router's product kind is `promo_pool` (a bare "api"), but the agreeing
+    // Usage provider kind `generic` refines the category to `custom`.
+    expect(routes.find((route) => route.routeId === "route:kira:qwen")?.product)
+      .toEqual({
+        id: "product:kira-promo",
+        displayName: "Kira free access",
+        category: "custom",
+      });
   });
 
   it("keeps a Usage-only route out of the operational list but in historical queries", async () => {

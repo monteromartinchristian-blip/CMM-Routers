@@ -178,14 +178,24 @@ function resolveProduct(
       usageProduct,
     };
   }
+  // Router owns product identity. Usage may refine the presentation label and
+  // category only when its row agrees with Router about the product identity;
+  // a disagreeing Usage row must never relabel or re-categorise the route.
+  if (usageProduct !== undefined && usageProduct.id === routerProduct.productId) {
+    return {
+      id: routerProduct.productId,
+      displayName: friendlyProductName(usageProduct),
+      category: usageProvider === undefined
+        ? routerProductCategory(routerProduct.kind)
+        : usageProductCategory(usageProduct, usageProvider),
+      routerKind: routerProduct.kind,
+      usageProduct,
+    };
+  }
   return {
     id: routerProduct.productId,
-    displayName: usageProduct === undefined
-      ? routerProduct.label
-      : friendlyProductName(usageProduct),
-    category: usageProduct !== undefined && usageProvider !== undefined
-      ? usageProductCategory(usageProduct, usageProvider)
-      : routerProductCategory(routerProduct.kind),
+    displayName: routerProduct.label,
+    category: routerProductCategory(routerProduct.kind),
     routerKind: routerProduct.kind,
     usageProduct,
   };
@@ -379,12 +389,12 @@ export class PresentationCatalogService {
             ?? usageRoute?.displayName
             ?? route.providerModelId,
           ...(family === undefined ? {} : { family }),
-          aliases: routerModel?.aliases ?? usageModel?.aliases ?? [],
+          aliases: [...(routerModel?.aliases ?? usageModel?.aliases ?? [])],
         },
         routable: route.routable,
-        capabilities: route.capabilities,
+        capabilities: { ...route.capabilities },
         billingClass: route.billingClass,
-        visibility: { visibleOn: route.visibility.visibleOn },
+        visibility: { visibleOn: route.visibility.visibleOn.slice() },
         offer: usageRoute !== undefined && product.usageProduct !== undefined
           ? currentAccessOffer(usageRoute, product.usageProduct, now)
           : offerFromProductKinds(product.routerKind, product.usageProduct?.kind),
