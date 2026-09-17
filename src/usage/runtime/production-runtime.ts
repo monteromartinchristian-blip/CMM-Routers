@@ -29,6 +29,18 @@ import {
   seedPublicSafeCatalogFixture,
 } from "../demo/public-safe-catalog-fixture.js";
 
+/**
+ * The one demo-mode discriminator for the whole process.
+ *
+ * Demo mode is triggered by `CMM_USAGE_DEMO_FIXTURE=1`. Both the Usage runtime
+ * and the composition root (`createProductionServer`) derive it through this
+ * function, so the synthetic-fixture boundary and the real-Router isolation
+ * boundary can never diverge.
+ */
+export function isDemoFixtureEnabled(): boolean {
+  return process.env.CMM_USAGE_DEMO_FIXTURE === "1";
+}
+
 export interface ProductionUsageRuntimeOptions {
   configDir?: string;
   databasePath?: string;
@@ -167,7 +179,7 @@ function demoRouterCatalogSource(store: UsageStore): RouterCatalogSource {
 export async function createProductionUsageRuntime(
   options: ProductionUsageRuntimeOptions = {},
 ): Promise<ProductionUsageRuntime> {
-  const demoFixture = process.env.CMM_USAGE_DEMO_FIXTURE === "1";
+  const demoFixture = isDemoFixtureEnabled();
   const config = demoFixture ? PUBLIC_SAFE_DEMO_CONFIG : loadUsageRuntimeConfig(options.configDir);
   const store = new SqliteUsageStore(
     demoFixture
@@ -209,12 +221,16 @@ export async function createProductionUsageRuntime(
     runtime.service.queries,
     providerDirectory,
   );
-  // Demo mode must never receive the real Router administration. The demo
-  // management bearer is a public constant, so a compatibility mutation that
-  // reached the real authority would let anyone write real `shared.json`
-  // administrative state, the real OS keychain and real provider discovery.
-  // Withholding it makes every demo mutation fail closed (503) instead. Real
-  // mode delegates to the injected authority exactly as before.
+  // Demo mode must never receive the real Router administration on this
+  // compatibility surface. The demo management bearer is a public constant, so
+  // a compatibility mutation that reached the real authority would let anyone
+  // write real `shared.json` administrative state, the real OS keychain and
+  // real provider discovery. Withholding it here makes every compatibility
+  // mutation fail closed (503). This is only the compatibility half of the
+  // isolation: the canonical `/v1/cmm/catalog/**` administration surface is
+  // withheld independently at the composition root (`createProductionServer`),
+  // which is where the real authority is wired into HTTP. Real mode delegates
+  // to the injected authority exactly as before.
   const connections = new ConnectionManagementService(
     demoFixture ? undefined : options.routerAdministration,
     {

@@ -39,7 +39,10 @@ import {
 } from "./providers/manifest.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 import type { UsageService as CmmUsageService } from "./usage/service/usage-service.js";
-import { createProductionUsageRuntime } from "./usage/runtime/production-runtime.js";
+import {
+  createProductionUsageRuntime,
+  isDemoFixtureEnabled,
+} from "./usage/runtime/production-runtime.js";
 import type { PresentationCatalogService } from "./usage/presentation/presentation-catalog-service.js";
 import type { VisibilityStore } from "./usage/presentation/visibility-store.js";
 import type { ConnectionManagementService } from "./usage/service/connection-management-service.js";
@@ -880,6 +883,27 @@ export function createProductionServer(
   qoderSecret?: string,
   usage?: ProductionUsageServerBinding,
 ) {
+  // Demo isolation is enforced here, at the composition root, not only in the
+  // Usage runtime. The demo management bearer is a public constant, so while
+  // demo mode is active the real Router administration must be unreachable
+  // from *every* HTTP surface — the canonical `/v1/cmm/catalog/**`
+  // administration routes included, not just the Usage compatibility
+  // endpoints. Withholding the authority means `buildServer` never registers
+  // those routes and the privileged pre-handler has no administration to
+  // admit, so every canonical mutation fails closed. The canonical catalog
+  // read is withheld for the same reason: it would otherwise project real
+  // Router state into a process that serves synthetic demo data only. Real
+  // (non-demo) mode forwards the authority, the projection and the reconcile
+  // hook exactly as before.
+  const routerFacingComposition = isDemoFixtureEnabled()
+    ? {}
+    : {
+        routerAdministration: composition.routerAdministration,
+        catalogProjectionInput: routerCatalogProjectionInput(composition),
+        beforeCatalogRead: async () => {
+          await composition.catalogReconciler.reconcileAll();
+        },
+      };
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
@@ -898,11 +922,7 @@ export function createProductionServer(
           ...(usage.connections === undefined ? {} : { cmmUsageConnections: usage.connections }),
         }),
     runtimeBridge: composition.runtimeBridge,
-    routerAdministration: composition.routerAdministration,
-    catalogProjectionInput: routerCatalogProjectionInput(composition),
-    beforeCatalogRead: async () => {
-      await composition.catalogReconciler.reconcileAll();
-    },
+    ...routerFacingComposition,
   });
 }
 
