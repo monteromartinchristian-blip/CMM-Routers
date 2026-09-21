@@ -1,24 +1,46 @@
-export const CONSUMER_QODER = "qoder";
-export const CONSUMER_CMMCHAT = "cmmchat";
+/**
+ * Legacy consumer-capability surface.
+ *
+ * The product model is now profile-based: a request authenticates either the
+ * CMMChat profile (permanently CHAT_ONLY) or the Code Router profile
+ * (CHAT_AND_TOOLS, subject to truthful provider/model capability). The old
+ * "consumer" vocabulary is retained here as a thin compatibility layer so
+ * existing imports, tests and callers keep working unchanged.
+ *
+ * @deprecated Import from `./router-profile.js` instead. These aliases will be
+ * removed once the compatibility window closes.
+ */
 
-export type ConsumerId = typeof CONSUMER_QODER | typeof CONSUMER_CMMCHAT;
-
-export const QODER_TOKEN_ENV = "CMM_QODER_TOKEN";
+import {
+  PROFILE_CMMCHAT,
+  PROFILE_CODE,
+  effectiveProfileToolCapability,
+  type RouterProfile,
+} from "./router-profile.js";
 
 /**
- * Effective tool gate = consumer policy AND provider capability.
- *
- * CMMChat is intentionally CHAT_ONLY on every provider: it must never
- * implicitly gain shell, filesystem, edit, or arbitrary tool execution.
- * Qoder may use tools only when the resolved provider model reports a proven
- * structured upstream round-trip (CHAT_AND_TOOLS). The provider capability
- * alone never grants tools to an unprivileged consumer, and the consumer
- * alone never grants tools on a CHAT_ONLY provider.
+ * @deprecated Legacy alias for the CMMChat profile.
  */
-export function effectiveToolCapability(
-  consumer: ConsumerId,
-  providerCapability: string | undefined,
-): "CHAT_AND_TOOLS" | "CHAT_ONLY" {
-  if (consumer !== CONSUMER_QODER) return "CHAT_ONLY";
-  return providerCapability === "CHAT_AND_TOOLS" ? "CHAT_AND_TOOLS" : "CHAT_ONLY";
-}
+export const CONSUMER_CMMCHAT = PROFILE_CMMCHAT;
+
+/**
+ * @deprecated Legacy alias for the Code Router profile. The Code Router profile
+ * is no longer a vendor identity and no longer grants tools by itself.
+ */
+export const CONSUMER_QODER = PROFILE_CODE;
+
+/**
+ * @deprecated Use `RouterProfile`.
+ */
+export type ConsumerId = RouterProfile;
+
+/**
+ * @deprecated Use `effectiveProfileToolCapability`.
+ */
+export const effectiveToolCapability = effectiveProfileToolCapability;
+
+/** Legacy compatibility bearer variable name. */
+export const QODER_TOKEN_ENV = "CMM_QODER_TOKEN";
+
+/** Canonical Code Router bearer variable name. */
+export const CODE_ROUTER_TOKEN_ENV = "CMM_CODE_ROUTER_TOKEN";
