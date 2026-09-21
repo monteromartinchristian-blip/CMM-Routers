@@ -6,7 +6,7 @@ import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
-import { effectiveToolCapability } from "../core/consumer-capability.js";
+import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
@@ -234,8 +234,10 @@ export function registerResponsesApi(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
-    const consumerId = (request as ConsumerRequest).consumerId;
-    const effective = effectiveToolCapability(consumerId, model.capability);
+    // Authorization subject is the authenticated PROFILE, never the client
+    // application identifier.
+    const profile = (request as ConsumerRequest).identity.profile;
+    const effective = effectiveProfileToolCapability(profile, model.capability);
 
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.

@@ -199,15 +199,36 @@ export async function createProductionRegistry(
   return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
 }
 
-export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {
+export interface ProductionServerSecrets {
+  /** Canonical Code Router bearer (CMM_CODE_ROUTER_TOKEN). */
+  codeRouterSecret?: string;
+  /** @deprecated Legacy Code Router bearer (CMM_QODER_TOKEN). */
+  legacyQoderSecret?: string;
+}
+
+export function createProductionServer(
+  composition: ProductionComposition,
+  bearerSecret: string,
+  secrets: ProductionServerSecrets = {},
+) {
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
     bearerSecret,
-    ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
+    ...(secrets.codeRouterSecret !== undefined
+      ? { codeRouterToken: secrets.codeRouterSecret }
+      : {}),
+    ...(secrets.legacyQoderSecret !== undefined
+      ? { qoderToken: secrets.legacyQoderSecret }
+      : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
   });
+}
+
+function optionalSecret(name: string): string | undefined {
+  const value = process.env[name];
+  return value !== undefined && value.length > 0 ? value : undefined;
 }
 
 async function main() {
@@ -229,11 +250,17 @@ async function main() {
     process.exit(1);
   }
 
-  // Optional Qoder consumer token. When unset there is no Qoder consumer and
-  // every authenticated client is CMMChat (permanently CHAT_ONLY).
-  const qoderSecret = process.env.CMM_QODER_TOKEN;
+  // Optional Code Router profile credentials. The canonical bearer is preferred
+  // for new installs/clients; the legacy alias is retained so existing
+  // installations keep working. When neither is set there is no Code Router
+  // profile and every authenticated request is CMMChat (permanently CHAT_ONLY).
+  const codeRouterSecret = optionalSecret("CMM_CODE_ROUTER_TOKEN");
+  const legacyQoderSecret = optionalSecret("CMM_QODER_TOKEN");
 
-  const server = createProductionServer(composition, bearerSecret, qoderSecret);
+  const server = createProductionServer(composition, bearerSecret, {
+    ...(codeRouterSecret !== undefined ? { codeRouterSecret } : {}),
+    ...(legacyQoderSecret !== undefined ? { legacyQoderSecret } : {}),
+  });
 
   const shutdown = async () => {
     try {

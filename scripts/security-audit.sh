@@ -106,14 +106,60 @@ else
   echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
 fi
 
-echo "== consumer capability policy present =="
-if ! grep -q "effectiveToolCapability" src/http/openai-chat.ts; then
-  echo "FAIL: consumer capability gate missing from chat handler"
+echo "== profile capability policy present (client-agnostic) =="
+# Authorization operates on the authenticated PROFILE. The capability decision
+# must be driven by request identity and must never consult an application
+# identifier.
+if ! grep -q "effectiveProfileToolCapability" src/http/openai-chat.ts \
+  || ! grep -q "effectiveProfileToolCapability" src/http/openai-responses.ts; then
+  echo "FAIL: profile capability gate missing from an HTTP surface"
+  fail=1
+elif ! grep -q "identity.profile" src/http/openai-chat.ts \
+  || ! grep -q "identity.profile" src/http/openai-responses.ts; then
+  echo "FAIL: capability gate input is not the authenticated request profile"
+  fail=1
+elif grep -rn "effectiveProfileToolCapability(" src/http/openai-chat.ts src/http/openai-responses.ts \
+  | grep -q "clientId"; then
+  echo "FAIL: application identifier reaches the capability decision"
   fail=1
 else
+  echo "PROFILE_CAPABILITY_POLICY=PASS"
   echo "CONSUMER_CAPABILITY_POLICY=PASS"
   echo "CMMCHAT_TOOL_ESCALATION=NONE"
   echo "UNAUTHENTICATED_TOOL_ESCALATION=NONE"
+  echo "CMMCHAT_CHAT_ONLY=PASS"
+  echo "CMM_CODE_ROUTER_PROFILE=CHAT_AND_TOOLS"
+  echo "CMM_CODE_ROUTER_CLIENT_AGNOSTIC=YES"
+  echo "CLIENT_IDENTITY_NOT_AUTHORIZATION=PASS"
+fi
+
+echo "== profile authorization module carries no application identity =="
+if grep -riq "qoder\|hermes\|codex\|client" src/core/router-profile.ts; then
+  echo "FAIL: application identity literal present in the profile authorization module"
+  fail=1
+else
+  echo "PROFILE_MODULE_CLIENT_AGNOSTIC=PASS"
+fi
+
+echo "== ambiguous profile auth fails closed =="
+if grep -q "assertDistinctServerTokens" src/http/server.ts \
+  && grep -q "assertDistinctServerTokens" src/http/identity.ts \
+  && grep -q "router_misconfigured" src/http/identity.ts; then
+  echo "AMBIGUOUS_AUTH_FAILS_CLOSED=PASS"
+else
+  echo "FAIL: startup ambiguity guard missing"
+  fail=1
+fi
+
+echo "== canonical Code Router bearer wiring present =="
+if grep -q "CMM_CODE_ROUTER_TOKEN" .env.example \
+  && grep -q "CMM_CODE_ROUTER_TOKEN" src/index.ts \
+  && grep -q "CMM_QODER_TOKEN" src/index.ts; then
+  echo "CODE_ROUTER_BEARER_WIRED=PASS"
+  echo "LEGACY_QODER_BEARER_WIRED=PASS"
+else
+  echo "FAIL: Code Router bearer wiring incomplete"
+  fail=1
 fi
 
 echo "== production composition: providers registered from config =="

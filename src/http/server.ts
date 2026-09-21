@@ -1,47 +1,81 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
-import { verifyBearer } from "../security/bearer-auth.js";
 import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerChatCompletions } from "./openai-chat.js";
 import { registerResponsesApi } from "./openai-responses.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
+import type { RouterProfile } from "../core/router-profile.js";
 import {
-  CONSUMER_CMMCHAT,
-  CONSUMER_QODER,
-  type ConsumerId,
-} from "../core/consumer-capability.js";
+  CLIENT_ID_HEADER,
+  assertDistinctServerTokens,
+  resolveRequestIdentity,
+  type ResolvedIdentity,
+  type ServerTokens,
+} from "./identity.js";
 
 export interface ServerOptions {
   host: string;
   port: number;
+  /** Bearer for the CMMChat profile (permanently CHAT_ONLY). */
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
   /**
-   * Optional second bearer token bound to the Qoder consumer. When absent
-   * there is no Qoder consumer and every authenticated client is CMMChat
-   * (permanently CHAT_ONLY). Server-side and configuration-controlled: a
-   * client can never enable tools by itself, and CMMChat can never use them.
+   * Canonical Code Router bearer. Requests presenting it authenticate the Code
+   * Router profile, whose effective capability is the intersection of the
+   * profile and the resolved provider/model capability.
+   */
+  codeRouterToken?: string;
+  /**
+   * @deprecated Legacy Code Router bearer. It authenticates the SAME Code
+   * Router profile and is retained so existing installations keep working
+   * during the compatibility window. No client identity grants capability.
    */
   qoderToken?: string;
 }
 
-export type ConsumerRequest = FastifyRequest & { consumerId: ConsumerId };
+export type ConsumerRequest = FastifyRequest & {
+  identity: ResolvedIdentity;
+  /**
+   * @deprecated Derived from `identity.profile`; retained for compatibility.
+   */
+  consumerId: RouterProfile;
+};
 
+function serverTokens(
+  options: Pick<ServerOptions, "bearerSecret" | "codeRouterToken" | "qoderToken">,
+): ServerTokens {
+  return {
+    cmmchatToken: options.bearerSecret,
+    ...(options.codeRouterToken !== undefined ? { codeRouterToken: options.codeRouterToken } : {}),
+    ...(options.qoderToken !== undefined ? { legacyQoderToken: options.qoderToken } : {}),
+  };
+}
+
+/**
+ * @deprecated Use `resolveRequestIdentity`. Retained as a thin compatibility
+ * wrapper that returns the resolved profile.
+ */
 export function resolveConsumerId(
   request: FastifyRequest,
-  options: Pick<ServerOptions, "bearerSecret" | "qoderToken">,
-): ConsumerId | null {
-  const authorization = request.headers.authorization;
-  if (verifyBearer(authorization, options.bearerSecret)) return CONSUMER_CMMCHAT;
-  if (options.qoderToken !== undefined && verifyBearer(authorization, options.qoderToken)) {
-    return CONSUMER_QODER;
-  }
-  return null;
+  options: Pick<ServerOptions, "bearerSecret" | "codeRouterToken" | "qoderToken">,
+): RouterProfile | null {
+  const clientHeader = request.headers[CLIENT_ID_HEADER];
+  const identity = resolveRequestIdentity(
+    request.headers.authorization,
+    serverTokens(options),
+    typeof clientHeader === "string" ? clientHeader : undefined,
+  );
+  return identity === null ? null : identity.profile;
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
+  // Fail closed at startup: a configuration in which one secret could
+  // authenticate two different profiles is rejected rather than silently
+  // resolved to CMMChat at request time.
+  assertDistinctServerTokens(serverTokens(options));
+
   const fastify = Fastify({
     logger: false,
     // Headroom over the 1 MiB tool-result policy so an at-bound result plus
@@ -50,15 +84,21 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     bodyLimit: 2 * 1024 * 1024,
   });
 
-  // Bearer auth pre-handler for /v1/* routes. Two configured server-side
-  // tokens exist: the default (CMMChat, always CHAT_ONLY) and the optional
-  // Qoder token. A request authenticates as exactly one consumer; anything
-  // else is 401. Consumer identity is never inferred from prompt text,
-  // User-Agent, or model names.
+  // Bearer auth pre-handler for /v1/* routes. The authenticated PROFILE is the
+  // authorization subject: CMMChat (always CHAT_ONLY) or the Code Router
+  // profile. A request authenticates as exactly one profile; anything else is
+  // 401. Profile identity is never inferred from prompt text, User-Agent,
+  // model names, or any request-supplied metadata — the optional application
+  // identifier is diagnostics only.
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
-      const consumerId = resolveConsumerId(request, options);
-      if (consumerId === null) {
+      const clientHeader = request.headers[CLIENT_ID_HEADER];
+      const identity = resolveRequestIdentity(
+        request.headers.authorization,
+        serverTokens(options),
+        typeof clientHeader === "string" ? clientHeader : undefined,
+      );
+      if (identity === null) {
         return reply.code(401).send({
           error: {
             type: "router_unauthorized",
@@ -66,7 +106,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           },
         });
       }
-      (request as ConsumerRequest).consumerId = consumerId;
+      const consumerRequest = request as ConsumerRequest;
+      consumerRequest.identity = identity;
+      consumerRequest.consumerId = identity.profile;
     }
   });
 
@@ -114,8 +156,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // Diagnostic endpoints
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
-  // OpenAI-compatible chat completions. Tool semantics are gated per consumer
-  // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
+  // OpenAI-compatible chat completions. Tool semantics are gated on the
+  // authenticated profile via effectiveProfileToolCapability.
   registerChatCompletions(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible responses API

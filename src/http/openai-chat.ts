@@ -15,7 +15,7 @@ import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
-import { effectiveToolCapability } from "../core/consumer-capability.js";
+import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
 
@@ -434,8 +434,10 @@ export function registerChatCompletions(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
-    const consumerId = (request as ConsumerRequest).consumerId;
-    const effective = effectiveToolCapability(consumerId, model.capability);
+    // Authorization subject is the authenticated PROFILE, never the client
+    // application identifier.
+    const profile = (request as ConsumerRequest).identity.profile;
+    const effective = effectiveProfileToolCapability(profile, model.capability);
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
