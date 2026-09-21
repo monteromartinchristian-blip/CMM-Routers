@@ -4,6 +4,20 @@ function hashToken(token: string): Buffer {
   return createHash("sha256").update(token).digest();
 }
 
+/**
+ * Constant-time comparison of two token values. Used both for verifying a
+ * presented bearer and for validating that configured secrets are distinct.
+ */
+export function tokensEqual(provided: string, expected: string): boolean {
+  const expectedHash = hashToken(expected);
+  const providedHash = hashToken(provided);
+
+  return (
+    expectedHash.length === providedHash.length &&
+    timingSafeEqual(expectedHash, providedHash)
+  );
+}
+
 export function verifyBearer(
   authorizationHeader: string | undefined,
   expectedSecret: string,
@@ -17,12 +31,5 @@ export function verifyBearer(
     return false;
   }
 
-  const providedToken = match[1];
-  const expectedHash = hashToken(expectedSecret);
-  const providedHash = hashToken(providedToken);
-
-  return (
-    expectedHash.length === providedHash.length &&
-    timingSafeEqual(expectedHash, providedHash)
-  );
+  return tokensEqual(match[1], expectedSecret);
 }
