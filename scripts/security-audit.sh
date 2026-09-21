@@ -104,6 +104,7 @@ elif grep -rn "success: true" src/providers/codex/adapter.ts | grep -qv "Qoder\|
   fail=1
 else
   echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
+  echo "PROVIDER_NATIVE_REPO_MUTATION=NONE"
 fi
 
 echo "== profile capability policy present (client-agnostic) =="
