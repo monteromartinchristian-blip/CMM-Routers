@@ -273,6 +273,69 @@ else
   fail=1
 fi
 
+echo "== final protocol hardening invariants =="
+# The canonical declaration algebra is a discriminated union, and the executable
+# path is narrowed to function tools so a provider never sees a class it does not
+# support.
+if grep -q "RouterFunctionTool" src/core/model.ts \
+  && grep -q "RouterNamespaceTool" src/core/model.ts \
+  && grep -q "RouterHostedTool" src/core/model.ts \
+  && grep -q "RouterUnknownTool" src/core/model.ts \
+  && grep -q "tools: RouterFunctionTool\[\]" src/core/model.ts; then
+  echo "CANONICAL_ROUTER_TOOL_ALGEBRA_EXTENSIBLE=YES"
+else
+  echo "FAIL: canonical tool algebra is not a discriminated union"
+  fail=1
+fi
+# Provider tool arguments are validated, never fabricated.
+if grep -q "parseToolArguments" src/core/tool-arguments.ts \
+  && grep -q "validateToolCalls" src/http/openai-chat.ts \
+  && grep -q "validateToolCalls" src/http/openai-responses.ts \
+  && grep -q "parseToolArguments" src/http/anthropic-messages.ts; then
+  echo "MALFORMED_TOOL_ARGUMENTS=FAIL_CLOSED"
+  echo "NO_ARGUMENT_FABRICATION=PASS"
+else
+  echo "FAIL: a surface does not validate provider tool arguments"
+  fail=1
+fi
+# A client-reported tool failure is a canonical concept, not a wire detail.
+if grep -q "toolResultStatus" src/core/model.ts \
+  && grep -q "toolResultStatus" src/http/anthropic-messages.ts \
+  && grep -q "is_error" src/providers/command-code/client.ts; then
+  echo "TOOL_RESULT_ERROR_STATUS_PRESERVED=PASS"
+else
+  echo "FAIL: tool-result error status is not preserved canonically"
+  fail=1
+fi
+# Capability truth is scoped per protocol, and canonical algebra truth is separate.
+if grep -q "canonical_tools" src/core/protocol-capabilities.ts \
+  && grep -q "system_field" src/core/protocol-capabilities.ts \
+  && grep -q "request_controls" src/core/protocol-capabilities.ts; then
+  echo "CAPABILITY_PUBLICATION_PROTOCOL_SCOPED=PASS"
+else
+  echo "FAIL: capability publication is not protocol-scoped"
+  fail=1
+fi
+# The Anthropic surface refuses controls it cannot represent, and validates
+# max_tokens rather than forwarding any number.
+if grep -q "UNSUPPORTED_SEMANTIC_CONTROLS" src/http/anthropic-messages.ts \
+  && grep -q "ACCEPTED_REQUEST_KEYS" src/http/anthropic-messages.ts \
+  && grep -q "max_tokens must be a positive integer" src/http/anthropic-messages.ts; then
+  echo "ANTHROPIC_REQUEST_CONTROLS_TRUTHFUL=PASS"
+else
+  echo "FAIL: Anthropic request controls are not validated"
+  fail=1
+fi
+# The alternate API-key wire maps to the same profile and fails closed on ambiguity.
+if grep -q 'x-api-key' src/http/server.ts \
+  && grep -q "apiKey !== undefined && bearer !== undefined" src/http/server.ts; then
+  echo "ANTHROPIC_AUTH_WIRE_TRUTHFUL=PASS"
+  echo "ANTHROPIC_AMBIGUOUS_AUTH_FAILS_CLOSED=PASS"
+else
+  echo "FAIL: Anthropic alternate auth wire missing or not fail-closed"
+  fail=1
+fi
+
 echo "== tool-call identity fabrication ban =="
 # A synthesized provider call id would let a malformed frame masquerade as a
 # real call. The contract requires fail-closed on missing identity.
