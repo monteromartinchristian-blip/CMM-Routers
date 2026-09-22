@@ -1,3 +1,4 @@
+import { LEGACY_ANTIGRAVITY_MCP_SERVER_NAME } from "../../compat/legacy-identifiers.js";
 /**
  * Antigravity deferred MCP bridge (deterministic prototype, no live quota).
  *
@@ -15,7 +16,7 @@ export {
   type McpBridgeOptions,
 } from "../claude/mcp-bridge.js";
 
-export const ANTIGRAVITY_BRIDGE_NAME = "cmm-qoder-tools";
+export const ANTIGRAVITY_BRIDGE_NAME = LEGACY_ANTIGRAVITY_MCP_SERVER_NAME;
 
 export function antigravityMcpAddCommand(bridgePath: string): string {
   return `agy mcp add ${ANTIGRAVITY_BRIDGE_NAME} ${bridgePath}`;

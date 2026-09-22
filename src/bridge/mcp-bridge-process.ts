@@ -1,3 +1,4 @@
+import { LEGACY_BRIDGE_SERVER_NAME } from "../compat/legacy-identifiers.js";
 import { BridgeControlClient } from "./control-ipc.js";
 
 /**
@@ -25,7 +26,7 @@ import { BridgeControlClient } from "./control-ipc.js";
  * request-scoped without touching any global provider configuration:
  *   CMM_BRIDGE_SOCKET       Unix socket path of the control channel
  *   CMM_BRIDGE_TOKEN        per-session authentication token
- *   CMM_BRIDGE_SERVER_NAME  MCP server name (default: cmm_qoder)
+ *   CMM_BRIDGE_SERVER_NAME  MCP server name (default: the legacy bridge name)
  *   CMM_BRIDGE_TOOLS        JSON array of {name, description?, inputSchema}
  */
 
@@ -175,7 +176,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
   const declaredTools = options.declaredTools;
   const tools = options.tools ?? [];
   const request = options.request;
-  const serverName = options.serverName ?? "cmm_qoder";
+  const serverName = options.serverName ?? LEGACY_BRIDGE_SERVER_NAME;
   const exit = options.exit ?? failClosedExit;
 
   let buffer = "";
@@ -408,7 +409,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
 export function startMcpBridgeProcess(write: (line: string) => void = (line) => process.stdout.write(line)): void {
   const socketPath = process.env.CMM_BRIDGE_SOCKET;
   const token = process.env.CMM_BRIDGE_TOKEN;
-  const serverName = process.env.CMM_BRIDGE_SERVER_NAME ?? "cmm_qoder";
+  const serverName = process.env.CMM_BRIDGE_SERVER_NAME ?? LEGACY_BRIDGE_SERVER_NAME;
   const tools = readToolsFromEnv();
   // Immutable per-session declared-tool ACL.
   const declaredTools = new Set(tools.map((tool) => tool.name));

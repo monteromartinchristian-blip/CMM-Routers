@@ -150,22 +150,27 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // model, never an authorization grant.
   fastify.get("/v1/models", async () => {
     const models = options.registry.listModels();
+    const entries = models.map((model) => ({
+      id: model.id,
+      object: "model",
+      owned_by: `cmm:${model.provider}`,
+      ...(model.capability !== undefined
+        ? {
+            x_cmm: {
+              // Preserved for compatibility with existing clients.
+              code_router: model.capability,
+              ...protocolCapabilitiesFor(model.capability, model.provider),
+            },
+          }
+        : {}),
+    }));
+    // `data` is the OpenAI list shape. `models` is an additive alias carrying
+    // exactly the same entries so a client that expects that member can decode
+    // this discovery response without the Router branching on client identity.
     return redactObject({
       object: "list",
-      data: models.map((model) => ({
-        id: model.id,
-        object: "model",
-        owned_by: `cmm:${model.provider}`,
-        ...(model.capability !== undefined
-          ? {
-              x_cmm: {
-                // Preserved for compatibility with existing clients.
-                code_router: model.capability,
-                ...protocolCapabilitiesFor(model.capability, model.provider),
-              },
-            }
-          : {}),
-      })),
+      data: entries,
+      models: entries,
     });
   });
 

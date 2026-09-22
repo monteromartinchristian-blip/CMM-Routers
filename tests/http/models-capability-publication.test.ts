@@ -170,3 +170,29 @@ describe("truthful Code Router capability publication on /v1/models", () => {
     expect(provider.invocations).toBe(0);
   });
 });
+
+describe("model discovery additive compatibility alias", () => {
+  it("carries the same entries under both the OpenAI `data` member and `models`", async () => {
+    const ownRegistry = new ProviderRegistry();
+    await ownRegistry.register(new DiscoveryProvider());
+    await ownRegistry.refresh();
+    const ownServer = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret: CMMCHAT_TOKEN,
+      codeRouterToken: CODE_TOKEN,
+      registry: ownRegistry,
+    });
+    const response = await ownServer.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: `Bearer ${CODE_TOKEN}` },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { object: string; data: ModelEntry[]; models?: ModelEntry[] };
+    expect(body.object).toBe("list");
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(body.models).toEqual(body.data);
+    console.log("MODEL_DISCOVERY_ADDITIVE_ALIAS=PASS");
+  });
+});

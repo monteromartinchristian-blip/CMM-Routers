@@ -273,7 +273,7 @@ export function rejectChatOnlyTools(
  * parses its OWN wire shape first, so this function never sees a raw public
  * tool_choice object.
  */
-export function codexUnsupportedToolPolicy(
+export function enforceSelectedProviderToolPolicy(
   provider: string,
   policy: NormalizedToolChoice | undefined,
   parallelToolCalls: boolean | undefined,
@@ -465,7 +465,7 @@ export function registerChatCompletions(
     // Codex 0.153.4 CAN declare client tools (experimental dynamicTools), but it
     // still cannot represent a caller tool-selection or parallel-execution
     // constraint. Reject those instead of silently dropping them.
-    const codexPolicyError = codexUnsupportedToolPolicy(
+    const codexPolicyError = enforceSelectedProviderToolPolicy(
       model.provider,
       toolChoice,
       parallelToolCalls,

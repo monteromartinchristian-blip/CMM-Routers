@@ -1,3 +1,7 @@
+import {
+  LEGACY_BRIDGE_SERVER_NAME,
+  LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX,
+} from "../../compat/legacy-identifiers.js";
 import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/provider.js";
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
 import type { RouterEvent } from "../../core/events.js";
@@ -846,13 +850,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           PATH: process.env.PATH ?? "",
           CMM_BRIDGE_SOCKET: control.socketPath,
           CMM_BRIDGE_TOKEN: control.token,
-          CMM_BRIDGE_SERVER_NAME: "cmm_qoder",
+          CMM_BRIDGE_SERVER_NAME: LEGACY_BRIDGE_SERVER_NAME,
           CMM_BRIDGE_TOOLS: JSON.stringify(bridgeToolDefinitions(request.tools)),
         };
         // Exactly ONE provider-facing MCP config is declared; the SDK owns and
         // spawns that single stdio process. The Router never spawns a second.
         mcpServers = {
-          cmm_qoder: {
+          [LEGACY_BRIDGE_SERVER_NAME]: {
             type: "stdio",
             command: this.bridgeCommand,
             args: [this.bridgeEntryPath],
@@ -912,7 +916,11 @@ export class ClaudeAdapter implements ProviderAdapter {
         // bridge exposes exactly the caller's tools and nothing else.
         ...(mcpServers !== undefined ? { mcpServers } : {}),
         ...(request.tools.length > 0
-          ? { allowedTools: request.tools.map((tool) => `mcp__cmm_qoder__${tool.function.name}`) }
+          ? {
+              allowedTools: request.tools.map(
+                (tool) => `${LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX}${tool.function.name}`,
+              ),
+            }
           : {}),
       };
 

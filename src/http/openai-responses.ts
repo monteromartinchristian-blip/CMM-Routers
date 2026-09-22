@@ -4,7 +4,7 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools, enforceSelectedProviderToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
@@ -290,7 +290,7 @@ export function registerResponsesApi(
 
     // Same Codex tool-policy rejection as /v1/chat/completions: an
     // unrepresentable constraint must fail identically on both surfaces.
-    const codexPolicyError = codexUnsupportedToolPolicy(
+    const codexPolicyError = enforceSelectedProviderToolPolicy(
       model.provider,
       toolChoice,
       parallelToolCalls,

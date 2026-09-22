@@ -1,3 +1,4 @@
+import { LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX } from "../../compat/legacy-identifiers.js";
 import type {
   HookCallbackMatcher,
   Options,
@@ -33,7 +34,7 @@ export function buildDeferMatcher(): HookCallbackMatcher {
 
 /** Bridge tool names exposed to Claude for one client request. */
 export function bridgeToolNames(tools: RouterRequest["tools"]): string[] {
-  return tools.map((tool) => `mcp__cmm_qoder__${tool.function.name}`);
+  return tools.map((tool) => `${LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX}${tool.function.name}`);
 }
 
 /** Attach the defer hooks to base SDK options (tools present only). */
@@ -49,8 +50,8 @@ export function deferredToToolCall(deferred: DeferredToolUse): {
   name: string;
   argsJson: string;
 } {
-  const shortName = deferred.name.startsWith("mcp__cmm_qoder__")
-    ? deferred.name.slice("mcp__cmm_qoder__".length)
+  const shortName = deferred.name.startsWith(LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX)
+    ? deferred.name.slice(LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX.length)
     : deferred.name;
   return {
     index: 0,

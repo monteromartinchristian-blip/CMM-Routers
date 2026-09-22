@@ -328,20 +328,33 @@ else
   echo "BROKER_CLIENT_NEUTRAL=PASS"
 fi
 
-echo "== persisted legacy identifiers unchanged =="
+echo "== persisted legacy identifiers unchanged and isolated =="
+# The frozen VALUES live in exactly one compatibility module; production code
+# refers to semantic names. Presence of the values and absence of inlining are
+# both asserted, so isolation can never silently become a rename.
 legacy_ok=1
-grep -qF 'cmm-qoder-tools' src/providers/antigravity/mcp-registration.ts || legacy_ok=0
-grep -qF 'cmm_qoder' src/bridge/mcp-bridge-launcher.ts || legacy_ok=0
-grep -qF 'mcp__cmm_qoder__' src/providers/claude/adapter.ts || legacy_ok=0
+grep -qF 'LEGACY_ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_ANTIGRAVITY_MCP_PERMISSION_RULE = "mcp(cmm-qoder-tools/*)"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_BRIDGE_SERVER_NAME = "cmm_qoder"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX = "mcp__cmm_qoder__"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_CODE_ROUTER_KEYCHAIN_ACCOUNT = "qoder-bearer"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_QODER_PROVIDER_ID = "qoder-custom-cmm-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_SMOKE_OK_MARKER = "QODER_SMOKE_OK"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_KEYCHAIN_SERVICE = "cmm-subscription-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_LAUNCHAGENT_LABEL = "com.cmm.subscription-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
 grep -qF 'mcp(cmm-qoder-tools/*)' scripts/macos/provision-antigravity-mcp-permission.mjs || legacy_ok=0
 grep -qF 'QODER_SMOKE_OK' scripts/qoder-smoke.sh || legacy_ok=0
 grep -qF 'qoder-custom-cmm-router' docs/qoder-setup.md || legacy_ok=0
-if [ "$legacy_ok" = "1" ]; then
-  echo "PERSISTED_LEGACY_NAMES_PRESERVED=YES"
-  echo "LEGACY_PERSISTED_IDENTIFIERS_CHANGED=NO"
-else
+if [ "$legacy_ok" != "1" ]; then
   echo "FAIL: a persisted legacy identifier was renamed or removed"
   fail=1
+else
+  echo "PERSISTED_LEGACY_NAMES_PRESERVED=YES"
+  echo "LEGACY_PERSISTED_IDENTIFIERS_CHANGED=NO"
+  echo "LEGACY_WIRE_ALIASES=EXPLICIT_COMPAT_ONLY"
+  inlined=$(grep -rn '"cmm_qoder"\|"cmm-qoder-tools"\|"mcp__cmm_qoder__"' src/ --include="*.ts" \
+    | grep -v '^src/compat/' | wc -l | tr -d ' ')
+  echo "LEGACY_WIRE_ALIAS_INLINED_SITES=$inlined"
 fi
 
 echo "== MCP registration carries no secret =="
@@ -433,7 +446,7 @@ fi
 echo "== shared provider tool policy (no silent drop) =="
 if grep -q "enforceProviderToolPolicy" src/core/tool-policy.ts \
   && grep -q "enforceProviderToolPolicy" src/http/openai-chat.ts \
-  && grep -q "codexUnsupportedToolPolicy" src/http/openai-responses.ts \
+  && grep -q "enforceSelectedProviderToolPolicy" src/http/openai-responses.ts \
   && grep -q "toAnthropicToolChoice" src/providers/command-code/client.ts; then
   echo "SILENT_TOOL_CHOICE_DROP=NONE"
   echo "SILENT_PARALLEL_TOOL_POLICY_DROP=NONE"

@@ -1,3 +1,4 @@
+import { LEGACY_ANTIGRAVITY_MCP_SERVER_NAME } from "../../compat/legacy-identifiers.js";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -762,7 +763,7 @@ const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
 const MAX_STREAM_EVENTS = 4096;
 
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
-export const ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools";
+export const ANTIGRAVITY_MCP_SERVER_NAME = LEGACY_ANTIGRAVITY_MCP_SERVER_NAME;
 
 export type McpRegistrar = (
   name: string,
@@ -1006,7 +1007,7 @@ export class AntigravityAdapter implements ProviderAdapter {
    * Register the CMM-owned MCP server, reconciling against the durable `agy`
    * state rather than trusting an in-memory flag: after a Router restart, or
    * after an external edit, the persisted entry is read back and converged onto
-   * exactly one canonical, secret-free `cmm-qoder-tools` registration.
+   * exactly one canonical, secret-free legacy MCP registration.
    */
   private ensureMcpServerRegistered(): void {
     if (this.mcpRegistered) return;
