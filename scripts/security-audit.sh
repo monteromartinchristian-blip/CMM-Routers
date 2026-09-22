@@ -93,16 +93,30 @@ fi
 
 echo "== provider-native tool execution ban =="
 # The Router may REQUEST a tool from the provider (item/tool/call, tool_calls)
-# but must never EXECUTE a provider-native tool itself. Codex approvals are
-# declined; DynamicToolCallResponse success:true is allowed ONLY with Qoder's
-# already-executed result (same-turn continuation), never as native execution.
-if grep -rn "result: { decision: \"accept\"\|decision: \"acceptForSession\"" src/providers/codex/app-server-client.ts src/providers/codex/adapter.ts | grep -q .; then
+# but must never EXECUTE a provider-native tool itself. Asserted by ARCHITECTURE,
+# not by client names in comments:
+#   - no provider-native approval is ever accepted;
+#   - the Codex adapter answers a tool call affirmatively in exactly ONE code
+#     site (the already-produced client-result continuation);
+#   - malformed/undeclared tool calls are declined by code in at least one site,
+#     so an unexpected call cannot be answered affirmatively.
+codex_true=$(grep -n "success: true" src/providers/codex/adapter.ts \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | wc -l | tr -d ' ')
+codex_decline=$(grep -n "success: false" src/providers/codex/adapter.ts \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | wc -l | tr -d ' ')
+if grep -rn 'decision: "accept"\|decision: "acceptForSession"' src/providers/codex/ \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | grep -q .; then
   echo "FAIL: provider-native tool approval path present"
   fail=1
-elif grep -rn "success: true" src/providers/codex/adapter.ts | grep -qv "Qoder\|qoder\|ORIGINAL\|already-executed" | grep -q .; then
-  echo "FAIL: unexplained success:true tool path present"
+elif [ "$codex_true" -ne 1 ]; then
+  echo "FAIL: expected exactly one affirmative Codex tool-call answer, found $codex_true"
+  fail=1
+elif [ "$codex_decline" -lt 1 ]; then
+  echo "FAIL: no Codex tool-call decline path found"
   fail=1
 else
+  echo "CODEX_AFFIRMATIVE_TOOL_ANSWER_SITES=$codex_true"
+  echo "CODEX_DECLINE_TOOL_ANSWER_SITES=$codex_decline"
   echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
   echo "PROVIDER_NATIVE_REPO_MUTATION=NONE"
 fi
@@ -195,6 +209,8 @@ echo "== codex experimental opt-in + dynamic tool declaration =="
 if grep -q "experimentalApi: true" src/providers/codex/adapter.ts \
   && grep -q "toDynamicToolSpecs" src/providers/codex/adapter.ts; then
   echo "CODEX_EXPERIMENTAL_API_OPT_IN=PASS"
+  echo "CODEX_CLIENT_TOOL_DEFINITIONS_SENT=PASS"
+  # Legacy marker retained for evidence continuity.
   echo "CODEX_QODER_TOOL_DEFINITIONS_SENT=PASS"
 else
   echo "FAIL: Codex experimental dynamicTools declaration missing"
@@ -266,6 +282,48 @@ if grep -q "disallowedTools" src/providers/claude/adapter.ts \
   echo "ANTIGRAVITY_NATIVE_TOOL_EXECUTION=NONE"
 else
   echo "FAIL: native execution guard missing for a bridge provider"
+  fail=1
+fi
+
+echo "== Antigravity scoped MCP ACL preserved (coupled control) =="
+# The persisted agy rule scopes call_mcp_tool to the CMM bridge. It is a legacy
+# compatibility identifier AND an active security scope: it must never be
+# widened to mcp(*), and the provisioner must keep refusing a broader rule.
+if grep -qF 'const MANAGED_RULE = "mcp(cmm-qoder-tools/*)"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'rule === "mcp(\*)"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_GLOBAL_MCP_ALLOW_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_COMMAND_WILDCARD_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_WRITE_WILDCARD_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs; then
+  echo "ANTIGRAVITY_SCOPED_MCP_ACL_PRESERVED=PASS"
+else
+  echo "FAIL: Antigravity scoped MCP ACL guard missing or widened"
+  fail=1
+fi
+
+echo "== broker is client-neutral =="
+if grep -q "consumer" src/core/deferred-tool-broker.ts; then
+  echo "FAIL: broker still declares a client identity"
+  fail=1
+elif grep -rq "consumer:" src/providers/claude/adapter.ts src/providers/codex/adapter.ts src/providers/antigravity/adapter.ts; then
+  echo "FAIL: an adapter still labels broker entries with a client identity"
+  fail=1
+else
+  echo "BROKER_CLIENT_NEUTRAL=PASS"
+fi
+
+echo "== persisted legacy identifiers unchanged =="
+legacy_ok=1
+grep -qF 'cmm-qoder-tools' src/providers/antigravity/mcp-registration.ts || legacy_ok=0
+grep -qF 'cmm_qoder' src/bridge/mcp-bridge-launcher.ts || legacy_ok=0
+grep -qF 'mcp__cmm_qoder__' src/providers/claude/adapter.ts || legacy_ok=0
+grep -qF 'mcp(cmm-qoder-tools/*)' scripts/macos/provision-antigravity-mcp-permission.mjs || legacy_ok=0
+grep -qF 'QODER_SMOKE_OK' scripts/qoder-smoke.sh || legacy_ok=0
+grep -qF 'qoder-custom-cmm-router' docs/qoder-setup.md || legacy_ok=0
+if [ "$legacy_ok" = "1" ]; then
+  echo "PERSISTED_LEGACY_NAMES_PRESERVED=YES"
+  echo "LEGACY_PERSISTED_IDENTIFIERS_CHANGED=NO"
+else
+  echo "FAIL: a persisted legacy identifier was renamed or removed"
   fail=1
 fi
 

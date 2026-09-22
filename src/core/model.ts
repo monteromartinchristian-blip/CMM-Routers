@@ -7,6 +7,22 @@ export type ProviderId =
   | "command-code"
   | "cavoti";
 
+/**
+ * Runtime mirror of ProviderId. Single source of truth for wire validation so a
+ * newly added provider cannot silently drift out of an enumeration list.
+ */
+export const PROVIDER_IDS = [
+  "chatgpt",
+  "claude",
+  "google",
+  "command-code",
+  "cavoti",
+] as const satisfies readonly ProviderId[];
+
+export function isProviderId(value: unknown): value is ProviderId {
+  return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
+}
+
 export type ProviderCapability =
   | "CHAT_AND_TOOLS"
   | "CHAT_ONLY";

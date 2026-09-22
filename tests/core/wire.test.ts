@@ -69,6 +69,14 @@ describe("remote worker wire contract", () => {
     expect(() => parseEventEnvelope("not json")).toThrow(RouterError);
   });
 
+  it("accepts every declared provider id, including cavoti", () => {
+    for (const provider of ["chatgpt", "claude", "google", "command-code", "cavoti"] as const) {
+      const parsed = parseRequestEnvelope(JSON.stringify({ ...REQUEST, provider }));
+      expect(parsed.provider).toBe(provider);
+    }
+    console.log("WIRE_PROVIDER_LIST_MATCHES_PROVIDER_ID=PASS");
+  });
+
   it("preserves correlation across an ordered event stream", () => {
     const events: WorkerEventEnvelope[] = [0, 1, 2].map((sequence) => ({
       version: 1,
