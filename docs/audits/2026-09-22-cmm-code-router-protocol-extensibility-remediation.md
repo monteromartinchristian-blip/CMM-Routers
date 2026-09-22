@@ -9,8 +9,9 @@ corrective notes were appended instead.
 ## 1. Revisions
 
 - **START_HEAD:** `27650ab5d3bf319c99cb51810160ec024f9b1395`
-- **Code + verification HEAD:** `805aff78e0a4c9b1c9d4b1f5a3a6c3f7a5c8c1d2` *(see the run
-  report for the resolved value)*
+- **Code + verification HEAD:** `805aff7383a39993ca3a5a9a533e0ab1a78f442a`
+- The evidence-document commit follows it; the true final HEAD is reported in the
+  run report so this document never has to state its own hash.
 - The evidence documents are added in a final docs-only commit.
 
 ## 2. What the audit found, and what was done
@@ -154,7 +155,7 @@ suite, not a flake, and is recorded so a future reader does not chase it.
 
 ```text
 START_HEAD=27650ab5d3bf319c99cb51810160ec024f9b1395
-END_HEAD=see run report
+END_HEAD=805aff7383a39993ca3a5a9a533e0ab1a78f442a (code + verification)
 
 CORE_HARNESS_AGNOSTIC=YES
 AUTH_HARNESS_AGNOSTIC=YES
