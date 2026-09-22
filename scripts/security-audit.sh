@@ -234,6 +234,45 @@ else
   fail=1
 fi
 
+echo "== protocol extensibility / harness-agnostic invariants =="
+# The core must not know which harnesses exist: a future client requires no core
+# change. Provider names are not harness names and are not matched here.
+if grep -rniE "qoder|hermes|codex-client|cline|roo|deepseek" src/core/ --include="*.ts" | grep -q .; then
+  echo "FAIL: a harness name is present in src/core"
+  fail=1
+else
+  echo "CORE_HARNESS_AGNOSTIC=YES"
+  echo "HARNESS_NAMES_REQUIRED_BY_CORE=NONE"
+fi
+# Tool declarations are classified by capability class on every ingress surface.
+if grep -q "classifyToolDeclarationType" src/http/openai-chat.ts \
+  && grep -q "classifyToolDeclarationType" src/http/openai-responses.ts \
+  && grep -q "classifyToolDeclarationType" src/http/anthropic-messages.ts \
+  && grep -q "TOOL_KIND_POLICY" src/core/tool-kind.ts; then
+  echo "TOOL_KIND_CLASSIFICATION_ON_ALL_SURFACES=PASS"
+else
+  echo "FAIL: tool-kind classification missing from an ingress surface"
+  fail=1
+fi
+# Downstream protocol adapters are registered explicitly.
+if grep -q "registerChatCompletions" src/http/server.ts \
+  && grep -q "registerResponsesApi" src/http/server.ts \
+  && grep -q "registerAnthropicMessages" src/http/server.ts; then
+  echo "DOWNSTREAM_PROTOCOL_ADAPTERS_EXPLICIT=PASS"
+  echo "ANTHROPIC_MESSAGES_INGRESS=REGISTERED"
+else
+  echo "FAIL: a downstream protocol adapter is not registered"
+  fail=1
+fi
+# Capability publication describes protocol/tool truth, never a client.
+if grep -q "protocolCapabilitiesFor" src/http/server.ts \
+  && grep -q "code_router" src/http/server.ts; then
+  echo "CAPABILITY_PUBLICATION_PROTOCOL_CENTRIC=PASS"
+else
+  echo "FAIL: capability publication missing protocol truth"
+  fail=1
+fi
+
 echo "== tool-call identity fabrication ban =="
 # A synthesized provider call id would let a malformed frame masquerade as a
 # real call. The contract requires fail-closed on missing identity.
