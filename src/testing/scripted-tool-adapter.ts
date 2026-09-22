@@ -41,7 +41,19 @@ export class ScriptedToolAdapter implements ProviderAdapter {
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
     if (signal.aborted) return;
 
+    const declared = request.tools.map((tool) => tool.function.name);
     const toolResults = request.messages.filter((message) => message.role === "tool");
+
+    // A request that does not declare the echo tool is answered as plain chat so
+    // the double can also back a connectivity/discovery gate for a client that
+    // brings its own toolset. No tool is ever executed here.
+    if (!declared.includes(ScriptedToolAdapter.TOOL_NAME)) {
+      yield { type: "text_delta", text: "scripted-chat-ok" };
+      yield { type: "usage", inputTokens: 4, outputTokens: 4 };
+      yield { type: "completed", finishReason: "stop" };
+      return;
+    }
+
     if (toolResults.length === 0) {
       yield {
         type: "tool_call_delta",
