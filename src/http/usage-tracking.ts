@@ -1,5 +1,5 @@
 import type { RouterEvent } from "../core/events.js";
-import type { UsageStatus, UsageStore } from "../observability/usage-store.js";
+import type { UsageIdentity, UsageStatus, UsageStore } from "../observability/usage-store.js";
 
 export function usageStatusForRouterErrorCode(code: string): UsageStatus {
   switch (code) {
@@ -36,6 +36,7 @@ export async function* trackProviderStream(
   modelId: string,
   events: AsyncIterable<RouterEvent>,
   signal?: AbortSignal,
+  identity?: UsageIdentity,
 ): AsyncGenerator<RouterEvent, TrackedOutcome, void> {
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
@@ -108,7 +109,7 @@ export async function* trackProviderStream(
     return { events: collected, status: "provider_error", ...usageFields() };
   }
 
-  usageStore.beginRequest(requestId, provider, modelId);
+  usageStore.beginRequest(requestId, provider, modelId, identity);
   let ended = false;
   const endOnce = (outcome: {
     status: UsageStatus;

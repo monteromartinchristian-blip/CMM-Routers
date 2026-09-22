@@ -436,8 +436,8 @@ export function registerChatCompletions(
 
     // Authorization subject is the authenticated PROFILE, never the client
     // application identifier.
-    const profile = (request as ConsumerRequest).identity.profile;
-    const effective = effectiveProfileToolCapability(profile, model.capability);
+    const identity = (request as ConsumerRequest).identity;
+    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
@@ -503,6 +503,7 @@ export function registerChatCompletions(
           model.id,
           adapter.run(routerRequest, abortController.signal),
           abortController.signal,
+          identity,
         );
         for await (const event of tracked) {
           events.push(event as RouterEvent);
@@ -569,6 +570,7 @@ export function registerChatCompletions(
         model.id,
         adapter.run(routerRequest, abortController.signal),
         abortController.signal,
+        identity,
       );
       for await (const event of tracked) {
         const typed = event as RouterEvent;

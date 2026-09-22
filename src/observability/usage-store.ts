@@ -7,6 +7,16 @@ export type UsageStatus =
   | "timeout_error"
   | "cancelled";
 
+/**
+ * Diagnostics-only request identity. `profile` is the authenticated
+ * authorization subject; `clientId` is the bounded, normalized application
+ * identifier. Neither is ever used for an authorization decision.
+ */
+export interface UsageIdentity {
+  profile: string;
+  clientId: string;
+}
+
 export interface UsageRecord {
   requestId: string;
   provider: string;
@@ -14,6 +24,10 @@ export interface UsageRecord {
   startedAt: string;
   durationMs: number;
   status: UsageStatus;
+  /** Authenticated profile; present only when the request carried identity. */
+  profile?: string;
+  /** Normalized application identifier; diagnostics only. */
+  clientId?: string;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -45,10 +59,23 @@ const MAX_RECORDS = 500;
 
 export class UsageStore {
   private records: UsageRecord[] = [];
-  private active = new Map<string, { provider: string; model: string; startedAt: number }>();
+  private readonly active = new Map<
+    string,
+    { provider: string; model: string; startedAt: number; identity?: UsageIdentity }
+  >();
 
-  beginRequest(requestId: string, provider: string, model: string): void {
-    this.active.set(requestId, { provider, model, startedAt: Date.now() });
+  beginRequest(
+    requestId: string,
+    provider: string,
+    model: string,
+    identity?: UsageIdentity,
+  ): void {
+    this.active.set(requestId, {
+      provider,
+      model,
+      startedAt: Date.now(),
+      ...(identity !== undefined ? { identity } : {}),
+    });
   }
 
   endRequest(
@@ -73,6 +100,9 @@ export class UsageStore {
       startedAt: new Date(startedAt).toISOString(),
       durationMs: Date.now() - startedAt,
       status: outcome.status,
+      ...(started?.identity !== undefined
+        ? { profile: started.identity.profile, clientId: started.identity.clientId }
+        : {}),
       ...(outcome.inputTokens !== undefined ? { inputTokens: outcome.inputTokens } : {}),
       ...(outcome.outputTokens !== undefined ? { outputTokens: outcome.outputTokens } : {}),
       ...(outcome.reasoningTokens !== undefined

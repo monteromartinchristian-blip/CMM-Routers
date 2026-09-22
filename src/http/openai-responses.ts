@@ -236,8 +236,8 @@ export function registerResponsesApi(
 
     // Authorization subject is the authenticated PROFILE, never the client
     // application identifier.
-    const profile = (request as ConsumerRequest).identity.profile;
-    const effective = effectiveProfileToolCapability(profile, model.capability);
+    const identity = (request as ConsumerRequest).identity;
+    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
 
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.
@@ -321,6 +321,7 @@ export function registerResponsesApi(
           model.id,
           adapter.run(routerRequest, abortController.signal),
           abortController.signal,
+          identity,
         );
         for await (const event of tracked) {
           events.push(event as RouterEvent);
@@ -419,6 +420,7 @@ export function registerResponsesApi(
         model.id,
         adapter.run(routerRequest, abortController.signal),
         abortController.signal,
+        identity,
       );
       for await (const event of tracked) {
         const typed = event as RouterEvent;
