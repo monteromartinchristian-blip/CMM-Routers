@@ -58,15 +58,22 @@ export function resolveGoogleAgyPath(config: RouterConfig): string | undefined {
   return config.providers.google.agyPath;
 }
 
+export type TestProviderMode = "scripted" | "scripted-tools";
+
 /**
  * Narrowly scoped test-provider injection for the compiled-process E2E.
- * Active ONLY when CMM_TEST_PROVIDER=scripted is set explicitly; normal
- * production never sets it and always uses real subscription adapters.
- * The scripted double serves one canned model with no network, no quota,
- * and no secrets.
+ * Active ONLY when CMM_TEST_PROVIDER is set explicitly to one of the two
+ * supported values; normal production never sets it and always uses real
+ * subscription adapters. Both doubles serve canned models with no network, no
+ * quota and no secrets, and neither executes a tool.
  */
+export function testProviderMode(): TestProviderMode | null {
+  const value = process.env.CMM_TEST_PROVIDER;
+  return value === "scripted" || value === "scripted-tools" ? value : null;
+}
+
 export function isTestProviderEnabled(): boolean {
-  return process.env.CMM_TEST_PROVIDER === "scripted";
+  return testProviderMode() !== null;
 }
 
 export async function createProductionRegistry(
@@ -85,9 +92,12 @@ export async function createProductionRegistry(
   const registeredProviders: string[] = [];
   const skippedProviders: Array<{ id: string; reason: string }> = [];
 
-  if (isTestProviderEnabled()) {
+  const testProvider = testProviderMode();
+  if (testProvider !== null) {
     const { ScriptedTestAdapter } = await import("./testing/scripted-adapter.js");
-    const adapter = new ScriptedTestAdapter();
+    const { ScriptedToolAdapter } = await import("./testing/scripted-tool-adapter.js");
+    const adapter =
+      testProvider === "scripted-tools" ? new ScriptedToolAdapter() : new ScriptedTestAdapter();
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
     await registry.refresh();

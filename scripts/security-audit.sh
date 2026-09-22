@@ -190,6 +190,22 @@ else
   fail=1
 fi
 
+echo "== test-only provider injection is exact and inert =="
+# The compiled-process E2E injects a double through CMM_TEST_PROVIDER only. The
+# gate must accept exactly the two supported values and the tool double must not
+# be able to touch the filesystem, spawn processes or execute a tool.
+if ! grep -q 'value === "scripted" || value === "scripted-tools"' src/index.ts \
+  || ! grep -q 'process.env.CMM_TEST_PROVIDER' src/index.ts; then
+  echo "FAIL: test-provider injection gate widened or missing"
+  fail=1
+elif grep -qE 'child_process|node:fs|execSync|spawnSync|spawn\(' src/testing/scripted-tool-adapter.ts; then
+  echo "FAIL: scripted tool double has an execution surface"
+  fail=1
+else
+  echo "TEST_PROVIDER_INJECTION_EXACT=PASS"
+  echo "TEST_PROVIDER_EXECUTION_SURFACE=NONE"
+fi
+
 echo "== production composition: providers registered from config =="
 if ! grep -q "createProductionRegistry" src/index.ts; then
   echo "FAIL: production composition root missing"
