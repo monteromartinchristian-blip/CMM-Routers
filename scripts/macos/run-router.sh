@@ -60,6 +60,8 @@ CAVOTI_SERVICE="${CAVOTI_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 CAVOTI_ACCOUNT="${CAVOTI_KEYCHAIN_ACCOUNT:-cavoti-api-key}"
 QODER_SERVICE="${CMM_QODER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 QODER_ACCOUNT="${CMM_QODER_KEYCHAIN_ACCOUNT:-qoder-bearer}"
+CODE_SERVICE="${CMM_CODE_ROUTER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
+CODE_ACCOUNT="${CMM_CODE_ROUTER_KEYCHAIN_ACCOUNT:-code-router-bearer}"
 
 # Indirect expansion against the CONFIGURED names (never hard-coded).
 if [ -z "${!BEARER_ENV:-}" ]; then
@@ -117,6 +119,17 @@ PYACK
   then
     echo "Cavoti PAYG acknowledgement invalid or missing" >&2
     exit 1
+  fi
+fi
+
+# Optional Code Router profile credentials. The canonical bearer is the
+# preferred path; the legacy Qoder bearer below remains a compatibility alias for
+# the SAME profile. Either resolving is non-fatal: without one there is simply no
+# Code Router profile (every authenticated request is CMMChat, CHAT_ONLY).
+if [ -z "${CMM_CODE_ROUTER_TOKEN:-}" ]; then
+  CODE_TOKEN="$(security find-generic-password -s "$CODE_SERVICE" -a "$CODE_ACCOUNT" -w 2>/dev/null || true)"
+  if [ -n "$CODE_TOKEN" ]; then
+    export CMM_CODE_ROUTER_TOKEN="$CODE_TOKEN"
   fi
 fi
 

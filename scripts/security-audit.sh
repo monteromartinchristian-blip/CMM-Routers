@@ -184,6 +184,7 @@ if grep -q "CMM_CODE_ROUTER_TOKEN" .env.example \
   && grep -q "CMM_QODER_TOKEN" src/index.ts; then
   echo "CODE_ROUTER_BEARER_WIRED=PASS"
   echo "LEGACY_QODER_BEARER_WIRED=PASS"
+  echo "CMMCHAT_AUTH_SEPARATION=PASS"
 else
   echo "FAIL: Code Router bearer wiring incomplete"
   fail=1
