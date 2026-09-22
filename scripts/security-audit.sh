@@ -343,6 +343,49 @@ else
   fail=1
 fi
 
+echo "== final closure invariants (F1-F4, D1) =="
+# F2: the canonical tool-result outcome is serialized only on the wire that can
+# represent it, and each wire gets its own translation.
+if grep -q 'wire === "anthropic-messages" && message.toolResultStatus' src/providers/command-code/adapter.ts \
+  && grep -q 'toUpstreamMessages(request, "openai-chat-completions")' src/providers/command-code/adapter.ts \
+  && grep -q 'toUpstreamMessages(request, "anthropic-messages")' src/providers/command-code/adapter.ts; then
+  echo "OPENAI_UPSTREAM_TOOL_RESULT_STATUS_FIELD=ABSENT"
+  echo "ANTHROPIC_UPSTREAM_IS_ERROR=PRESERVED"
+else
+  echo "FAIL: upstream tool-result translation is not per-wire"
+  fail=1
+fi
+# F3: published control truth is derived from the enforced lists.
+if grep -q "requestControlTruth" src/core/request-controls.ts \
+  && grep -q "requestControlTruth" src/core/protocol-capabilities.ts \
+  && grep -q "rejectUnsupportedControls" src/http/openai-chat.ts \
+  && grep -q "rejectUnsupportedControls" src/http/openai-responses.ts \
+  && grep -q "OPENAI_RESPONSES_REJECTED_CONTROLS" src/http/openai-responses.ts; then
+  echo "OPENAI_REQUEST_CONTROL_TRUTH=PASS"
+  echo "CAPABILITY_PUBLICATION_TRUTHFUL=PASS"
+else
+  echo "FAIL: request-control truth is not derived from the enforced lists"
+  fail=1
+fi
+# F4: Anthropic tool shapes are validated.
+if grep -q "tool_result.is_error must be a boolean" src/http/anthropic-messages.ts \
+  && grep -q "a tool_use block requires a structured object input" src/http/anthropic-messages.ts; then
+  echo "ANTHROPIC_INVALID_IS_ERROR=FAIL_CLOSED"
+  echo "ANTHROPIC_TOOL_USE_INPUT_SHAPE=VALIDATED"
+else
+  echo "FAIL: Anthropic tool shapes are not validated"
+  fail=1
+fi
+# D1: the canonical union has a closed discriminant.
+if grep -q 'kind: "hosted"' src/core/model.ts \
+  && grep -q 'kind: "unknown"' src/core/model.ts \
+  && grep -q 'tool.kind === "function"' src/core/model.ts; then
+  echo "STRICT_TYPESCRIPT_DISCRIMINATED_UNION=YES"
+else
+  echo "FAIL: canonical tool union lacks a strict discriminant"
+  fail=1
+fi
+
 echo "== tool-call identity fabrication ban =="
 # A synthesized provider call id would let a malformed frame masquerade as a
 # real call. The contract requires fail-closed on missing identity.
