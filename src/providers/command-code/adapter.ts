@@ -42,7 +42,17 @@ interface PendingCancellation {
   abort: () => void;
 }
 
-function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknown>> {
+/**
+ * Translate canonical messages for one upstream wire.
+ *
+ * The canonical tool-result outcome is only representable on the Anthropic wire
+ * (`is_error`). An OpenAI-compatible wire has no such member, so the status stays
+ * internal there instead of being invented as a non-standard field.
+ */
+function toUpstreamMessages(
+  request: RouterRequest,
+  wire: "openai-chat-completions" | "anthropic-messages",
+): Array<Record<string, unknown>> {
   return request.messages.map((message) => {
     const base: Record<string, unknown> = {
       role: message.role,
@@ -50,7 +60,9 @@ function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknow
     };
     if (message.toolCallId !== undefined) base.tool_call_id = message.toolCallId;
     if (message.name !== undefined) base.name = message.name;
-    if (message.toolResultStatus !== undefined) base.tool_result_status = message.toolResultStatus;
+    if (wire === "anthropic-messages" && message.toolResultStatus !== undefined) {
+      base.tool_result_status = message.toolResultStatus;
+    }
     if (message.role === "assistant" && message.toolCalls !== undefined) {
       base.tool_calls = message.toolCalls.map((call) => ({
         id: call.id,
@@ -248,7 +260,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       const upstreamTools = toUpstreamTools(request);
       const generator = this.client.streamChatCompletion(
         request.model.upstreamModel,
-        toUpstreamMessages(request) as never,
+        toUpstreamMessages(request, "openai-chat-completions") as never,
         abortSignal,
         {
           ...(request.maxOutputTokens !== undefined
@@ -451,7 +463,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
     // back as tool_result on the continuation request. the client owns execution.
     // Frames yield incrementally as they arrive; completion only on message_stop.
     try {
-      const messages = toUpstreamMessages(request) as never;
+      const messages = toUpstreamMessages(request, "anthropic-messages") as never;
       const upstreamTools = toAnthropicTools(request);
       const generator = this.client.streamAnthropicMessages(
         request.model.upstreamModel,
