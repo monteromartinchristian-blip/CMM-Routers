@@ -192,7 +192,7 @@ export function parseAnthropicRequest(
 
     const texts: string[] = [];
     const toolCalls: RouterMessage["toolCalls"] = [];
-    const toolResults: Array<{ id: string; text: string }> = [];
+    const toolResults: Array<{ id: string; text: string; status: "success" | "error" }> = [];
 
     for (const rawBlock of record.content as AnthropicContentBlock[]) {
       const block = asRecord(rawBlock);
@@ -226,7 +226,12 @@ export function parseAnthropicRequest(
             "tool_result content must be a string or an array of text blocks",
           );
         }
-        toolResults.push({ id: block.tool_use_id, text });
+        toolResults.push({
+          id: block.tool_use_id,
+          text,
+          // Anthropic carries an explicit outcome; absent/false means success.
+          status: block.is_error === true ? "error" : "success",
+        });
         continue;
       }
       return new RouterError(
@@ -243,7 +248,12 @@ export function parseAnthropicRequest(
       messages.push(message);
     }
     for (const result of toolResults) {
-      messages.push({ role: "tool", content: result.text, toolCallId: result.id });
+      messages.push({
+        role: "tool",
+        content: result.text,
+        toolCallId: result.id,
+        toolResultStatus: result.status,
+      });
     }
   }
 

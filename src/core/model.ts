@@ -68,12 +68,23 @@ export interface RouterToolCall {
   };
 }
 
+/**
+ * Outcome of a client-executed tool result. Generic and vendor-neutral; an
+ * absent value means the protocol carried no explicit outcome.
+ */
+export type RouterToolResultStatus = "success" | "error";
+
 export interface RouterMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   images?: string[];
   toolCallId?: string;
   name?: string;
+  /**
+   * Canonical outcome of a client-executed tool result. Preserved so a failed
+   * tool never becomes indistinguishable from a successful one downstream.
+   */
+  toolResultStatus?: RouterToolResultStatus;
   /**
    * Assistant tool-call history in OpenAI shape. Preserved end-to-end so a
    * provider that supplies real tool-call IDs never needs heuristic

@@ -27,7 +27,11 @@ export interface GenericToolTurnRecord {
   /** Assistant tool-call id groups seen in this request's history. */
   assistantToolCallIds: string[][];
   /** Tool results seen in this request's history, in order. */
-  toolResults: Array<{ id: string | undefined; content: string | null }>;
+  toolResults: Array<{
+    id: string | undefined;
+    content: string | null;
+    status: "success" | "error" | undefined;
+  }>;
   /** How many assistant tool-call rounds preceded this request. */
   rounds: number;
 }
@@ -101,7 +105,11 @@ export class GenericToolProvider implements ProviderAdapter {
         .map((message) => (message.toolCalls ?? []).map((call) => call.id)),
       toolResults: request.messages
         .filter((message) => message.role === "tool")
-        .map((message) => ({ id: message.toolCallId, content: message.content })),
+        .map((message) => ({
+          id: message.toolCallId,
+          content: message.content,
+          status: message.toolResultStatus,
+        })),
       rounds,
     });
 

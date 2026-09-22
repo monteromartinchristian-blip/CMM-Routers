@@ -50,6 +50,7 @@ function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknow
     };
     if (message.toolCallId !== undefined) base.tool_call_id = message.toolCallId;
     if (message.name !== undefined) base.name = message.name;
+    if (message.toolResultStatus !== undefined) base.tool_result_status = message.toolResultStatus;
     if (message.role === "assistant" && message.toolCalls !== undefined) {
       base.tool_calls = message.toolCalls.map((call) => ({
         id: call.id,

@@ -4,6 +4,7 @@ import {
 } from "../../compat/legacy-identifiers.js";
 import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/provider.js";
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
+import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { fileURLToPath } from "node:url";
@@ -147,7 +148,7 @@ export function buildClaudeConversation(messages: RouterRequest["messages"]): {
     // turn (the external tool loop owns execution; the SDK only sees words).
     const label =
       message.role === "tool" && typeof message.toolCallId === "string"
-        ? `[tool_result ${message.toolCallId}] ${text}`
+        ? `[tool_result ${message.toolCallId}${toolResultStatusSuffix(message.toolResultStatus)}] ${text}`
         : text;
     if (label || images.length > 0) {
       frames.push({

@@ -19,6 +19,7 @@ import type {
   RouterRequest,
 } from "../../core/provider.js";
 import type { DiscoveredModel, RouterTool } from "../../core/model.js";
+import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
@@ -355,7 +356,12 @@ export function parseAgyStreamJson(stdout: string): StreamParseResult {
  * prompt is never logged (only its length is observable in argv).
  */
 export function serializeConversationForHeadlessPrompt(
-  messages: Array<{ role: string; content: string | null; toolCallId?: string }>,
+  messages: Array<{
+    role: string;
+    content: string | null;
+    toolCallId?: string;
+    toolResultStatus?: "success" | "error";
+  }>,
 ): string {
   const sections: string[] = [];
   for (const message of messages) {
@@ -368,8 +374,8 @@ export function serializeConversationForHeadlessPrompt(
     } else if (message.role === "tool") {
       const label =
         typeof message.toolCallId === "string"
-          ? `[USER: tool_result ${message.toolCallId}]\n${text}`
-          : `[USER: tool_result]\n${text}`;
+          ? `[USER: tool_result ${message.toolCallId}${toolResultStatusSuffix(message.toolResultStatus)}]\n${text}`
+          : `[USER: tool_result${toolResultStatusSuffix(message.toolResultStatus)}]\n${text}`;
       sections.push(label);
     } else {
       sections.push(`[USER]\n${text}`);

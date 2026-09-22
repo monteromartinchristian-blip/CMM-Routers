@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } from "../../core/provider.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import { CodexAppServerClient } from "./app-server-client.js";
 import {
   buildThreadStartParams,
@@ -102,8 +103,8 @@ export function buildCodexThreadSeeds(messages: RouterRequest["messages"]): {
       if (!text) return;
       const label =
         typeof message.toolCallId === "string"
-          ? `[tool_result ${message.toolCallId}] ${text}`
-          : `[tool_result] ${text}`;
+          ? `[tool_result ${message.toolCallId}${toolResultStatusSuffix(message.toolResultStatus)}] ${text}`
+          : `[tool_result${toolResultStatusSuffix(message.toolResultStatus)}] ${text}`;
       if (index === lastUserIndex) {
         turnInput.push({ type: "text", text: label });
       } else {
