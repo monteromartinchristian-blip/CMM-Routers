@@ -18,6 +18,7 @@ import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
+import { validateToolCalls } from "../core/tool-arguments.js";
 import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
@@ -535,6 +536,15 @@ export function registerChatCompletions(
       const aggregated = aggregateEvents(events);
       if ("error" in aggregated) {
         const mapped = mapRouterErrorToHttp(aggregated.error);
+        responseCompleted = true;
+        return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+      }
+      // Fail closed on provider arguments that are not usable JSON: a
+      // fabricated `{}` would hand the client an executable call with invented
+      // parameters.
+      const argumentsError = validateToolCalls(aggregated.toolCalls);
+      if (argumentsError) {
+        const mapped = mapRouterErrorToHttp(argumentsError);
         responseCompleted = true;
         return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
       }

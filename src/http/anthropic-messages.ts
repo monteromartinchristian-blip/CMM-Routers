@@ -15,6 +15,7 @@ import {
   rejectChatOnlyTools,
 } from "./openai-chat.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
+import { parseToolArguments } from "../core/tool-arguments.js";
 import type { ConsumerRequest } from "./server.js";
 
 /**
@@ -492,13 +493,16 @@ export function registerAnthropicMessages(
       const content: unknown[] = [];
       if (text.length > 0) content.push({ type: "text", text });
       for (const call of [...pending.values()].sort((a, b) => a.index - b.index)) {
-        let input: unknown = {};
-        try {
-          input = JSON.parse(call.args) as unknown;
-        } catch {
-          input = {};
+        // Fail closed: malformed provider arguments are never replaced with a
+        // fabricated empty object, which would hand the client an executable
+        // call with invented parameters.
+        const parsedArguments = parseToolArguments(call.args);
+        if (!parsedArguments.ok) {
+          const mapped = anthropicErrorFor(parsedArguments.error);
+          responseCompleted = true;
+          return reply.code(mapped.status).send(mapped.body);
         }
-        content.push({ type: "tool_use", id: call.id, name: call.name, input });
+        content.push({ type: "tool_use", id: call.id, name: call.name, input: parsedArguments.value });
       }
 
       responseCompleted = true;
@@ -551,6 +555,7 @@ export function registerAnthropicMessages(
         { index: number; id: string; name: string; args: string; started: boolean }
       >();
       let stopReason: "end_turn" | "tool_use" | "max_tokens" = "end_turn";
+      let malformedToolArguments = false;
 
       const tracked = trackProviderStream(
         usageStore,
@@ -595,6 +600,9 @@ export function registerAnthropicMessages(
             send("content_block_stop", { type: "content_block_stop", index: textIndex });
             textIndex = undefined;
           }
+          // Buffer the arguments instead of streaming them: the tool block is
+          // only ever opened once its arguments are known to be usable JSON, so
+          // a malformed provider payload can never become an executable call.
           const index = typed.index ?? 0;
           let block = toolBlocks.get(index);
           if (block === undefined) {
@@ -606,22 +614,8 @@ export function registerAnthropicMessages(
               started: false,
             };
             toolBlocks.set(index, block);
-            send("content_block_start", {
-              type: "content_block_start",
-              index: block.index,
-              content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
-            });
-            block.started = true;
           }
-          const delta = typed.argumentsDelta ?? "";
-          if (delta.length > 0) {
-            block.args += delta;
-            send("content_block_delta", {
-              type: "content_block_delta",
-              index: block.index,
-              delta: { type: "input_json_delta", partial_json: delta },
-            });
-          }
+          block.args += typed.argumentsDelta ?? "";
         } else if (typed.type === "usage") {
           if (typed.inputTokens !== undefined) inputTokens = typed.inputTokens;
           if (typed.outputTokens !== undefined) outputTokens = typed.outputTokens;
@@ -630,6 +624,34 @@ export function registerAnthropicMessages(
           if (textIndex !== undefined) {
             send("content_block_stop", { type: "content_block_stop", index: textIndex });
             textIndex = undefined;
+          }
+          // Validate every buffered tool call before any of them is surfaced.
+          for (const block of [...toolBlocks.values()].sort((a, b) => a.index - b.index)) {
+            const parsedArguments = parseToolArguments(block.args);
+            if (!parsedArguments.ok) {
+              const mapped = anthropicErrorFor(parsedArguments.error);
+              send("error", mapped.body);
+              responseCompleted = true;
+              malformedToolArguments = true;
+              break;
+            }
+            send("content_block_start", {
+              type: "content_block_start",
+              index: block.index,
+              content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
+            });
+            block.started = true;
+            if (block.args.length > 0) {
+              send("content_block_delta", {
+                type: "content_block_delta",
+                index: block.index,
+                delta: { type: "input_json_delta", partial_json: block.args },
+              });
+            }
+          }
+          if (malformedToolArguments) {
+            send("message_stop", { type: "message_stop" });
+            break;
           }
           closeToolBlocks();
           send("message_delta", {

@@ -9,6 +9,7 @@ import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
+import { validateToolCalls } from "../core/tool-arguments.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -386,6 +387,12 @@ export function registerResponsesApi(
           output_tokens: outputTokens ?? 0,
           total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
         };
+      }
+      const argumentsError = validateToolCalls(functionCalls);
+      if (argumentsError) {
+        const mapped = mapRouterErrorToHttp(argumentsError);
+        responseCompleted = true;
+        return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
       }
       responseCompleted = true;
       return reply.send(
