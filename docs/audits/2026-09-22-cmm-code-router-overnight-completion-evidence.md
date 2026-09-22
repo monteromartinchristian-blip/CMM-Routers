@@ -199,3 +199,18 @@ left untouched; all processes started for the live gates were stopped and their
 ports are free. The CMM Routers Console was not touched. No PAYG provider was
 enabled, no billing policy was changed, and no provider account was enabled to
 obtain a pass.
+
+---
+
+## 11. Corrective note (added 2026-09-22, protocol-extensibility remediation)
+
+The direct harness-agnostic audit found an arithmetic error in section 3 of this
+document. It is corrected here rather than by editing the original text, so the
+record of what was claimed stays intact.
+
+**E1 — file-count total.** Section 3 reports per-phase counts of 24 / 9 / 9 / 9
+and a total of 46. The per-phase counts are correct; their sum is **51**, and the
+direct range inventory independently confirms **51 changed files**. The stated
+total of 46 was an arithmetic error. No other figure in this document is
+affected: the commit list, gate results, gate classifications and security
+markers are unchanged and remain as recorded.

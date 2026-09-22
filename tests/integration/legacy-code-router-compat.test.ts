@@ -91,14 +91,35 @@ describe("Phase 1 legacy compatibility lock", () => {
     expect(read("launchd/com.cmm.subscription-router.plist.template")).toContain(
       "com.cmm.subscription-router",
     );
-    expect(read("src/providers/antigravity/mcp-registration.ts")).toContain("cmm-qoder-tools");
-    expect(read("src/providers/antigravity/adapter.ts")).toContain("cmm-qoder-tools");
-    expect(read("src/bridge/mcp-bridge-launcher.ts")).toContain("cmm_qoder");
-    expect(read("src/providers/claude/adapter.ts")).toContain("mcp__cmm_qoder__");
+    // The frozen VALUES now live in exactly one compatibility module; production
+    // code refers to them by semantic name. Both halves are asserted, so
+    // isolation can never quietly become a rename.
+    const compat = read("src/compat/legacy-identifiers.ts");
+    expect(compat).toContain('LEGACY_ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools"');
+    expect(compat).toContain('LEGACY_BRIDGE_SERVER_NAME = "cmm_qoder"');
+    expect(compat).toContain('LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX = "mcp__cmm_qoder__"');
+    expect(compat).toContain('LEGACY_ANTIGRAVITY_MCP_PERMISSION_RULE = "mcp(cmm-qoder-tools/*)"');
+    expect(compat).toContain('LEGACY_CODE_ROUTER_KEYCHAIN_ACCOUNT = "qoder-bearer"');
+    expect(compat).toContain('LEGACY_QODER_PROVIDER_ID = "qoder-custom-cmm-router"');
+    expect(compat).toContain('LEGACY_SMOKE_OK_MARKER = "QODER_SMOKE_OK"');
+
+    // Production code must reference those semantic names, not inline the values.
+    for (const file of [
+      "src/providers/antigravity/mcp-registration.ts",
+      "src/providers/antigravity/adapter.ts",
+      "src/bridge/mcp-bridge-launcher.ts",
+      "src/providers/claude/adapter.ts",
+    ]) {
+      const source = read(file);
+      expect(source, file).not.toContain('"cmm-qoder-tools"');
+      expect(source, file).not.toContain('"cmm_qoder"');
+      expect(source, file).not.toContain('"mcp__cmm_qoder__"');
+    }
     expect(read("scripts/macos/provision-antigravity-mcp-permission.mjs")).toContain(
       "mcp(cmm-qoder-tools/*)",
     );
     console.log("LEGACY_COMPAT_IDENTIFIERS_PRESERVED=PASS");
+    console.log("LEGACY_WIRE_ALIASES_ISOLATED=PASS");
   });
 
   it("no legacy identifier was deleted from the legacy scripts", () => {

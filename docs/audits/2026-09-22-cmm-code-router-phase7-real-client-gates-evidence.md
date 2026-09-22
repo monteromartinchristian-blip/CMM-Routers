@@ -139,3 +139,28 @@ captured request headers were redacted before inspection.
 The template Router, the capture probe and the live-gate Router were all stopped;
 ports 18892 and 18893 are free. The pre-existing Router process on port 8790 that
 belonged to the user was left untouched.
+
+---
+
+## Addendum — corrective note on the Codex tool counts (added 2026-09-22)
+
+The direct harness-agnostic audit flagged that the tool arithmetic in section 7C
+did not reconcile: it reported 31 entries but "19 function + 18 namespace +
+1 web_search", which sums to 38 rather than 31.
+
+The raw redacted structural capture was re-read and recounted. The correct,
+verified breakdown is:
+
+```json
+{"total": 31, "by_type": {"function": 12, "namespace": 18, "web_search": 1}}
+```
+
+12 + 18 + 1 = 31. The earlier "19 function" figure was wrong; the total of 31 and
+the namespace count of 18 were correct.
+
+Only one architectural conclusion is carried forward from that capture, and it is
+the one the code changes address: **non-function tool declaration classes were
+observed on the wire**. The exact counts are evidence of proportion, not of
+compatibility, and no Router behavior depends on them.
+
+This note corrects the record; the original text of section 7C is left intact.
