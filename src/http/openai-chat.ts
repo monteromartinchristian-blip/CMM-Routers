@@ -11,6 +11,7 @@ import { REASONING_EFFORTS } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
 import { enforceProviderToolPolicy, parseChatToolChoice } from "../core/tool-policy.js";
+import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
 import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
@@ -63,12 +64,12 @@ function parseMessages(input: unknown): RouterMessage[] | null {
   for (const entry of input) {
     const record = asRecord(entry);
     if (!record) return null;
-    if (
-      record.role !== "system" &&
-      record.role !== "user" &&
-      record.role !== "assistant" &&
-      record.role !== "tool"
-    ) {
+    // `developer` is the system-level instruction role used by newer OpenAI
+    // clients on this surface too; normalize it exactly as the Responses surface
+    // does. It carries instructions and no tools.
+    const rawRole = record.role;
+    const role = rawRole === "developer" ? "system" : rawRole;
+    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
       return null;
     }
     let content: string | null = null;
@@ -104,7 +105,7 @@ function parseMessages(input: unknown): RouterMessage[] | null {
     } else {
       return null;
     }
-    const message: RouterMessage = { role: record.role, content };
+    const message: RouterMessage = { role, content };
     if (images !== undefined) message.images = images;
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
@@ -130,22 +131,39 @@ function parseMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseTools(input: unknown): RouterTool[] | null {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) return null;
+function parseTools(input: unknown): { tools: RouterTool[] } | { error: RouterError } {
+  if (input === undefined) return { tools: [] };
+  if (!Array.isArray(input)) {
+    return { error: new RouterError("invalid_request", "tools must be an array") };
+  }
   const tools: RouterTool[] = [];
   for (const entry of input) {
     const record = asRecord(entry) as ChatToolInput | null;
-    if (!record || record.type !== "function") return null;
+    if (!record) {
+      return { error: new RouterError("invalid_request", "each entry in tools must be an object") };
+    }
+    // Capability-class classification: only client-owned functions are
+    // representable, and an unsupported class is refused by name rather than
+    // silently dropped.
+    const kind = classifyToolDeclarationType(record.type);
+    if (kind !== "function") {
+      return { error: unsupportedToolKindError(kind, record.type) };
+    }
     const fn = record.function;
-    if (!fn || typeof fn.name !== "string") return null;
+    if (!fn || typeof fn.name !== "string") {
+      return { error: new RouterError("invalid_request", "a function tool requires a name") };
+    }
     const parameters =
       fn.parameters === undefined
         ? {}
         : asRecord(fn.parameters) !== null
           ? (fn.parameters as Record<string, unknown>)
           : null;
-    if (parameters === null) return null;
+    if (parameters === null) {
+      return {
+        error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+      };
+    }
     tools.push({
       type: "function",
       function: {
@@ -155,7 +173,7 @@ function parseTools(input: unknown): RouterTool[] | null {
       },
     });
   }
-  return tools;
+  return { tools };
 }
 
 /**
@@ -382,12 +400,12 @@ export function registerChatCompletions(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const tools = parseTools(body.tools);
-    if (tools === null) {
-      return reply
-        .code(400)
-        .send({ error: { type: "invalid_request", message: "tools must be an array" } });
+    const parsedTools = parseTools(body.tools);
+    if ("error" in parsedTools) {
+      const mapped = mapRouterErrorToHttp(parsedTools.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
+    const tools = parsedTools.tools;
 
     if (body.stream !== undefined && typeof body.stream !== "boolean") {
       return reply

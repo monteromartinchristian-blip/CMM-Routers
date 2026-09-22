@@ -6,6 +6,7 @@ import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
+import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import type { ConsumerRequest } from "./server.js";
@@ -173,12 +174,8 @@ function parseResponseTools(input: unknown): { tools: RouterTool[] } | { error: 
       });
       continue;
     }
-    const declaredType = typeof record.type === "string" ? record.type : "unknown";
     return {
-      error: new RouterError(
-        "unsupported_capability",
-        `The Responses surface cannot faithfully represent a tool of type '${declaredType}'; refusing to drop it silently`,
-      ),
+      error: unsupportedToolKindError(classifyToolDeclarationType(record.type), record.type),
     };
   }
   return { tools };
