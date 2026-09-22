@@ -55,7 +55,12 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
       messages.push({ role: "tool", content: record.output, toolCallId: record.call_id });
       continue;
     }
-    const role = record.role;
+    // Responses uses `developer` for system-level instructions; it maps onto the
+    // Router's internal `system` role. This is a boundary normalization for a
+    // genuine wire difference, not a privilege: the role carries instructions and
+    // no tools.
+    const rawRole = record.role;
+    const role = rawRole === "developer" ? "system" : rawRole;
     if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
       return null;
     }
@@ -107,13 +112,17 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseResponseTools(input: unknown): RouterTool[] | null {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) return null;
+function parseResponseTools(input: unknown): { tools: RouterTool[] } | { error: RouterError } {
+  if (input === undefined) return { tools: [] };
+  if (!Array.isArray(input)) {
+    return { error: new RouterError("invalid_request", "tools must be an array") };
+  }
   const tools: RouterTool[] = [];
   for (const entry of input) {
     const record = asRecord(entry);
-    if (!record) return null;
+    if (!record) {
+      return { error: new RouterError("invalid_request", "each entry in tools must be an object") };
+    }
     // Responses-style: {type:"function", name, description?, parameters?}
     if (record.type === "function" && typeof record.name === "string") {
       const parameters =
@@ -122,7 +131,11 @@ function parseResponseTools(input: unknown): RouterTool[] | null {
           : asRecord(record.parameters) !== null
             ? (record.parameters as Record<string, unknown>)
             : null;
-      if (parameters === null) return null;
+      if (parameters === null) {
+        return {
+          error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+        };
+      }
       tools.push({
         type: "function",
         function: {
@@ -136,14 +149,20 @@ function parseResponseTools(input: unknown): RouterTool[] | null {
     // Chat-style passthrough
     if (record.type === "function" && asRecord(record.function) !== null) {
       const fn = record.function as Record<string, unknown>;
-      if (typeof fn.name !== "string") return null;
+      if (typeof fn.name !== "string") {
+        return { error: new RouterError("invalid_request", "a function tool requires a name") };
+      }
       const parameters =
         fn.parameters === undefined
           ? {}
           : asRecord(fn.parameters) !== null
             ? (fn.parameters as Record<string, unknown>)
             : null;
-      if (parameters === null) return null;
+      if (parameters === null) {
+        return {
+          error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+        };
+      }
       tools.push({
         type: "function",
         function: {
@@ -154,9 +173,15 @@ function parseResponseTools(input: unknown): RouterTool[] | null {
       });
       continue;
     }
-    return null;
+    const declaredType = typeof record.type === "string" ? record.type : "unknown";
+    return {
+      error: new RouterError(
+        "unsupported_capability",
+        `The Responses surface cannot faithfully represent a tool of type '${declaredType}'; refusing to drop it silently`,
+      ),
+    };
   }
-  return tools;
+  return { tools };
 }
 
 function newId(prefix: string): string {
@@ -178,12 +203,12 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "model must be a non-empty string" } });
     }
-    const tools = parseResponseTools(body.tools);
-    if (tools === null) {
-      return reply
-        .code(400)
-        .send({ error: { type: "invalid_request", message: "tools must be an array" } });
+    const parsedTools = parseResponseTools(body.tools);
+    if ("error" in parsedTools) {
+      const mapped = mapRouterErrorToHttp(parsedTools.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
+    const tools = parsedTools.tools;
     if (body.stream !== undefined && typeof body.stream !== "boolean") {
       return reply
         .code(400)
