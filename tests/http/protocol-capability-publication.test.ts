@@ -116,7 +116,7 @@ describe("protocol-centric capability publication", () => {
     const capable = data.find((model) => model.id === "command-code/capable")!;
     expect(capable.x_cmm?.protocols?.openai_chat).toBe(true);
     expect(capable.x_cmm?.protocols?.openai_responses).toBe(true);
-    expect(capable.x_cmm?.protocols?.anthropic_messages).toBe(false);
+    expect(capable.x_cmm?.protocols?.anthropic_messages).toBe(true);
     expect(capable.x_cmm?.tools?.function).toBe(true);
     expect(capable.x_cmm?.tools?.namespace).toBe(false);
     expect(capable.x_cmm?.tools?.hosted).toBe(false);

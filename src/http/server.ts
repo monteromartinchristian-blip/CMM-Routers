@@ -3,6 +3,7 @@ import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerChatCompletions } from "./openai-chat.js";
 import { registerResponsesApi } from "./openai-responses.js";
+import { registerAnthropicMessages } from "./anthropic-messages.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { RouterProfile } from "../core/router-profile.js";
@@ -100,6 +101,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         typeof clientHeader === "string" ? clientHeader : undefined,
       );
       if (identity === null) {
+        // Auth errors are shaped per downstream protocol: the Anthropic-compatible
+        // surface uses its own error envelope and taxonomy.
+        if (request.url.startsWith("/v1/messages")) {
+          return reply.code(401).send({
+            type: "error",
+            error: { type: "authentication_error", message: "Invalid or missing bearer token" },
+          });
+        }
         return reply.code(401).send({
           error: {
             type: "router_unauthorized",
@@ -183,6 +192,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   // OpenAI-compatible responses API
   registerResponsesApi(fastify, options.registry, options.usageStore);
+
+  // Anthropic Messages-compatible downstream protocol adapter
+  registerAnthropicMessages(fastify, options.registry, options.usageStore);
 
   return fastify;
 }

@@ -38,7 +38,7 @@ export type DownstreamProtocol = (typeof DOWNSTREAM_PROTOCOLS)[number];
 export const ROUTER_PROTOCOL_SUPPORT: Readonly<Record<DownstreamProtocol, boolean>> = {
   openai_chat: true,
   openai_responses: true,
-  anthropic_messages: false,
+  anthropic_messages: true,
 };
 
 export interface ProtocolCapabilities {

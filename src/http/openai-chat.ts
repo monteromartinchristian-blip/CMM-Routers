@@ -197,7 +197,8 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
         type === "function_call" ||
         type === "function_call_output" ||
         type === "tool_call" ||
-        type === "tool_result"
+        type === "tool_result" ||
+        type === "tool_use"
       ) {
         return true;
       }
@@ -211,7 +212,8 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
           partType === "function_call" ||
           partType === "function_call_output" ||
           partType === "tool_call" ||
-          partType === "tool_result"
+          partType === "tool_result" ||
+          partType === "tool_use"
         ) {
           return true;
         }
