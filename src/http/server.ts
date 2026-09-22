@@ -6,6 +6,7 @@ import { registerResponsesApi } from "./openai-responses.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { RouterProfile } from "../core/router-profile.js";
+import { protocolCapabilitiesFor } from "../core/protocol-capabilities.js";
 import {
   CLIENT_LABEL_HEADER,
   assertDistinctServerTokens,
@@ -156,7 +157,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         object: "model",
         owned_by: `cmm:${model.provider}`,
         ...(model.capability !== undefined
-          ? { x_cmm: { code_router: model.capability } }
+          ? {
+              x_cmm: {
+                // Preserved for compatibility with existing clients.
+                code_router: model.capability,
+                ...protocolCapabilitiesFor(model.capability, model.provider),
+              },
+            }
           : {}),
       })),
     });
