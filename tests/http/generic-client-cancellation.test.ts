@@ -69,6 +69,11 @@ class HangingGenericToolProvider implements ProviderAdapter {
     if (signal.aborted) this.sawAbort = true;
     else signal.addEventListener("abort", onAbort, { once: true });
     try {
+      // A text delta is streamed immediately, so the client can observe the live
+      // stream and abort mid-flight. Tool-call arguments are buffered until a call
+      // completes (malformed-argument hardening), so they cannot serve as the
+      // observable first frame.
+      yield { type: "text_delta", text: "hang-prefix" };
       yield {
         type: "tool_call_delta",
         index: 0,
@@ -154,7 +159,7 @@ describe("generic Code Router client — cancellation", () => {
         req.end();
 
         await firstChunk;
-        expect(chunks.join("")).toContain("gcall_hang");
+        expect(chunks.join("")).toContain("hang-prefix");
         expect(usageStore.aggregates().activeRequests).toBe(1);
         await waitFor(() => provider.entered);
         req.destroy();
