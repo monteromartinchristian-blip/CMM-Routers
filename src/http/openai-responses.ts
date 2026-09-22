@@ -14,7 +14,7 @@ import {
 } from "../core/tool-kind.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
-import { validateToolCalls } from "../core/tool-arguments.js";
+import { validateToolArguments } from "../core/tool-arguments.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -397,7 +397,7 @@ export function registerResponsesApi(
           total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
         };
       }
-      const argumentsError = validateToolCalls(functionCalls);
+      const argumentsError = validateToolArguments(functionCalls.map((call) => call.arguments));
       if (argumentsError) {
         const mapped = mapRouterErrorToHttp(argumentsError);
         responseCompleted = true;
@@ -470,6 +470,8 @@ export function registerResponsesApi(
           if (textItemIndex === undefined) textItemIndex = nextOutputIndex++;
           send("response.output_text.delta", { item_id: `msg-${textItemIndex}`, delta: typed.text });
         } else if (typed.type === "tool_call_delta") {
+          // Buffer instead of forwarding fragments: the item lifecycle is only
+          // emitted once the complete arguments are known to be usable JSON.
           const index = typed.index ?? 0;
           let call = pendingCalls.get(index);
           if (call === undefined) {
@@ -481,6 +483,24 @@ export function registerResponsesApi(
               outputIndex: nextOutputIndex++,
             };
             pendingCalls.set(index, call);
+          }
+          if (typed.name !== undefined) call.name = typed.name;
+          const delta = typed.argumentsDelta ?? "";
+          if (delta.length > 0) call.args += delta;
+        } else if (typed.type === "completed") {
+          const ordered = [...pendingCalls.values()].sort(
+            (a, b) => a.outputIndex - b.outputIndex,
+          );
+          // A malformed completed call must never be presented as an executable
+          // one: emit the failure and do not complete the response.
+          const streamedError = validateToolArguments(ordered.map((call) => call.args));
+          if (streamedError) {
+            const mapped = mapRouterErrorToHttp(streamedError);
+            send("response.failed", { error: { type: mapped.type, message: mapped.message } });
+            responseCompleted = true;
+            break;
+          }
+          for (const call of ordered) {
             send("response.output_item.added", {
               output_index: call.outputIndex,
               item: {
@@ -491,22 +511,14 @@ export function registerResponsesApi(
                 arguments: "",
               },
             });
-          }
-          const delta = typed.argumentsDelta ?? "";
-          if (delta.length > 0) call.args += delta;
-          send("response.function_call_arguments.delta", {
-            item_id: call.itemId,
-            output_index: call.outputIndex,
-            delta,
-            name: call.name,
-          });
-        } else if (typed.type === "completed") {
-          // Close every open function-call item with its fully assembled
-          // arguments before the terminal event.
-          const ordered = [...pendingCalls.values()].sort(
-            (a, b) => a.outputIndex - b.outputIndex,
-          );
-          for (const call of ordered) {
+            if (call.args.length > 0) {
+              send("response.function_call_arguments.delta", {
+                item_id: call.itemId,
+                output_index: call.outputIndex,
+                delta: call.args,
+                name: call.name,
+              });
+            }
             send("response.function_call_arguments.done", {
               item_id: call.itemId,
               output_index: call.outputIndex,

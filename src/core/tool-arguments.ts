@@ -39,14 +39,12 @@ export function parseToolArguments(raw: string): ParsedToolArguments {
 }
 
 /**
- * Validate every accumulated tool call before any of them is surfaced.
- * Returns the first error, or null when all argument payloads are usable.
+ * Validate every accumulated tool-call argument payload before any call is
+ * surfaced. Returns the first error, or null when all payloads are usable.
  */
-export function validateToolCalls(
-  calls: ReadonlyArray<{ arguments: string }>,
-): RouterError | null {
-  for (const call of calls) {
-    const parsed = parseToolArguments(call.arguments);
+export function validateToolArguments(argumentsList: readonly string[]): RouterError | null {
+  for (const raw of argumentsList) {
+    const parsed = parseToolArguments(raw);
     if (!parsed.ok) return parsed.error;
   }
   return null;

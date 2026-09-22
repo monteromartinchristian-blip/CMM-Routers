@@ -23,7 +23,7 @@ import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
-import { validateToolCalls } from "../core/tool-arguments.js";
+import { validateToolArguments } from "../core/tool-arguments.js";
 import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
@@ -549,7 +549,9 @@ export function registerChatCompletions(
       // Fail closed on provider arguments that are not usable JSON: a
       // fabricated `{}` would hand the client an executable call with invented
       // parameters.
-      const argumentsError = validateToolCalls(aggregated.toolCalls);
+      const argumentsError = validateToolArguments(
+        aggregated.toolCalls.map((call) => call.arguments),
+      );
       if (argumentsError) {
         const mapped = mapRouterErrorToHttp(argumentsError);
         responseCompleted = true;
@@ -600,6 +602,10 @@ export function registerChatCompletions(
 
     try {
       let contentIndex = 0;
+      const streamedCalls = new Map<
+        number,
+        { index: number; id: string; name: string; args: string }
+      >();
       const tracked = trackProviderStream(
         usageStore,
         requestId,
@@ -625,34 +631,55 @@ export function registerChatCompletions(
           });
           contentIndex += 1;
         } else if (typed.type === "tool_call_delta") {
-          sendChunk({
-            id: chunkId,
-            object: "chat.completion.chunk",
-            created,
-            model: model.id,
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  tool_calls: [
-                    {
-                      index: typed.index,
-                      id: typed.id,
-                      type: "function",
-                      function: {
-                        ...(typed.name !== undefined ? { name: typed.name } : {}),
-                        ...(typed.argumentsDelta !== undefined
-                          ? { arguments: typed.argumentsDelta }
-                          : {}),
-                      },
-                    },
-                  ],
-                },
-                finish_reason: null,
-              },
-            ],
-          });
+          // Buffer instead of forwarding fragments: a tool call is only surfaced
+          // once its complete arguments are known to be usable JSON, so a
+          // malformed provider payload can never become an executable call.
+          const index = typed.index ?? 0;
+          const existing = streamedCalls.get(index) ?? {
+            index,
+            id: typed.id,
+            name: typed.name ?? "",
+            args: "",
+          };
+          if (typed.name !== undefined) existing.name = typed.name;
+          if (typed.argumentsDelta !== undefined) existing.args += typed.argumentsDelta;
+          streamedCalls.set(index, existing);
         } else if (typed.type === "completed") {
+          const streamed = [...streamedCalls.values()].sort((a, b) => a.index - b.index);
+          const streamedError = validateToolArguments(streamed.map((call) => call.args));
+          if (streamedError) {
+            const mapped = mapRouterErrorToHttp(streamedError);
+            sendChunk({ error: { type: mapped.type, message: mapped.message } });
+            responseCompleted = true;
+            break;
+          }
+          for (const call of streamed) {
+            sendChunk({
+              id: chunkId,
+              object: "chat.completion.chunk",
+              created,
+              model: model.id,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: call.index,
+                        id: call.id,
+                        type: "function",
+                        function: {
+                          ...(call.name.length > 0 ? { name: call.name } : {}),
+                          ...(call.args.length > 0 ? { arguments: call.args } : {}),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            });
+          }
           sendChunk({
             id: chunkId,
             object: "chat.completion.chunk",

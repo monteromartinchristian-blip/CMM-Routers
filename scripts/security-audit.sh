@@ -288,14 +288,21 @@ else
   fail=1
 fi
 # Provider tool arguments are validated, never fabricated.
+# Non-streaming AND streaming output paths must validate the assembled call set,
+# not merely mention a helper.
 if grep -q "parseToolArguments" src/core/tool-arguments.ts \
-  && grep -q "validateToolCalls" src/http/openai-chat.ts \
-  && grep -q "validateToolCalls" src/http/openai-responses.ts \
+  && grep -q "validateToolArguments" src/http/openai-chat.ts \
+  && grep -q "aggregated.toolCalls.map" src/http/openai-chat.ts \
+  && grep -q "streamed.map" src/http/openai-chat.ts \
+  && grep -q "validateToolArguments" src/http/openai-responses.ts \
+  && grep -q "functionCalls.map" src/http/openai-responses.ts \
+  && grep -q "ordered.map" src/http/openai-responses.ts \
   && grep -q "parseToolArguments" src/http/anthropic-messages.ts; then
   echo "MALFORMED_TOOL_ARGUMENTS=FAIL_CLOSED"
+  echo "MALFORMED_STREAM_VALIDATED_BEFORE_SURFACING=PASS"
   echo "NO_ARGUMENT_FABRICATION=PASS"
 else
-  echo "FAIL: a surface does not validate provider tool arguments"
+  echo "FAIL: a surface does not validate assembled provider tool arguments"
   fail=1
 fi
 # A client-reported tool failure is a canonical concept, not a wire detail.

@@ -95,10 +95,15 @@ describe("Responses streaming function-call lifecycle", () => {
     console.log("RESPONSES_OUTPUT_ITEM_LIFECYCLE=PASS");
     console.log("RESPONSES_CALL_ID_DISTINCT_FROM_ITEM_ID=PASS");
 
+    // Arguments are buffered until the call completes and validated before any
+    // fragment is surfaced, so the delta carries the whole usable payload rather
+    // than an unchecked fragment.
     const delta = events.find((e) => e.event === "response.function_call_arguments.delta")!.data;
     expect(delta.item_id).toBe(item.id);
-    expect(delta.delta).toBe('{"te');
+    expect(delta.delta).toBe('{"text":"canary"}');
+    expect(() => JSON.parse(delta.delta as string)).not.toThrow();
     console.log("RESPONSES_FUNCTION_CALL_ARGUMENTS_DELTA=PASS");
+    console.log("RESPONSES_STREAM_ARGUMENTS_VALIDATED_BEFORE_SURFACING=PASS");
 
     const done = events.find((e) => e.event === "response.function_call_arguments.done")!.data;
     expect(done.arguments).toBe('{"text":"canary"}');
