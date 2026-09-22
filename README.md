@@ -101,12 +101,29 @@ CMM Routers.
 - **Qoder** — the first documented `CMM Code Router` consumer. Qoder is a
   supported client of the project, not the identity of the project or of the
   profile; Qoder owns and executes the tools it is given.
+- **Hermes** and the **Codex CLI** — additional compatibility targets of the same
+  `CMM Code Router` profile. Both are configured as ordinary OpenAI-compatible
+  clients; neither is an authorization role.
 
 The architecture is open to additional compatible clients and harnesses.
+Real-client verification status per client is stated in
+[capability and real-client status](docs/code-router-capability-status.md).
 
 See [CMM Code Router — generic client setup](docs/code-router-setup.md) for the
 client-agnostic protocol: authentication, model capability discovery, the tool
 round-trip contract, streaming and cancellation.
+
+## Credentials
+
+Authenticate with the canonical Code Router bearer for tool-owning clients:
+
+```text
+CMM_CODE_ROUTER_TOKEN
+```
+
+`CMM_QODER_TOKEN` remains a legacy compatibility alias for the SAME Code Router
+profile. The CMMChat bearer (`CMM_ROUTER_TOKEN`) is separate and permanently
+`CHAT_ONLY`. See [migration](docs/code-router-migration.md).
 
 ## Setup
 
@@ -145,7 +162,15 @@ relaunch it** before the UI will reflect updated model metadata. A window reload
 is not enough. Never commit that settings file: it may hold plaintext
 credentials.
 
-## Legacy compatibility identifiers
+## Current and legacy identifiers
+
+Current-facing identifiers:
+
+| Identifier | Purpose |
+|---|---|
+| `CMM_CODE_ROUTER_TOKEN` | Canonical Code Router bearer (profile credential) |
+| `code-router-bearer` | macOS Keychain account for the canonical bearer |
+| `CMM_CODE_ROUTER_KEYCHAIN_SERVICE`, `CMM_CODE_ROUTER_KEYCHAIN_ACCOUNT` | Keychain lookup overrides |
 
 Some internal identifiers still carry the project's earlier name. These are
 **legacy compatibility identifiers**, not current branding, and they are retained
@@ -158,13 +183,16 @@ on purpose so existing installations keep working without migration.
 | `cmm-subscription-router` | macOS Keychain service |
 | `router-bearer`, `qoder-bearer`, `command-code-secret` | Keychain account names |
 | `qoder-custom-cmm-router` | Qoder provider ID |
-| `CMM_ROUTER_TOKEN`, `CMM_QODER_TOKEN` | Environment variable names |
+| `CMM_ROUTER_TOKEN`, `CMM_QODER_TOKEN` | Environment variable names (CMMChat; legacy Code Router alias) |
+| `cmm-qoder-tools`, `mcp__cmm_qoder__`, `cmm_qoder` | MCP bridge / registration names |
 | `~/Library/Logs/CMM-Subscription-Router/` | Local log directory |
 
 Renaming any of these would break an installed LaunchAgent, orphan stored
-Keychain items, or detach an already-registered Qoder provider — all for purely
-cosmetic gain. Historical audit records and earlier evidence documents likewise
-keep the names that were accurate when they were written.
+Keychain items, detach an already-registered Qoder provider, or invalidate a
+persisted MCP registration — all for purely cosmetic gain. `mcp(cmm-qoder-tools/*)`
+is additionally an active security scope and must never be widened. Historical
+audit records and earlier evidence documents likewise keep the names that were
+accurate when they were written.
 
 ## Verification
 

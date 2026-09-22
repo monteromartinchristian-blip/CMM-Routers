@@ -31,23 +31,44 @@ security add-generic-password -s cmm-subscription-router -a router-bearer -w
 security add-generic-password -s cmm-subscription-router -a command-code-secret -w
 ```
 
-### Qoder consumer bearer (optional)
+### Code Router bearer (canonical)
 
-The Qoder consumer is what enables the `CMM Code Router` profile, in which Qoder
-owns and executes tools. It is enabled only when its own bearer is present.
-Provision it per Mac (never copied between machines, never committed):
+The Code Router profile (`CHAT_AND_TOOLS`) is what serves tool-owning clients —
+Qoder, Hermes, Codex and any generic OpenAI-compatible harness. It is
+client-agnostic: the bearer authenticates the **profile**, not an application.
+Provision the canonical item per Mac (never copied between machines, never
+committed):
+
+```bash
+security add-generic-password -s cmm-subscription-router -a code-router-bearer -w
+```
+
+At startup `scripts/macos/run-router.sh` reads
+`service=cmm-subscription-router account=code-router-bearer` from Keychain and
+exports it as `CMM_CODE_ROUTER_TOKEN`. `scripts/macos/install-router.sh` reports
+whether the item already exists and, if not, prints the exact provisioning
+command (idempotent; it never overwrites and never prints a value).
+
+### Legacy Qoder bearer (compatibility alias)
+
+The Qoder bearer is retained as an explicit **compatibility alias** for the same
+Code Router profile, so existing installations keep working without migration.
+It is no longer a distinct role and it never authenticates CMMChat. Provision it
+per Mac if it is not already present:
 
 ```bash
 security add-generic-password -s cmm-subscription-router -a qoder-bearer -w
 ```
 
-At startup `scripts/macos/run-router.sh` reads
-`service=cmm-subscription-router account=qoder-bearer` from Keychain and exports
-it as `CMM_QODER_TOKEN`. When absent there is simply no Qoder consumer: every
-authenticated client is CMMChat, which is permanently CHAT_ONLY. The value is
-read without echo and never written to the plist, logs, or the repository.
-`scripts/macos/install-router.sh` reports whether the item already exists and,
-if not, prints the exact provisioning command (idempotent; it never overwrites).
+At startup the wrapper exports it as `CMM_QODER_TOKEN`. Either Code Router
+credential — canonical or legacy — authenticates the Code Router profile; when
+neither is present there is simply no Code Router profile and every
+authenticated client is CMMChat, which is permanently CHAT_ONLY. Values are read
+without echo and never written to the plist, logs, or the repository.
+
+Configuration collisions fail closed: if the CMMChat bearer equals either Code
+Router bearer the Router refuses to start rather than resolving an ambiguous
+profile.
 
 ## Reproducing the install on another Mac
 
@@ -56,7 +77,8 @@ From `$HOME/CMM-Routers` on the second machine:
 1. Clone/pull the same Git revision.
 2. Run `bash scripts/preflight.sh` and `npm run build`.
 3. Store that Mac's own secrets in its Keychain (same commands as above),
-   including `qoder-bearer` if that Mac should serve the Qoder consumer.
+   including `code-router-bearer` for the Code Router profile and, while the
+   compatibility window is open, `qoder-bearer` for the legacy alias.
 4. Run `bash scripts/macos/install-router.sh`.
 5. Re-authenticate each provider locally on that Mac.
 
