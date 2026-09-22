@@ -125,7 +125,7 @@ function anthropicSurface(toolCapable: boolean, policy: ToolPolicy): SurfaceCapa
     developer_role: false,
     system_field: true,
     tools: toolTruth(toolCapable, policy),
-    auth: { authorization_bearer: true, api_key_header: false },
+    auth: { authorization_bearer: true, api_key_header: true },
     request_controls: {
       max_tokens: "supported",
       temperature: "explicit_unsupported",

@@ -161,9 +161,61 @@ export interface ParsedAnthropicRequest {
  * Convert Anthropic messages/tools into canonical Router semantics.
  * Returns a RouterError for anything the Router cannot faithfully represent.
  */
+/**
+ * Request keys this surface implements. Anything else is either a known control
+ * the Router cannot represent (refused by name) or an unknown control (refused
+ * generically) -- never accepted and silently ignored.
+ */
+const ACCEPTED_REQUEST_KEYS: ReadonlySet<string> = new Set([
+  "model",
+  "messages",
+  "system",
+  "tools",
+  "tool_choice",
+  "stream",
+  "max_tokens",
+]);
+
+/**
+ * Controls with real generation semantics that the canonical Router/provider
+ * path cannot represent truthfully today. They are refused rather than ignored.
+ */
+const UNSUPPORTED_SEMANTIC_CONTROLS: ReadonlySet<string> = new Set([
+  "temperature",
+  "top_p",
+  "top_k",
+  "stop_sequences",
+  "metadata",
+  "thinking",
+  "service_tier",
+  "container",
+  "mcp_servers",
+]);
+
 export function parseAnthropicRequest(
   body: Record<string, unknown>,
 ): ParsedAnthropicRequest | RouterError {
+  for (const key of Object.keys(body)) {
+    if (ACCEPTED_REQUEST_KEYS.has(key)) continue;
+    return new RouterError(
+      "unsupported_capability",
+      UNSUPPORTED_SEMANTIC_CONTROLS.has(key)
+        ? `The Anthropic-compatible surface does not accept '${key}'; refusing to ignore it silently`
+        : `The Anthropic-compatible surface does not accept the request control '${key}'; refusing to ignore it silently`,
+    );
+  }
+
+  // max_tokens is validated rather than blindly forwarded.
+  if (body.max_tokens !== undefined) {
+    if (
+      typeof body.max_tokens !== "number" ||
+      !Number.isInteger(body.max_tokens) ||
+      body.max_tokens <= 0
+    ) {
+      return new RouterError("invalid_request", "max_tokens must be a positive integer");
+    }
+  }
+
   const messages: RouterMessage[] = [];
 
   if (body.system !== undefined) {

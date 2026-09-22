@@ -95,26 +95,43 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
       const clientHeader = request.headers[CLIENT_LABEL_HEADER];
+
+      // The Anthropic-compatible surface also accepts an API-key-style header, as
+      // a WIRE ALTERNATIVE for the exact same configured secrets. It maps to the
+      // same profile logic and creates no additional credential role. Two
+      // competing credentials on one request are ambiguous and fail closed.
+      const isAnthropicSurface = request.url.startsWith("/v1/messages");
+      const apiKeyHeader = isAnthropicSurface ? request.headers["x-api-key"] : undefined;
+      const apiKey = typeof apiKeyHeader === "string" && apiKeyHeader.length > 0 ? apiKeyHeader : undefined;
+      const bearer =
+        typeof request.headers.authorization === "string" && request.headers.authorization.length > 0
+          ? request.headers.authorization
+          : undefined;
+
+      const unauthorized = (): unknown =>
+        isAnthropicSurface
+          ? {
+              type: "error",
+              error: { type: "authentication_error", message: "Invalid or missing credentials" },
+            }
+          : {
+              error: {
+                type: "router_unauthorized",
+                message: "Invalid or missing bearer token",
+              },
+            };
+
+      if (apiKey !== undefined && bearer !== undefined) {
+        return reply.code(401).send(unauthorized());
+      }
+
       const identity = resolveRequestIdentity(
-        request.headers.authorization,
+        apiKey !== undefined ? `Bearer ${apiKey}` : bearer,
         serverTokens(options),
         typeof clientHeader === "string" ? clientHeader : undefined,
       );
       if (identity === null) {
-        // Auth errors are shaped per downstream protocol: the Anthropic-compatible
-        // surface uses its own error envelope and taxonomy.
-        if (request.url.startsWith("/v1/messages")) {
-          return reply.code(401).send({
-            type: "error",
-            error: { type: "authentication_error", message: "Invalid or missing bearer token" },
-          });
-        }
-        return reply.code(401).send({
-          error: {
-            type: "router_unauthorized",
-            message: "Invalid or missing bearer token",
-          },
-        });
+        return reply.code(401).send(unauthorized());
       }
       const consumerRequest = request as ConsumerRequest;
       consumerRequest.identity = identity;
