@@ -55,6 +55,7 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
  * the client/harness executes it and the Router only relays intent and result.
  */
 export interface RouterFunctionTool {
+  kind: "function";
   type: "function";
   function: {
     name: string;
@@ -69,6 +70,7 @@ export interface RouterFunctionTool {
  * collision-safe implementation is added.
  */
 export interface RouterNamespaceTool {
+  kind: "namespace";
   type: "namespace";
   namespace: { name: string; raw: Record<string, unknown> };
 }
@@ -78,6 +80,7 @@ export interface RouterNamespaceTool {
  * is client-owned, so provider-side tools stay explicitly unsupported.
  */
 export interface RouterHostedTool {
+  kind: "hosted";
   type: string;
   hosted: { type: string; raw: Record<string, unknown> };
 }
@@ -87,6 +90,7 @@ export interface RouterHostedTool {
  * can be refused without guessing.
  */
 export interface RouterUnknownTool {
+  kind: "unknown";
   type: string;
   unknown: { type: string; raw: Record<string, unknown> };
 }
@@ -106,7 +110,7 @@ export type RouterTool =
 
 /** Narrow a declaration to the only executable class. */
 export function isFunctionTool(tool: RouterTool): tool is RouterFunctionTool {
-  return tool.type === "function" && "function" in tool;
+  return tool.kind === "function";
 }
 
 export interface RouterToolCall {

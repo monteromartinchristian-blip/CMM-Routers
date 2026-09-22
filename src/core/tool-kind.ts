@@ -124,6 +124,7 @@ export function representToolDeclaration(
         ? (fn.parameters as Record<string, unknown>)
         : parameters;
     return {
+      kind: "function",
       type: "function",
       function: {
         name: fnName,
@@ -138,12 +139,13 @@ export function representToolDeclaration(
   }
   if (kind === "namespace") {
     return {
+      kind: "namespace",
       type: "namespace",
       namespace: { name: typeof record.name === "string" ? record.name : "", raw: record },
     };
   }
   if (kind === "hosted") {
-    return { type: declaredType, hosted: { type: declaredType, raw: record } };
+    return { kind: "hosted", type: declaredType, hosted: { type: declaredType, raw: record } };
   }
-  return { type: declaredType, unknown: { type: declaredType, raw: record } };
+  return { kind: "unknown", type: declaredType, unknown: { type: declaredType, raw: record } };
 }

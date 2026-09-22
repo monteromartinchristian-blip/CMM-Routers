@@ -1,6 +1,7 @@
 import type { RouterFunctionTool } from "../../src/core/model.js";
 
 export const CMM_ECHO_TOOL: RouterFunctionTool = {
+  kind: "function",
   type: "function",
   function: {
     name: "cmm_echo",

@@ -52,7 +52,9 @@ describe("Claude deferred MCP bridge (deterministic prototype)", () => {
   });
 
   it("builds typed defer hooks and bridge names for Qoder tools", () => {
-    const tools = [{ type: "function" as const, function: { name: "cmm_echo", parameters: {} } }];
+    const tools = [
+      { kind: "function" as const, type: "function" as const, function: { name: "cmm_echo", parameters: {} } },
+    ];
     expect(bridgeToolNames(tools)).toEqual(["mcp__cmm_qoder__cmm_echo"]);
     const matcher = buildDeferMatcher();
     expect(matcher.hooks.length).toBe(1);

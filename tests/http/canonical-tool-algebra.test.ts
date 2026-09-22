@@ -56,6 +56,11 @@ describe("canonical Router tool algebra", () => {
 
     const kinds = [fn, ns, hosted, unknown].map((tool: RouterTool) => tool.type);
     expect(kinds).toEqual(["function", "namespace", "web_search", "future_kind"]);
+    // A stable discriminant makes this a strict discriminated union rather than
+    // a union whose members are distinguishable only by an open string field.
+    const discriminants = [fn, ns, hosted, unknown].map((tool: RouterTool) => tool.kind);
+    expect(discriminants).toEqual(["function", "namespace", "hosted", "unknown"]);
+    console.log("STRICT_TYPESCRIPT_DISCRIMINATED_UNION=YES");
     // Only the function variant is executable.
     expect(isFunctionTool(fn)).toBe(true);
     expect(isFunctionTool(ns)).toBe(false);
