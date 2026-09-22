@@ -104,6 +104,10 @@ CMM Routers.
 
 The architecture is open to additional compatible clients and harnesses.
 
+See [CMM Code Router — generic client setup](docs/code-router-setup.md) for the
+client-agnostic protocol: authentication, model capability discovery, the tool
+round-trip contract, streaming and cancellation.
+
 ## Setup
 
 ### Install and run locally
