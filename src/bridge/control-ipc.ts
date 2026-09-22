@@ -9,7 +9,7 @@ import { join } from "node:path";
  *
  * This is NOT the MCP protocol. MCP stdio is provider-facing (the external
  * bridge process speaks it to Claude/Antigravity). This control channel is how
- * that external process parks a Qoder-owned tool request with the Router and
+ * that external process parks a client-owned tool request with the Router and
  * later receives the already-produced result. The bridge performs transport
  * only; it never executes the requested side effect.
  *
@@ -221,7 +221,7 @@ export class BridgeControlServer {
     }
   }
 
-  /** Release a parked request with Qoder's already-produced result text. */
+  /** Release a parked request with the client's already-produced result text. */
   resolve(id: string, text: string): boolean {
     const frame = this.pending.get(id);
     if (!frame) return false;

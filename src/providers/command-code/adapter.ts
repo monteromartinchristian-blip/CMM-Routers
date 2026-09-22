@@ -131,10 +131,10 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // the account metadata says is plan-excluded. UNKNOWN entries stay
       // visible and fail closed at request time via upstream plan enforcement.
       if (model.goatIncluded === false) continue;
-      // Tool capability is wire-truthful. BOTH wires express the Qoder-owned
+      // Tool capability is wire-truthful. BOTH wires express the client-owned
       // structured round-trip: OpenAI chat-completions via tools/tool_calls,
       // Anthropic Messages via tools[]/tool_use/input_json_delta/tool_result.
-      // The bridge never executes the tool; Qoder owns execution.
+      // The bridge never executes the tool; the client owns execution.
       const wire = model.wire ?? this.client.wireForUpstreamId(model.id);
       const capability = "CHAT_AND_TOOLS" as const;
       discovered.push({
@@ -356,7 +356,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
             }
             const resolved = pendingIndexCalls.get(upstreamIndex)!;
             if (resolved.name !== undefined && !declaredToolNames.has(resolved.name)) {
-              // An undeclared function name must never reach Qoder.
+              // An undeclared function name must never reach the client.
               yield {
                 type: "error",
                 error: new RouterError(
@@ -446,8 +446,8 @@ export class CommandCodeAdapter implements ProviderAdapter {
     outerSignal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
     // Anthropic Messages natively supports client-defined tools: the Router
-    // declares Qoder tools, surfaces tool_use to Qoder, and feeds the result
-    // back as tool_result on the continuation request. Qoder owns execution.
+    // declares client tools, surfaces tool_use to the client, and feeds the result
+    // back as tool_result on the continuation request. the client owns execution.
     // Frames yield incrementally as they arrive; completion only on message_stop.
     try {
       const messages = toUpstreamMessages(request) as never;

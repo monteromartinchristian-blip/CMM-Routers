@@ -390,7 +390,7 @@ export class CodexAppServerClient {
       return;
     }
 
-    // Externally-owned dynamic tool request: the model wants the HOST (Qoder,
+    // Externally-owned dynamic tool request: the model wants the HOST (the client,
     // through the Router) to execute a tool. Never execute it here. Route it
     // to the scoped waiter of the active run so the adapter can surface it as
     // a tool call to the consumer; the consumer's result is answered later
@@ -562,7 +562,7 @@ export class CodexAppServerClient {
   /**
    * Wait for an externally-owned dynamic tool request (server request
    * `item/tool/call`) correlated to this run's thread/turn. The Router NEVER
-   * executes the tool: it surfaces the call to the consumer (Qoder), which
+   * executes the tool: it surfaces the call to the consumer (the client), which
    * executes, then calls respondToServerRequest with the result. Scoped so
    * concurrent runs never consume each other's tool calls.
    */

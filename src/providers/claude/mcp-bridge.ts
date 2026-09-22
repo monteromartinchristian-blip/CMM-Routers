@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
 /**
- * Park-and-await MCP tool bridge. Exposes Qoder-requested functions as MCP
+ * Park-and-await MCP tool bridge. Exposes client-requested functions as MCP
  * tools whose handler NEVER executes: it parks `{id, name, input}` in a
- * caller-supplied waiter registry and awaits the already-produced Qoder
+ * caller-supplied waiter registry and awaits the already-produced the client
  * result. Claude (`PreToolUse: defer` + same-session resume) and Antigravity
  * (custom stdio MCP server) share this implementation with
  * provider-tagged correlation keys.
@@ -60,7 +60,7 @@ export function serializeMcpError(id: number | string, code: number, message: st
 
 /**
  * Standalone stdio MCP server entry point. `awaitResult` is called with the
- * parked request and must resolve with Qoder's already-executed result text.
+ * parked request and must resolve with the client's already-executed result text.
  * Never performs filesystem/shell/edit side effects itself.
  */
 export function runMcpBridgeServer(
@@ -91,7 +91,7 @@ export function runMcpBridgeServer(
         `${serializeMcpResponse(id, {
           tools: options.tools.map((t) => ({
             name: t.name,
-            description: t.description ?? `Qoder-owned tool ${t.name}`,
+            description: t.description ?? `client-owned tool ${t.name}`,
             inputSchema: t.inputSchema,
           })),
         })}\n`,
@@ -104,7 +104,7 @@ export function runMcpBridgeServer(
       const args = params.arguments ?? {};
       const toolCallId = `bridge-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const request: BridgedToolRequest = { id: toolCallId, name, input: args };
-      // Park-and-await: the ONLY path to a result is Qoder's execution.
+      // Park-and-await: the ONLY path to a result is the client's execution.
       // eslint-disable-next-line no-console
       awaitResult(request).then(
         (text) => {

@@ -22,7 +22,7 @@ export interface ProductionComposition {
   skippedProviders: Array<{ id: string; reason: string }>;
   /**
    * Single Router-owned bounded pending-tool broker shared by every provider
-   * adapter that needs cross-request Qoder tool correlation. Injected
+   * adapter that needs cross-request client tool correlation. Injected
    * explicitly; never a per-adapter instance in production.
    */
   toolBroker: DeferredToolBroker;
@@ -111,7 +111,7 @@ export async function createProductionRegistry(
     // from this value per request. No global process.env mutation — the
     // configured profile is effective even though sdk-client was imported
     // long before this factory runs. The shared broker backs the
-    // cross-request Qoder tool correlation held across the HTTP split.
+    // cross-request client tool correlation held across the HTTP split.
     const profileDir = resolveClaudeProfileDir(resolved);
     const adapter = new ClaudeAdapter({
       ...(profileDir ? { profileDir } : {}),

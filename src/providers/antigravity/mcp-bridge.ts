@@ -2,7 +2,7 @@
  * Antigravity deferred MCP bridge (deterministic prototype, no live quota).
  *
  * Reuses the shared park-and-await bridge: the custom local stdio MCP server
- * parks the model-initiated call and awaits Qoder's already-executed result.
+ * parks the model-initiated call and awaits the client's already-executed result.
  * Registration is deployment-time (`agy mcp add cmm-qoder-tools <bridge>`,
  * local config only); the server never executes filesystem/shell/edit work.
  */

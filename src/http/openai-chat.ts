@@ -444,7 +444,7 @@ export function registerChatCompletions(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    // Codex 0.153.4 CAN declare Qoder tools (experimental dynamicTools), but it
+    // Codex 0.153.4 CAN declare client tools (experimental dynamicTools), but it
     // still cannot represent a caller tool-selection or parallel-execution
     // constraint. Reject those instead of silently dropping them.
     const codexPolicyError = codexUnsupportedToolPolicy(

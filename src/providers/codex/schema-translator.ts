@@ -126,7 +126,7 @@ export function parseTurnCompletedParams(params: unknown): {
 }
 
 /**
- * Map Qoder/OpenAI function tools onto the Codex 0.153.4 experimental
+ * Map the client/OpenAI function tools onto the Codex 0.153.4 experimental
  * `DynamicToolSpec` function variant. Field names/shape come from the tracked
  * experimental fixture (see tests/fixtures/generated/codex-experimental-0.153.4).
  *
