@@ -15,6 +15,12 @@ import {
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { validateToolArguments } from "../core/tool-arguments.js";
+import {
+  OPENAI_RESPONSES_REJECTED_CONTROLS,
+  OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+  rejectUnsupportedControls,
+  unsupportedRequestControlError,
+} from "../core/request-controls.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -205,6 +211,32 @@ export function registerResponsesApi(
     if (!body) {
       return reply.code(400).send({ error: { type: "invalid_request", message: "Body must be an object" } });
     }
+    const unsupportedControl = rejectUnsupportedControls(
+      body,
+      OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+      "The Responses surface",
+    );
+    if (unsupportedControl) {
+      const mapped = mapRouterErrorToHttp(unsupportedControl);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    // The Chat-shaped token name is not accepted here; say so explicitly instead
+    // of ignoring it.
+    const rejectedAlias = rejectUnsupportedControls(
+      body,
+      OPENAI_RESPONSES_REJECTED_CONTROLS,
+      "The Responses surface",
+    );
+    if (rejectedAlias) {
+      const error = unsupportedRequestControlError(
+        "max_tokens",
+        "The Responses surface",
+        "use 'max_output_tokens'",
+      );
+      const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
     if (typeof body.model !== "string" || body.model.length === 0) {
       return reply
         .code(400)

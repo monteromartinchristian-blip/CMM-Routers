@@ -23,6 +23,15 @@
 import type { ProviderCapability, ProviderId } from "./model.js";
 import { TOOL_KIND_POLICY } from "./tool-kind.js";
 import { providerToolPolicySupport } from "./tool-policy.js";
+import {
+  ANTHROPIC_SUPPORTED_CONTROLS,
+  ANTHROPIC_UNSUPPORTED_SEMANTIC_CONTROLS,
+  OPENAI_CHAT_SUPPORTED_CONTROLS,
+  OPENAI_RESPONSES_REJECTED_CONTROLS,
+  OPENAI_RESPONSES_SUPPORTED_CONTROLS,
+  OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+  requestControlTruth,
+} from "./request-controls.js";
 
 /** Downstream protocol families this Router can expose. */
 export const DOWNSTREAM_PROTOCOLS = [
@@ -102,7 +111,11 @@ function toolTruth(toolCapable: boolean, policy: ToolPolicy): SurfaceTools {
 }
 
 /** OpenAI-family surfaces: role-based instructions, bearer auth only. */
-function openAiSurface(toolCapable: boolean, policy: ToolPolicy): SurfaceCapabilities {
+function openAiSurface(
+  surface: "openai_chat" | "openai_responses",
+  toolCapable: boolean,
+  policy: ToolPolicy,
+): SurfaceCapabilities {
   return {
     available: true,
     streaming: true,
@@ -111,7 +124,17 @@ function openAiSurface(toolCapable: boolean, policy: ToolPolicy): SurfaceCapabil
     system_field: false,
     tools: toolTruth(toolCapable, policy),
     auth: { authorization_bearer: true, api_key_header: false },
-    request_controls: { max_tokens: "supported", temperature: "explicit_unsupported" },
+    // Derived from the enforced lists so publication cannot drift from behavior.
+    request_controls:
+      surface === "openai_chat"
+        ? requestControlTruth(
+            OPENAI_CHAT_SUPPORTED_CONTROLS,
+            OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+          )
+        : requestControlTruth(
+            OPENAI_RESPONSES_SUPPORTED_CONTROLS,
+            [...OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS, ...OPENAI_RESPONSES_REJECTED_CONTROLS],
+          ),
   };
 }
 
@@ -126,13 +149,11 @@ function anthropicSurface(toolCapable: boolean, policy: ToolPolicy): SurfaceCapa
     system_field: true,
     tools: toolTruth(toolCapable, policy),
     auth: { authorization_bearer: true, api_key_header: true },
-    request_controls: {
-      max_tokens: "supported",
-      temperature: "explicit_unsupported",
-      top_p: "explicit_unsupported",
-      top_k: "explicit_unsupported",
-      stop_sequences: "explicit_unsupported",
-    },
+    // Derived from the enforced lists so publication cannot drift from behavior.
+    request_controls: requestControlTruth(
+      ANTHROPIC_SUPPORTED_CONTROLS,
+      ANTHROPIC_UNSUPPORTED_SEMANTIC_CONTROLS,
+    ),
   };
 }
 
@@ -157,8 +178,8 @@ export function protocolCapabilitiesFor(
       hosted: TOOL_KIND_POLICY.hosted === "SUPPORTED",
     },
     protocols: {
-      openai_chat: openAiSurface(toolCapable, policy),
-      openai_responses: openAiSurface(toolCapable, policy),
+      openai_chat: openAiSurface("openai_chat", toolCapable, policy),
+      openai_responses: openAiSurface("openai_responses", toolCapable, policy),
       anthropic_messages: anthropicSurface(toolCapable, policy),
     },
   };

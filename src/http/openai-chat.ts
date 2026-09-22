@@ -24,6 +24,11 @@ import { trackProviderStream } from "./usage-tracking.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { validateToolArguments } from "../core/tool-arguments.js";
+import {
+  OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+  rejectUnsupportedControls,
+  unsupportedRequestControlError,
+} from "../core/request-controls.js";
 import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
@@ -389,6 +394,19 @@ export function registerChatCompletions(
     const body = asRecord(request.body);
     if (!body) {
       return reply.code(400).send({ error: { type: "invalid_request", message: "Body must be an object" } });
+    }
+
+    // Fail closed on semantic controls this surface cannot represent rather than
+    // accepting and ignoring them. The published capability descriptor is derived
+    // from the same list.
+    const unsupportedControl = rejectUnsupportedControls(
+      body,
+      OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+      "The Chat Completions surface",
+    );
+    if (unsupportedControl) {
+      const mapped = mapRouterErrorToHttp(unsupportedControl);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
     if (typeof body.model !== "string" || body.model.length === 0) {

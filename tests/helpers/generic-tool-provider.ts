@@ -23,6 +23,7 @@ export interface GenericToolTurnRecord {
   modelId: string;
   declaredTools: string[];
   toolChoice: unknown;
+  maxOutputTokens: number | undefined;
   parallelToolCalls: boolean | undefined;
   /** Assistant tool-call id groups seen in this request's history. */
   assistantToolCallIds: string[][];
@@ -99,6 +100,7 @@ export class GenericToolProvider implements ProviderAdapter {
       modelId: request.model.id,
       declaredTools: request.tools.map((tool) => tool.function.name),
       toolChoice: request.toolChoice,
+      maxOutputTokens: request.maxOutputTokens,
       parallelToolCalls: request.parallelToolCalls,
       assistantToolCallIds: request.messages
         .filter((message) => message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0)

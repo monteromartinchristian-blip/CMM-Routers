@@ -21,6 +21,7 @@ import {
 } from "./openai-chat.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { parseToolArguments } from "../core/tool-arguments.js";
+import { ANTHROPIC_UNSUPPORTED_SEMANTIC_CONTROLS } from "../core/request-controls.js";
 import type { ConsumerRequest } from "./server.js";
 
 /**
@@ -180,17 +181,10 @@ const ACCEPTED_REQUEST_KEYS: ReadonlySet<string> = new Set([
  * Controls with real generation semantics that the canonical Router/provider
  * path cannot represent truthfully today. They are refused rather than ignored.
  */
-const UNSUPPORTED_SEMANTIC_CONTROLS: ReadonlySet<string> = new Set([
-  "temperature",
-  "top_p",
-  "top_k",
-  "stop_sequences",
-  "metadata",
-  "thinking",
-  "service_tier",
-  "container",
-  "mcp_servers",
-]);
+/** Enforced list; the published control truth is derived from the same source. */
+const UNSUPPORTED_SEMANTIC_CONTROLS: ReadonlySet<string> = new Set(
+  ANTHROPIC_UNSUPPORTED_SEMANTIC_CONTROLS,
+);
 
 export function parseAnthropicRequest(
   body: Record<string, unknown>,
