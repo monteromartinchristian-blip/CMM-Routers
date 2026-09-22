@@ -178,8 +178,63 @@ profile, select a provider or model, or weaken any fallback guard.
 
 ## Compatibility status
 
-The deterministic Router-side contract above is proven by the test suite. Real
-client verification (model discovery, tool schema, continuation and streaming
-behaviour of an actual installed Hermes or Codex client) requires those clients
-and is tracked separately — do not treat this document as a claim that a
-specific real client has been verified.
+CMM Code Router is client-agnostic: any harness that speaks the OpenAI-compatible
+contract above can consume it. The first compatibility targets are:
+
+| Client | Transport it uses | Router-side contract | Real-client status |
+|---|---|---|---|
+| Generic OpenAI-compatible | Chat Completions or Responses | Proven deterministically | Architectural reference client |
+| Qoder | OpenAI-compatible custom provider | Proven deterministically | Real gate pending (needs re-registration in the Qoder UI) |
+| Hermes | Chat Completions | Proven deterministically | See below |
+| Codex CLI | **Responses** only | Proven deterministically | See below |
+
+A client is only "supported" once its real installed client has been verified;
+Router-side determinism is necessary but not sufficient. Do not read this table
+as a claim that a specific real client has been verified.
+
+### Hermes
+
+Hermes supports arbitrary OpenAI-compatible providers through a `providers:` map
+in its config file. Add a **new** sibling entry; existing providers are
+preserved:
+
+```yaml
+providers:
+  cmm-router:
+    name: CMM Code Router
+    base_url: http://127.0.0.1:8790/v1
+    api_mode: chat_completions
+    key_env: HERMES_CUSTOM_CMM_ROUTER_API_KEY
+    discover_models: true
+```
+
+- `key_env` names an environment variable holding the bearer; the value is never
+  written to the config.
+- `discover_models: true` fetches `GET /v1/models`; if discovery is unavailable,
+  set it to `false` and declare `models:` explicitly.
+- Select it per invocation without changing defaults
+  (`hermes --provider cmm-router -m <model-id>`), or switch the default
+  separately.
+
+### Codex CLI
+
+Codex 0.147.0 accepts custom providers through `[model_providers.<id>]` in its
+config, but **only the Responses wire API**: `wire_api = "chat"` is rejected by
+the client. Use the Responses surface documented above.
+
+```toml
+[model_providers.cmm-code-router]
+name = "CMM Code Router"
+base_url = "http://127.0.0.1:8790/v1"
+env_key = "CMM_ROUTER_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+- Codex appends `/responses` to `base_url`.
+- Do not reuse a reserved built-in provider id; use a distinct id such as
+  `cmm-code-router`.
+- Codex performs **no model discovery** for custom providers, so supply the exact
+  model id from `/v1/models` explicitly.
+- Prefer invoking it through a profile or `-c` overrides so the existing default
+  provider is untouched.
