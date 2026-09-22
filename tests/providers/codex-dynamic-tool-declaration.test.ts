@@ -211,6 +211,7 @@ describe("Codex 0.153.4 experimental dynamic tools", () => {
     ]);
     expect(server.declarationAccepted()).toBe(true);
     console.log("CODEX_DYNAMIC_TOOLS_SENT=PASS");
+    console.log("CODEX_CLIENT_TOOL_DEFINITIONS_SENT=PASS");
     console.log("CODEX_QODER_TOOL_DEFINITIONS_SENT=PASS");
 
     server.emitToolCall({ arguments: '{"text":"canary"}', callId: "call_codex_1", tool: "cmm_echo" });
