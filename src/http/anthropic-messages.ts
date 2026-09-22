@@ -259,16 +259,30 @@ export function parseAnthropicRequest(
         if (typeof block.id !== "string" || typeof block.name !== "string") {
           return new RouterError("invalid_request", "a tool_use block requires an id and a name");
         }
+        // The supported subset promises structured object input; a primitive or
+        // array is refused rather than serialized into function arguments.
+        const input = block.input === undefined ? {} : block.input;
+        if (asRecord(input) === null) {
+          return new RouterError(
+            "invalid_request",
+            "a tool_use block requires a structured object input",
+          );
+        }
         toolCalls.push({
           id: block.id,
           type: "function",
-          function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
+          function: { name: block.name, arguments: JSON.stringify(input) },
         });
         continue;
       }
       if (block.type === "tool_result") {
         if (typeof block.tool_use_id !== "string") {
           return new RouterError("invalid_request", "a tool_result block requires a tool_use_id");
+        }
+        // A present outcome must be an explicit boolean: never downgrade a
+        // malformed value to success.
+        if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
+          return new RouterError("invalid_request", "tool_result.is_error must be a boolean");
         }
         const text = toolResultText(block.content);
         if (text === null) {
