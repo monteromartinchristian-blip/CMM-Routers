@@ -140,7 +140,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return { status: "ready" };
   });
 
-  // OpenAI-compatible models endpoint
+  // OpenAI-compatible models endpoint. The standard model shape is preserved
+  // exactly; a namespaced `x_cmm` extension is added ONLY when the Router
+  // already knows the model's Code Router capability verdict, so a generic
+  // client can select an exact CHAT_AND_TOOLS model without relying on model
+  // names or provider heuristics. Unknown extra fields are ignored by
+  // ordinary OpenAI-compatible clients. Publication is a fact about the
+  // model, never an authorization grant.
   fastify.get("/v1/models", async () => {
     const models = options.registry.listModels();
     return redactObject({
@@ -149,6 +155,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         id: model.id,
         object: "model",
         owned_by: `cmm:${model.provider}`,
+        ...(model.capability !== undefined
+          ? { x_cmm: { code_router: model.capability } }
+          : {}),
       })),
     });
   });

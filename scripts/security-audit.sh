@@ -152,7 +152,19 @@ else
   fail=1
 fi
 
-echo "== canonical Code Router bearer wiring present =="
+echo "== truthful Code Router capability publication =="
+# /v1/models preserves the standard model shape and adds the namespaced x_cmm
+# extension ONLY from the already-known model capability, so a generic client
+# can select an exact CHAT_AND_TOOLS model without provider heuristics.
+if grep -q "x_cmm" src/http/server.ts && grep -q "model.capability" src/http/server.ts; then
+  echo "CODE_ROUTER_CAPABILITY_PUBLICATION=PASS"
+  echo "MODEL_CAPABILITY_TRUTHFULNESS=PASS"
+else
+  echo "FAIL: /v1/models does not publish truthful Code Router capability"
+  fail=1
+fi
+
+echo "== code router bearer wiring present =="
 if grep -q "CMM_CODE_ROUTER_TOKEN" .env.example \
   && grep -q "CMM_CODE_ROUTER_TOKEN" src/index.ts \
   && grep -q "CMM_QODER_TOKEN" src/index.ts; then
