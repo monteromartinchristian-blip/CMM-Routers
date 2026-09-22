@@ -31,17 +31,24 @@ interface ModelEntry {
   owned_by: string;
   x_cmm?: {
     code_router?: string;
-    protocols?: Record<string, boolean>;
-    tools?: {
-      function?: boolean;
-      namespace?: boolean;
-      hosted?: boolean;
-      tool_choice?: string;
-      parallel_tool_calls?: boolean;
-    };
-    streaming?: boolean;
-    cancellation?: boolean;
-    developer_role?: boolean;
+    canonical_tools?: { function?: boolean; namespace?: boolean; hosted?: boolean };
+    protocols?: Record<
+      string,
+      {
+        available?: boolean;
+        streaming?: boolean;
+        cancellation?: boolean;
+        developer_role?: boolean;
+        system_field?: boolean;
+        tools?: {
+          function?: boolean;
+          namespace?: boolean;
+          hosted?: boolean;
+          tool_choice?: string;
+          parallel_tool_calls?: boolean;
+        };
+      }
+    >;
   };
 }
 
@@ -110,19 +117,32 @@ async function listModels(providerId: "command-code" | "chatgpt" = "command-code
   return { data: (response.json() as { data: ModelEntry[] }).data, server, provider };
 }
 
+function capabilitiesShapeIsScoped(): boolean {
+  const descriptor = protocolCapabilitiesFor("CHAT_AND_TOOLS", "command-code");
+  return (
+    descriptor.protocols.anthropic_messages.developer_role === false &&
+    descriptor.protocols.anthropic_messages.system_field === true &&
+    descriptor.protocols.openai_chat.developer_role === true
+  );
+}
+
 describe("protocol-centric capability publication", () => {
   it("CAPABILITY_PUBLICATION_HARNESS_AGNOSTIC: publishes protocol and tool truth", async () => {
     const { data } = await listModels();
     const capable = data.find((model) => model.id === "command-code/capable")!;
-    expect(capable.x_cmm?.protocols?.openai_chat).toBe(true);
-    expect(capable.x_cmm?.protocols?.openai_responses).toBe(true);
-    expect(capable.x_cmm?.protocols?.anthropic_messages).toBe(true);
-    expect(capable.x_cmm?.tools?.function).toBe(true);
-    expect(capable.x_cmm?.tools?.namespace).toBe(false);
-    expect(capable.x_cmm?.tools?.hosted).toBe(false);
-    expect(capable.x_cmm?.streaming).toBe(true);
-    expect(capable.x_cmm?.cancellation).toBe(true);
-    expect(capable.x_cmm?.developer_role).toBe(true);
+    expect(capable.x_cmm?.protocols?.openai_chat?.available).toBe(true);
+    expect(capable.x_cmm?.protocols?.openai_responses?.available).toBe(true);
+    expect(capable.x_cmm?.protocols?.anthropic_messages?.available).toBe(true);
+    for (const surface of ["openai_chat", "openai_responses", "anthropic_messages"]) {
+      expect(capable.x_cmm?.protocols?.[surface]?.tools?.function, surface).toBe(true);
+      expect(capable.x_cmm?.protocols?.[surface]?.tools?.namespace, surface).toBe(false);
+      expect(capable.x_cmm?.protocols?.[surface]?.tools?.hosted, surface).toBe(false);
+      expect(capable.x_cmm?.protocols?.[surface]?.streaming, surface).toBe(true);
+      expect(capable.x_cmm?.protocols?.[surface]?.cancellation, surface).toBe(true);
+    }
+    expect(capable.x_cmm?.canonical_tools?.function).toBe(true);
+    expect(capable.x_cmm?.canonical_tools?.namespace).toBe(false);
+    expect(capable.x_cmm?.canonical_tools?.hosted).toBe(false);
     console.log("CAPABILITY_PUBLICATION_HARNESS_AGNOSTIC=PASS");
   });
 
@@ -139,7 +159,7 @@ describe("protocol-centric capability publication", () => {
   it("CAPABILITY_PUBLICATION_TRUTHFUL: tool truth follows the model verdict", async () => {
     const { data } = await listModels();
     const chatOnly = data.find((model) => model.id === "command-code/chat-only")!;
-    expect(chatOnly.x_cmm?.tools?.function).toBe(false);
+    expect(chatOnly.x_cmm?.protocols?.openai_chat?.tools?.function).toBe(false);
     // An unverified model publishes nothing at all.
     expect(data.find((model) => model.id === "command-code/unverified")?.x_cmm).toBeUndefined();
     console.log("CAPABILITY_PUBLICATION_TRUTHFUL=PASS");
@@ -148,16 +168,17 @@ describe("protocol-centric capability publication", () => {
   it("publishes provider-specific policy truth instead of overclaiming", async () => {
     const { data } = await listModels("command-code");
     const capable = data.find((model) => model.id === "command-code/capable")!;
-    expect(capable.x_cmm?.tools?.tool_choice).toBe("full");
-    expect(capable.x_cmm?.tools?.parallel_tool_calls).toBe(true);
+    expect(capable.x_cmm?.protocols?.openai_chat?.tools?.tool_choice).toBe("full");
+    expect(capable.x_cmm?.protocols?.openai_chat?.tools?.parallel_tool_calls).toBe(true);
     console.log("CAPABILITY_POLICY_TRUTH=PASS");
   });
 
   it("CAPABILITY_PUBLICATION_NOT_AUTHORIZATION: publishing the truth grants nothing", async () => {
     const { data, server, provider } = await listModels();
-    expect(data.find((model) => model.id === "command-code/capable")?.x_cmm?.tools?.function).toBe(
-      true,
-    );
+    expect(
+      data.find((model) => model.id === "command-code/capable")?.x_cmm?.protocols?.openai_chat?.tools
+        ?.function,
+    ).toBe(true);
     const denied = await server.inject({
       method: "POST",
       url: "/v1/chat/completions",
@@ -175,9 +196,11 @@ describe("protocol-centric capability publication", () => {
 
   it("UNKNOWN_CAPABILITY_NOT_PROMOTED: a model with no verdict publishes no tool truth", () => {
     const capabilities = protocolCapabilitiesFor(undefined);
-    expect(capabilities.tools.function).toBe(false);
-    expect(capabilities.tools.namespace).toBe(false);
-    expect(capabilities.tools.hosted).toBe(false);
+    expect(capabilities.protocols.openai_chat.tools.function).toBe(false);
+    expect(capabilities.protocols.anthropic_messages.tools.function).toBe(false);
+    expect(capabilities.canonical_tools.function).toBe(true);
+    expect(capabilities.canonical_tools.namespace).toBe(false);
+    expect(capabilities.canonical_tools.hosted).toBe(false);
     console.log("UNKNOWN_CAPABILITY_NOT_PROMOTED=PASS");
   });
 
@@ -192,5 +215,6 @@ describe("protocol-centric capability publication", () => {
       expect(source, `must not name ${brand}`).not.toContain(brand);
     }
     expect(ROUTER_PROTOCOL_SUPPORT.openai_chat).toBe(true);
+    expect(capabilitiesShapeIsScoped()).toBe(true);
   });
 });
