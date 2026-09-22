@@ -2,11 +2,6 @@ import { describe, expect, it } from "vitest";
 import { RouterError } from "../../src/core/errors.js";
 import { PROFILE_CMMCHAT, PROFILE_CODE } from "../../src/core/router-profile.js";
 import {
-  CLIENT_CODEX,
-  CLIENT_GENERIC,
-  CLIENT_QODER,
-} from "../../src/core/client-identity.js";
-import {
   assertDistinctServerTokens,
   resolveRequestIdentity,
   type ServerTokens,
@@ -24,15 +19,19 @@ function tokens(overrides: Partial<ServerTokens> = {}): ServerTokens {
   return { cmmchatToken: CMMCHAT, ...overrides };
 }
 
+/**
+ * Authorization is the profile. The application label is opaque diagnostics and
+ * never changes which profile a credential authenticates.
+ */
 describe("code router identity resolution", () => {
-  it("the canonical Code Router bearer authenticates the CODE profile", () => {
+  it("the canonical Code Router bearer authenticates the CODE profile with no label", () => {
     const identity = resolveRequestIdentity(bearer(CODE), tokens({ codeRouterToken: CODE }), undefined);
-    expect(identity).toEqual({ profile: PROFILE_CODE, clientId: CLIENT_GENERIC });
+    expect(identity).toEqual({ profile: PROFILE_CODE });
   });
 
   it("LEGACY_QODER_BEARER_STILL_AUTHENTICATES_CODE: the legacy bearer authenticates CODE", () => {
     const identity = resolveRequestIdentity(bearer(LEGACY), tokens({ legacyQoderToken: LEGACY }), undefined);
-    expect(identity).toEqual({ profile: PROFILE_CODE, clientId: CLIENT_QODER });
+    expect(identity).toEqual({ profile: PROFILE_CODE, clientLabel: "qoder" });
     console.log("LEGACY_QODER_BEARER_STILL_AUTHENTICATES_CODE=PASS");
   });
 
@@ -50,64 +49,51 @@ describe("code router identity resolution", () => {
 
   it("both bearers configured and distinct: either authenticates CODE", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(CODE), both, undefined)).toEqual({
-      profile: PROFILE_CODE,
-      clientId: CLIENT_GENERIC,
-    });
-    expect(resolveRequestIdentity(bearer(LEGACY), both, undefined)).toEqual({
-      profile: PROFILE_CODE,
-      clientId: CLIENT_QODER,
-    });
+    expect(resolveRequestIdentity(bearer(CODE), both, undefined)?.profile).toBe(PROFILE_CODE);
+    expect(resolveRequestIdentity(bearer(LEGACY), both, undefined)?.profile).toBe(PROFILE_CODE);
   });
 
   it("neither Code bearer configured: no CODE authentication is available", () => {
     const only = tokens();
     expect(resolveRequestIdentity(bearer(CODE), only, undefined)).toBeNull();
     expect(resolveRequestIdentity(bearer(LEGACY), only, undefined)).toBeNull();
-    // CMMChat still works and stays CHAT_ONLY.
     expect(resolveRequestIdentity(bearer(CMMCHAT), only, undefined)).toEqual({
       profile: PROFILE_CMMCHAT,
-      clientId: "cmmchat",
+      clientLabel: "cmmchat",
     });
   });
 
-  it("the CMMChat bearer authenticates CMMCHAT", () => {
+  it("CMMCHAT_BEARER_CANNOT_ELEVATE: no label can change the CMMChat profile", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(CMMCHAT), both, undefined)).toEqual({
-      profile: PROFILE_CMMCHAT,
-      clientId: "cmmchat",
-    });
-  });
-
-  it("CMMCHAT_BEARER_CANNOT_ELEVATE: client metadata cannot change the CMMChat profile", () => {
-    const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    for (const header of ["qoder", "hermes", "codex-client", "generic-openai", "anything"]) {
-      const identity = resolveRequestIdentity(bearer(CMMCHAT), both, header);
-      expect(identity?.profile).toBe(PROFILE_CMMCHAT);
-      expect(identity?.clientId).toBe("cmmchat");
+    for (const header of ["qoder", "hermes", "codex-client", "anything", "deepseek-harness"]) {
+      expect(resolveRequestIdentity(bearer(CMMCHAT), both, header)?.profile).toBe(PROFILE_CMMCHAT);
     }
     console.log("CMMCHAT_BEARER_CANNOT_ELEVATE=PASS");
   });
 
-  it("client metadata is normalized but never changes the CODE profile", () => {
+  it("an arbitrary label is preserved opaquely and never changes the profile", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(CODE), both, "hermes")?.clientId).toBe("hermes");
-    expect(resolveRequestIdentity(bearer(CODE), both, "codex-client")?.clientId).toBe(CLIENT_CODEX);
-    expect(resolveRequestIdentity(bearer(CODE), both, "hostile;value")?.clientId).toBe("other");
-    expect(resolveRequestIdentity(bearer(CODE), both, "hermes")?.profile).toBe(PROFILE_CODE);
+    for (const header of ["hermes", "deepseek-harness", "claude-code", "cline", "roo"]) {
+      const identity = resolveRequestIdentity(bearer(CODE), both, header);
+      expect(identity?.profile).toBe(PROFILE_CODE);
+      expect(identity?.clientLabel).toBe(header);
+    }
+    console.log("ARBITRARY_LABEL_DOES_NOT_CHANGE_PROFILE=PASS");
   });
 
-  it("the legacy bearer defaults its diagnostic client id to qoder but honors the header", () => {
+  it("a hostile label is sanitized and bounded", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(LEGACY), both, undefined)?.clientId).toBe(CLIENT_QODER);
-    expect(resolveRequestIdentity(bearer(LEGACY), both, "hermes")?.clientId).toBe("hermes");
+    const identity = resolveRequestIdentity(bearer(CODE), both, "evil\u0000<script>");
+    expect(identity?.clientLabel).toBe("evil-script");
+    const long = resolveRequestIdentity(bearer(CODE), both, "x".repeat(5000));
+    expect(long?.clientLabel!.length).toBeLessThanOrEqual(64);
   });
 
   it("unknown or absent credentials resolve to null", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
     expect(resolveRequestIdentity(undefined, both, undefined)).toBeNull();
     expect(resolveRequestIdentity("Basic abc", both, undefined)).toBeNull();
-    expect(resolveRequestIdentity(bearer("not-a-configured-token"), both, undefined)).toBeNull();
+    expect(resolveRequestIdentity(bearer("not-configured"), both, undefined)).toBeNull();
   });
 });
 
@@ -137,8 +123,6 @@ describe("fail-closed server token validation", () => {
   });
 
   it("Code and legacy bearers sharing a value is accepted as two aliases of one profile", () => {
-    // Deterministic explicit policy: both map to PROFILE_CODE, so the value
-    // resolves to exactly one profile and is not ambiguous.
     expect(() =>
       assertDistinctServerTokens({
         cmmchatToken: CMMCHAT,
@@ -149,9 +133,7 @@ describe("fail-closed server token validation", () => {
   });
 
   it("a fully distinct or CMMChat-only configuration is accepted", () => {
-    expect(() =>
-      assertDistinctServerTokens({ cmmchatToken: CMMCHAT }),
-    ).not.toThrow();
+    expect(() => assertDistinctServerTokens({ cmmchatToken: CMMCHAT })).not.toThrow();
     expect(() =>
       assertDistinctServerTokens({
         cmmchatToken: CMMCHAT,

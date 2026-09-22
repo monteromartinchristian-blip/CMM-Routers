@@ -4,15 +4,6 @@ import {
   PROFILE_CODE,
   effectiveProfileToolCapability,
 } from "../../src/core/router-profile.js";
-import {
-  CLIENT_CMMCHAT,
-  CLIENT_CODEX,
-  CLIENT_GENERIC,
-  CLIENT_HERMES,
-  CLIENT_OTHER,
-  CLIENT_QODER,
-  normalizeClientId,
-} from "../../src/core/client-identity.js";
 
 describe("router profile capability policy", () => {
   it("CMMCHAT_CHAT_ONLY: the CMMChat profile is CHAT_ONLY on every provider capability", () => {
@@ -43,53 +34,5 @@ describe("router profile capability policy", () => {
     // The signature is (profile, providerCapability). A client identity cannot
     // be passed, so it cannot elevate: this is a structural guarantee.
     expect(effectiveProfileToolCapability.length).toBe(2);
-  });
-});
-
-describe("client identity normalization (diagnostics only)", () => {
-  it("defaults to generic-openai when the client sends nothing", () => {
-    expect(normalizeClientId(undefined)).toBe(CLIENT_GENERIC);
-    expect(normalizeClientId("")).toBe(CLIENT_GENERIC);
-    expect(normalizeClientId("   ")).toBe(CLIENT_GENERIC);
-  });
-
-  it("recognizes the bounded known client identifiers case-insensitively", () => {
-    expect(normalizeClientId("Qoder")).toBe(CLIENT_QODER);
-    expect(normalizeClientId(" hermes ")).toBe(CLIENT_HERMES);
-    expect(normalizeClientId("codex-client")).toBe(CLIENT_CODEX);
-    expect(normalizeClientId("CMMChat")).toBe(CLIENT_CMMCHAT);
-    expect(normalizeClientId("generic-openai")).toBe(CLIENT_GENERIC);
-  });
-
-  it("maps every unrecognized value onto the bounded OTHER bucket", () => {
-    expect(normalizeClientId("acme-harness")).toBe(CLIENT_OTHER);
-    expect(normalizeClientId("codex")).toBe(CLIENT_OTHER);
-    expect(normalizeClientId("qoder;rm -rf /")).toBe(CLIENT_OTHER);
-    expect(normalizeClientId("../../etc/passwd")).toBe(CLIENT_OTHER);
-    expect(normalizeClientId("a".repeat(500))).toBe(CLIENT_OTHER);
-    expect(normalizeClientId("\u0000\u0007")).toBe(CLIENT_OTHER);
-  });
-
-  it("never returns raw attacker-controlled input", () => {
-    const hostile = "qoder-evil\u0000<script>";
-    const result = normalizeClientId(hostile);
-    expect(hostile).not.toContain(result);
-    expect(result).toBe(CLIENT_OTHER);
-  });
-
-  it("output is always bounded and drawn from the closed set", () => {
-    const allowed = new Set([
-      CLIENT_CMMCHAT,
-      CLIENT_QODER,
-      CLIENT_HERMES,
-      CLIENT_CODEX,
-      CLIENT_GENERIC,
-      CLIENT_OTHER,
-    ]);
-    for (const raw of ["x".repeat(10_000), "  QODER  ", "hermes\n", "a/b/c", ""]) {
-      const result = normalizeClientId(raw);
-      expect(allowed.has(result)).toBe(true);
-      expect(result.length).toBeLessThanOrEqual(64);
-    }
   });
 });

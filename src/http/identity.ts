@@ -1,16 +1,13 @@
 import { verifyBearer, tokensEqual } from "../security/bearer-auth.js";
 import { RouterError } from "../core/errors.js";
 import { PROFILE_CMMCHAT, PROFILE_CODE, type RouterProfile } from "../core/router-profile.js";
+import { CLIENT_LABEL_HEADER, normalizeClientLabel } from "../core/client-identity.js";
 import {
-  CLIENT_CMMCHAT,
-  CLIENT_GENERIC,
-  CLIENT_ID_HEADER,
-  CLIENT_QODER,
-  normalizeClientId,
-  type RouterClientId,
-} from "../core/client-identity.js";
+  CMMCHAT_CLIENT_LABEL,
+  LEGACY_CODE_ROUTER_CLIENT_LABEL,
+} from "../compat/legacy-identifiers.js";
 
-export { CLIENT_ID_HEADER };
+export { CLIENT_LABEL_HEADER };
 
 /**
  * Server-side bearer configuration.
@@ -28,8 +25,11 @@ export interface ServerTokens {
 
 export interface ResolvedIdentity {
   profile: RouterProfile;
-  /** Diagnostics only; never an authorization input. */
-  clientId: RouterClientId;
+  /**
+   * Diagnostics only; never an authorization input. Absence is normal: a client
+   * that sends no label simply has none.
+   */
+  clientLabel?: string | undefined;
 }
 
 /** Which configured credential validated. Diagnostic and default-selection only. */
@@ -113,20 +113,23 @@ export function resolveRequestIdentity(
   const kind = matchCredential(authorizationHeader, tokens);
   if (kind === null) return null;
 
+  const label = normalizeClientLabel(clientHeader);
+  if (label !== undefined) {
+    // A supplied label is honored regardless of profile; it is diagnostics only.
+    return { profile: profileFor(kind), clientLabel: label };
+  }
+
   if (kind === "cmmchat") {
-    // Fixed: request metadata cannot alter the CMMChat profile's diagnostics.
-    return { profile: PROFILE_CMMCHAT, clientId: CLIENT_CMMCHAT };
+    return { profile: PROFILE_CMMCHAT, clientLabel: CMMCHAT_CLIENT_LABEL };
   }
 
-  const providedClient = typeof clientHeader === "string" ? clientHeader.trim() : "";
-  if (providedClient.length > 0) {
-    return { profile: PROFILE_CODE, clientId: normalizeClientId(clientHeader) };
-  }
+  // Absence is valid. The legacy compatibility credential records its historical
+  // observation; the canonical credential records nothing.
+  return kind === "legacy-qoder"
+    ? { profile: PROFILE_CODE, clientLabel: LEGACY_CODE_ROUTER_CLIENT_LABEL }
+    : { profile: PROFILE_CODE };
+}
 
-  // Absence defaults to the generic harness for the canonical bearer, and to
-  // the historical application for the legacy compatibility bearer.
-  return {
-    profile: PROFILE_CODE,
-    clientId: kind === "legacy-qoder" ? CLIENT_QODER : CLIENT_GENERIC,
-  };
+function profileFor(kind: CredentialKind): RouterProfile {
+  return kind === "cmmchat" ? PROFILE_CMMCHAT : PROFILE_CODE;
 }

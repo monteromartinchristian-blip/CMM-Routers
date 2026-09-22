@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { buildServer } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
 import { GenericToolProvider } from "../helpers/generic-tool-provider.js";
-import { CLIENT_QODER } from "../../src/core/client-identity.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 /**
@@ -139,7 +138,7 @@ describe("Qoder Code Router compatibility (Router side)", () => {
     });
     const body = await roundTrip(server, {
       authorization: `Bearer ${CODE_TOKEN}`,
-      "x-cmm-client": CLIENT_QODER,
+      "x-cmm-client": "qoder",
     });
     expect(body.choices[0]!.message.content).toBe("answer=[ids=gcall_q][results=QODER_RESULT]");
     console.log("QODER_CODE_ROUTER=DETERMINISTIC_PASS_REAL_GATE_PENDING");
@@ -178,7 +177,7 @@ describe("Qoder Code Router compatibility (Router side)", () => {
     const generic = await roundTrip(server, { authorization: `Bearer ${CODE_TOKEN}` });
     const qoder = await roundTrip(server, {
       authorization: `Bearer ${LEGACY_TOKEN}`,
-      "x-cmm-client": CLIENT_QODER,
+      "x-cmm-client": "qoder",
     });
     expect(generic.choices[0]!.message.content).toBe(qoder.choices[0]!.message.content);
     console.log("AUTHORIZATION_IS_PROFILE_NOT_CLIENT=PASS");

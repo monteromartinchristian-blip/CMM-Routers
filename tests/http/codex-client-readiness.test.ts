@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildServer } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
 import { GenericToolProvider } from "../helpers/generic-tool-provider.js";
-import {
-  CLIENT_CODEX,
-  CLIENT_OTHER,
-  normalizeClientId,
-} from "../../src/core/client-identity.js";
+import { normalizeClientLabel } from "../../src/core/client-identity.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 /**
@@ -51,13 +47,12 @@ async function harness() {
 }
 
 describe("Codex-client Router-side readiness contract", () => {
-  it("the downstream client identifier is distinct from the upstream provider id", () => {
-    expect(normalizeClientId("codex-client")).toBe(CLIENT_CODEX);
-    // `codex` is not the canonical downstream identifier: the client id must not
-    // overload the provider namespace, so it maps onto the bounded OTHER bucket.
-    expect(normalizeClientId("codex")).toBe(CLIENT_OTHER);
-    expect(CLIENT_CODEX).not.toBe("chatgpt");
-    console.log("CODEX_CLIENT_ID_DISTINCT_FROM_PROVIDER=PASS");
+  it("a downstream label is opaque and never a provider id", () => {
+    // The core stores an opaque label; it does not classify products.
+    expect(normalizeClientLabel("codex-client")).toBe("codex-client");
+    // The label is not the upstream provider namespace and cannot select one.
+    expect(normalizeClientLabel("codex-client")).not.toBe("chatgpt");
+    console.log("CLIENT_LABEL_OPAQUE=PASS");
   });
 
   it("completes the tool round trip on Chat Completions", async () => {

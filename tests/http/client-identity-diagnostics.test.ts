@@ -6,15 +6,14 @@ import { GenericToolProvider } from "../helpers/generic-tool-provider.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 /**
- * Phase 4E — client metadata is observability only.
+ * Subphase A — the opaque application label is observability only.
  *
- * The optional `X-CMM-Client` identifier must be visible in usage diagnostics so
- * operators can see which harnesses connect, while remaining incapable of
- * changing authorization or capability.
+ * It must be visible in usage diagnostics so operators can see who connects,
+ * while remaining incapable of changing authorization or routing.
  */
 
-const CMMCHAT_TOKEN = "identity-diag-cmmchat-secret";
-const CODE_TOKEN = "identity-diag-code-secret";
+const CMMCHAT_TOKEN = "label-diag-cmmchat-secret";
+const CODE_TOKEN = "label-diag-code-secret";
 const MODEL = "command-code/generic-echo";
 
 async function harness() {
@@ -45,10 +44,10 @@ async function harness() {
 async function recentRecord(
   server: ReturnType<typeof buildServer>,
   token: string,
-  client?: string,
+  label?: string,
 ): Promise<UsageRecord> {
   const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-  if (client !== undefined) headers["x-cmm-client"] = client;
+  if (label !== undefined) headers["x-cmm-client"] = label;
   const response = await server.inject({
     method: "POST",
     url: "/v1/chat/completions",
@@ -62,39 +61,35 @@ async function recentRecord(
     headers: { authorization: `Bearer ${token}` },
   });
   expect(usage.statusCode).toBe(200);
-  const body = usage.json() as { recent: UsageRecord[] };
-  return body.recent[0]!;
+  return (usage.json() as { recent: UsageRecord[] }).recent[0]!;
 }
 
-describe("client metadata in usage diagnostics", () => {
+describe("application label in usage diagnostics", () => {
   let h: Awaited<ReturnType<typeof harness>>;
   beforeEach(async () => {
     h = await harness();
   });
 
-  it("records the authenticated profile and the normalized client id", async () => {
-    const record = await recentRecord(h.server, CODE_TOKEN, "hermes");
+  it("records the authenticated profile and any arbitrary label", async () => {
+    const record = await recentRecord(h.server, CODE_TOKEN, "deepseek-harness");
     expect(record.profile).toBe("code");
-    expect(record.clientId).toBe("hermes");
-    console.log("CLIENT_METADATA_RECORDED=PASS");
+    expect(record.clientLabel).toBe("deepseek-harness");
+    console.log("ARBITRARY_CLIENT_LABEL_RECORDED=PASS");
   });
 
-  it("defaults an unidentified Code Router client to generic-openai", async () => {
+  it("an unidentified Code Router client simply has no label", async () => {
     const record = await recentRecord(h.server, CODE_TOKEN);
     expect(record.profile).toBe("code");
-    expect(record.clientId).toBe("generic-openai");
+    expect(record.clientLabel).toBeUndefined();
+    console.log("ABSENT_CLIENT_LABEL_RECORDED=PASS");
   });
 
-  it("records the CMMChat profile with its fixed identifier even when spoofed", async () => {
-    const record = await recentRecord(h.server, CMMCHAT_TOKEN, "qoder");
-    expect(record.profile).toBe("cmmchat");
-    expect(record.clientId).toBe("cmmchat");
-    console.log("CMMCHAT_IDENTITY_NOT_SPOOFABLE=PASS");
-  });
-
-  it("bounds a hostile identifier onto the closed set", async () => {
+  it("bounds a hostile label onto a safe alphabet", async () => {
     const record = await recentRecord(h.server, CODE_TOKEN, "qoder; rm -rf / && curl evil");
-    expect(record.clientId).toBe("other");
+    expect(record.clientLabel).toMatch(/^[a-z0-9._-]+$/);
+    expect(record.clientLabel!.length).toBeLessThanOrEqual(64);
+    console.log("CLIENT_LABEL_BOUNDED=PASS");
+    console.log("CLIENT_LABEL_SANITIZED=PASS");
   });
 
   it("never records a credential value", async () => {
@@ -102,10 +97,9 @@ describe("client metadata in usage diagnostics", () => {
     const serialized = JSON.stringify(record);
     expect(serialized).not.toContain(CODE_TOKEN);
     expect(serialized).not.toContain(CMMCHAT_TOKEN);
-    console.log("CLIENT_METADATA_NO_SECRETS=PASS");
   });
 
-  it("CLIENT_METADATA_NOT_AUTHORIZATION: the header cannot grant tools to CMMChat", async () => {
+  it("CLIENT_LABEL_NOT_AUTHORIZATION: the label cannot grant tools to CMMChat", async () => {
     const response = await h.server.inject({
       method: "POST",
       url: "/v1/chat/completions",
@@ -118,25 +112,54 @@ describe("client metadata in usage diagnostics", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().error.type).toBe("unsupported_capability");
-    console.log("CLIENT_METADATA_NOT_AUTHORIZATION=PASS");
+    console.log("CLIENT_LABEL_NOT_AUTHORIZATION=PASS");
+  });
+
+  it("CLIENT_LABEL_NOT_ROUTING: the label cannot select or substitute a model", async () => {
+    const bogus = await h.server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: `Bearer ${CODE_TOKEN}`, "x-cmm-client": "codex-client" },
+      payload: { model: "command-code/not-a-model", messages: [{ role: "user", content: "hi" }] },
+    });
+    expect(bogus.statusCode).toBe(400);
+    expect(bogus.json().error.type).toBe("unknown_model");
+
+    const exact = await h.server.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: `Bearer ${CODE_TOKEN}`, "x-cmm-client": "codex-client" },
+      payload: { model: MODEL, messages: [{ role: "user", content: "hi" }] },
+    });
+    expect(exact.statusCode).toBe(200);
+    expect((exact.json() as { model: string }).model).toBe(MODEL);
+    console.log("CLIENT_LABEL_NOT_ROUTING=PASS");
   });
 });
 
-describe("usage store identity fields are optional and additive", () => {
-  it("records a request with no identity exactly as before", () => {
+describe("usage store label fields are optional and additive", () => {
+  it("records a request with no label exactly as before", () => {
     const store = new UsageStore();
     store.beginRequest("req-plain", "chatgpt", "chatgpt/m");
     const record = store.endRequest("req-plain", { status: "success" });
     expect(record.profile).toBeUndefined();
-    expect(record.clientId).toBeUndefined();
+    expect(record.clientLabel).toBeUndefined();
     expect(record).toMatchObject({ requestId: "req-plain", provider: "chatgpt", model: "chatgpt/m" });
   });
 
   it("records identity when supplied", () => {
     const store = new UsageStore();
-    store.beginRequest("req-id", "chatgpt", "chatgpt/m", { profile: "code", clientId: "qoder" });
+    store.beginRequest("req-id", "chatgpt", "chatgpt/m", { profile: "code", clientLabel: "cline" });
     const record = store.endRequest("req-id", { status: "success" });
     expect(record.profile).toBe("code");
-    expect(record.clientId).toBe("qoder");
+    expect(record.clientLabel).toBe("cline");
+  });
+
+  it("records a profile with no label", () => {
+    const store = new UsageStore();
+    store.beginRequest("req-nolabel", "chatgpt", "chatgpt/m", { profile: "code" });
+    const record = store.endRequest("req-nolabel", { status: "success" });
+    expect(record.profile).toBe("code");
+    expect(record.clientLabel).toBeUndefined();
   });
 });

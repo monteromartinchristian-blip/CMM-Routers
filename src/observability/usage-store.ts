@@ -9,12 +9,13 @@ export type UsageStatus =
 
 /**
  * Diagnostics-only request identity. `profile` is the authenticated
- * authorization subject; `clientId` is the bounded, normalized application
- * identifier. Neither is ever used for an authorization decision.
+ * authorization subject; `clientLabel` is the optional opaque application
+ * label. Neither is ever used for an authorization decision.
  */
 export interface UsageIdentity {
   profile: string;
-  clientId: string;
+  /** Optional opaque diagnostics label. Absence is normal. */
+  clientLabel?: string | undefined;
 }
 
 export interface UsageRecord {
@@ -26,8 +27,8 @@ export interface UsageRecord {
   status: UsageStatus;
   /** Authenticated profile; present only when the request carried identity. */
   profile?: string;
-  /** Normalized application identifier; diagnostics only. */
-  clientId?: string;
+  /** Opaque application label; diagnostics only. */
+  clientLabel?: string;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -101,7 +102,12 @@ export class UsageStore {
       durationMs: Date.now() - startedAt,
       status: outcome.status,
       ...(started?.identity !== undefined
-        ? { profile: started.identity.profile, clientId: started.identity.clientId }
+        ? {
+            profile: started.identity.profile,
+            ...(started.identity.clientLabel !== undefined
+              ? { clientLabel: started.identity.clientLabel }
+              : {}),
+          }
         : {}),
       ...(outcome.inputTokens !== undefined ? { inputTokens: outcome.inputTokens } : {}),
       ...(outcome.outputTokens !== undefined ? { outputTokens: outcome.outputTokens } : {}),

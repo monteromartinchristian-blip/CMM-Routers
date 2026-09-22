@@ -7,7 +7,7 @@ import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { RouterProfile } from "../core/router-profile.js";
 import {
-  CLIENT_ID_HEADER,
+  CLIENT_LABEL_HEADER,
   assertDistinctServerTokens,
   resolveRequestIdentity,
   type ResolvedIdentity,
@@ -61,7 +61,7 @@ export function resolveConsumerId(
   request: FastifyRequest,
   options: Pick<ServerOptions, "bearerSecret" | "codeRouterToken" | "qoderToken">,
 ): RouterProfile | null {
-  const clientHeader = request.headers[CLIENT_ID_HEADER];
+  const clientHeader = request.headers[CLIENT_LABEL_HEADER];
   const identity = resolveRequestIdentity(
     request.headers.authorization,
     serverTokens(options),
@@ -92,7 +92,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // identifier is diagnostics only.
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
-      const clientHeader = request.headers[CLIENT_ID_HEADER];
+      const clientHeader = request.headers[CLIENT_LABEL_HEADER];
       const identity = resolveRequestIdentity(
         request.headers.authorization,
         serverTokens(options),

@@ -1,64 +1,40 @@
 /**
- * Application identifier carried by a request — diagnostics and compatibility
- * only.
+ * Opaque application label — diagnostics only.
  *
- * This value NEVER participates in authorization: it cannot grant tools,
- * elevate the CMMChat profile, select a provider or model, or weaken any
- * fallback guard. It exists so operators can observe which harnesses connect.
+ * CMM Code Router core deliberately knows NOTHING about which harnesses exist.
+ * A request may carry an optional application label purely so operators can
+ * observe who connects; there is no taxonomy, allow-list or enum of known
+ * products, so a client that does not exist yet needs no core change.
  *
- * The identifier is normalized onto a closed set. Anything unrecognized
- * collapses onto `other`, so an arbitrary header value can never invent a new
- * privileged member or grow the diagnostic cardinality without bound.
+ * The label is:
+ *   - optional: absence is a valid, normal state;
+ *   - opaque: any value is preserved, sanitized and bounded;
+ *   - inert: it can never affect profile authorization, model/provider
+ *     selection, broker correlation, capability, or any fallback guard.
  */
 
-export const CLIENT_CMMCHAT = "cmmchat";
-export const CLIENT_QODER = "qoder";
-export const CLIENT_HERMES = "hermes";
-export const CLIENT_CODEX = "codex-client";
-export const CLIENT_GENERIC = "generic-openai";
-export const CLIENT_OTHER = "other";
+/** Optional request header carrying the diagnostic application label. */
+export const CLIENT_LABEL_HEADER = "x-cmm-client";
 
-export type RouterClientId =
-  | typeof CLIENT_CMMCHAT
-  | typeof CLIENT_QODER
-  | typeof CLIENT_HERMES
-  | typeof CLIENT_CODEX
-  | typeof CLIENT_GENERIC
-  | typeof CLIENT_OTHER;
-
-/** Optional request header carrying the diagnostic application identifier. */
-export const CLIENT_ID_HEADER = "x-cmm-client";
-
-/** Upper bound applied before any comparison, so input size is not a lever. */
-export const CLIENT_ID_MAX_LENGTH = 64;
-
-const KNOWN_CLIENTS: ReadonlySet<string> = new Set<string>([
-  CLIENT_CMMCHAT,
-  CLIENT_QODER,
-  CLIENT_HERMES,
-  CLIENT_CODEX,
-  CLIENT_GENERIC,
-]);
+/** Upper bound applied before use, so input size is never a lever. */
+export const CLIENT_LABEL_MAX_LENGTH = 64;
 
 /**
- * Normalize an optional application identifier onto the closed set. Absence
- * means `generic-openai`; an unrecognized value means `other`.
+ * Sanitize an optional application label.
+ *
+ * Returns `undefined` when the value is absent, blank, or consists only of
+ * characters that cannot appear in a label — i.e. anything that would sanitize
+ * to nothing is treated as absence rather than a synthetic category.
  */
-export function normalizeClientId(raw: string | undefined): RouterClientId {
-  if (typeof raw !== "string") return CLIENT_GENERIC;
+export function normalizeClientLabel(raw: string | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
 
-  // Absence (nothing, or only whitespace) means the generic harness.
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return CLIENT_GENERIC;
-
-  const candidate = trimmed
+  const candidate = raw
+    .trim()
     .toLowerCase()
-    .slice(0, CLIENT_ID_MAX_LENGTH)
+    .slice(0, CLIENT_LABEL_MAX_LENGTH)
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  // A value that was present but sanitized away is an unrecognized value, not
-  // an absence.
-  if (candidate.length === 0) return CLIENT_OTHER;
-  return KNOWN_CLIENTS.has(candidate) ? (candidate as RouterClientId) : CLIENT_OTHER;
+  return candidate.length > 0 ? candidate : undefined;
 }

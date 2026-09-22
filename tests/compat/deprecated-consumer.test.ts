@@ -7,7 +7,7 @@ import {
   CODE_ROUTER_TOKEN_ENV,
   QODER_TOKEN_ENV,
   effectiveToolCapability,
-} from "../../src/core/consumer-capability.js";
+} from "../../src/compat/deprecated-consumer.js";
 import { PROFILE_CMMCHAT, PROFILE_CODE } from "../../src/core/router-profile.js";
 
 const REPO = join(import.meta.dirname, "../..");
@@ -32,10 +32,18 @@ describe("legacy consumer-capability compatibility shim", () => {
     expect(CODE_ROUTER_TOKEN_ENV).toBe("CMM_CODE_ROUTER_TOKEN");
   });
 
-  it("the profile authorization module contains no client identity literal", () => {
+  it("the profile authorization module is product-agnostic", () => {
     const source = readFileSync(join(REPO, "src/core/router-profile.ts"), "utf-8");
     expect(source.toLowerCase()).not.toContain("qoder");
     expect(source.toLowerCase()).not.toContain("hermes");
     expect(source.toLowerCase()).not.toContain("client");
+  });
+
+  it("the deprecated vocabulary lives outside the core", () => {
+    const source = readFileSync(join(REPO, "src/compat/deprecated-consumer.ts"), "utf-8");
+    expect(source).toContain("CONSUMER_QODER");
+    // The core module that used to hold it no longer exists.
+    expect(() => readFileSync(join(REPO, "src/core/consumer-capability.ts"), "utf-8")).toThrow();
+    console.log("LEGACY_VOCABULARY_OUTSIDE_CORE=PASS");
   });
 });
