@@ -5,13 +5,18 @@ import type {
   ProviderId,
   ReasoningEffort,
   RouterMessage,
-  RouterTool,
+  RouterFunctionTool,
 } from "../core/model.js";
 import { REASONING_EFFORTS } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
+import { isFunctionTool } from "../core/model.js";
 import { enforceProviderToolPolicy, parseChatToolChoice } from "../core/tool-policy.js";
-import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
+import {
+  classifyToolDeclarationType,
+  representToolDeclaration,
+  unsupportedToolKindError,
+} from "../core/tool-kind.js";
 import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
@@ -132,12 +137,12 @@ function parseMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseTools(input: unknown): { tools: RouterTool[] } | { error: RouterError } {
+function parseTools(input: unknown): { tools: RouterFunctionTool[] } | { error: RouterError } {
   if (input === undefined) return { tools: [] };
   if (!Array.isArray(input)) {
     return { error: new RouterError("invalid_request", "tools must be an array") };
   }
-  const tools: RouterTool[] = [];
+  const tools: RouterFunctionTool[] = [];
   for (const entry of input) {
     const record = asRecord(entry) as ChatToolInput | null;
     if (!record) {
@@ -165,14 +170,16 @@ function parseTools(input: unknown): { tools: RouterTool[] } | { error: RouterEr
         error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
       };
     }
-    tools.push({
+    const represented = representToolDeclaration("function", {
       type: "function",
-      function: {
-        name: fn.name,
-        ...(typeof fn.description === "string" ? { description: fn.description } : {}),
-        parameters,
-      },
+      name: fn.name,
+      ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+      parameters: parameters,
     });
+    if (!isFunctionTool(represented)) {
+      return { error: unsupportedToolKindError("function", record.type) };
+    }
+    tools.push(represented);
   }
   return { tools };
 }

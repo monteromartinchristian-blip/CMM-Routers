@@ -1,11 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
-import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
+import type { DiscoveredModel, RouterMessage, RouterFunctionTool } from "../core/model.js";
+import { isFunctionTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { RouterError } from "../core/errors.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
-import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
+import {
+  classifyToolDeclarationType,
+  representToolDeclaration,
+  unsupportedToolKindError,
+} from "../core/tool-kind.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -147,7 +152,7 @@ function toolResultText(content: unknown): string | null {
 
 export interface ParsedAnthropicRequest {
   messages: RouterMessage[];
-  tools: RouterTool[];
+  tools: RouterFunctionTool[];
   toolChoice?: NormalizedToolChoice;
   parallelToolCalls?: boolean;
 }
@@ -257,7 +262,7 @@ export function parseAnthropicRequest(
     }
   }
 
-  const tools: RouterTool[] = [];
+  const tools: RouterFunctionTool[] = [];
   if (body.tools !== undefined) {
     if (!Array.isArray(body.tools)) {
       return new RouterError("invalid_request", "tools must be an array");
@@ -282,14 +287,16 @@ export function parseAnthropicRequest(
       if (schema === null) {
         return new RouterError("invalid_request", "a tool's input_schema must be an object");
       }
-      tools.push({
+      const represented = representToolDeclaration("function", {
         type: "function",
-        function: {
-          name: record.name,
-          ...(typeof record.description === "string" ? { description: record.description } : {}),
-          parameters: schema,
-        },
+        name: String(record.name),
+        ...(typeof record.description === "string" ? { description: record.description } : {}),
+        parameters: schema,
       });
+      if (!isFunctionTool(represented)) {
+        return unsupportedToolKindError("function", record.type);
+      }
+      tools.push(represented);
     }
   }
 

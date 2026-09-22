@@ -1,12 +1,17 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
-import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
+import type { DiscoveredModel, RouterMessage, RouterFunctionTool } from "../core/model.js";
+import { isFunctionTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
 import { mapRouterErrorToHttp, rejectChatOnlyTools, enforceSelectedProviderToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
-import { classifyToolDeclarationType, unsupportedToolKindError } from "../core/tool-kind.js";
+import {
+  classifyToolDeclarationType,
+  representToolDeclaration,
+  unsupportedToolKindError,
+} from "../core/tool-kind.js";
 import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { validateToolCalls } from "../core/tool-arguments.js";
@@ -114,12 +119,12 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseResponseTools(input: unknown): { tools: RouterTool[] } | { error: RouterError } {
+function parseResponseTools(input: unknown): { tools: RouterFunctionTool[] } | { error: RouterError } {
   if (input === undefined) return { tools: [] };
   if (!Array.isArray(input)) {
     return { error: new RouterError("invalid_request", "tools must be an array") };
   }
-  const tools: RouterTool[] = [];
+  const tools: RouterFunctionTool[] = [];
   for (const entry of input) {
     const record = asRecord(entry);
     if (!record) {
@@ -138,14 +143,16 @@ function parseResponseTools(input: unknown): { tools: RouterTool[] } | { error: 
           error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
         };
       }
-      tools.push({
+      const represented = representToolDeclaration("function", {
         type: "function",
-        function: {
-          name: record.name,
-          ...(typeof record.description === "string" ? { description: record.description } : {}),
-          parameters,
-        },
+        name: String(record.name),
+        ...(typeof record.description === "string" ? { description: record.description } : {}),
+        parameters: parameters,
       });
+      if (!isFunctionTool(represented)) {
+        return { error: unsupportedToolKindError("function", record.type) };
+      }
+      tools.push(represented);
       continue;
     }
     // Chat-style passthrough
@@ -165,14 +172,16 @@ function parseResponseTools(input: unknown): { tools: RouterTool[] } | { error: 
           error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
         };
       }
-      tools.push({
+      const represented = representToolDeclaration("function", {
         type: "function",
-        function: {
-          name: fn.name,
-          ...(typeof fn.description === "string" ? { description: fn.description } : {}),
-          parameters,
-        },
+        name: String(fn.name),
+        ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+        parameters: parameters,
       });
+      if (!isFunctionTool(represented)) {
+        return { error: unsupportedToolKindError("function", record.type) };
+      }
+      tools.push(represented);
       continue;
     }
     return {

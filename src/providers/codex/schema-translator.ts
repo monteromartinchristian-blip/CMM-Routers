@@ -1,5 +1,5 @@
 import { RouterError } from "../../core/errors.js";
-import type { RouterTool } from "../../core/model.js";
+import type { RouterFunctionTool } from "../../core/model.js";
 import type {
   SchemaAgentMessageDeltaParams,
   SchemaDynamicFunctionToolSpec,
@@ -134,7 +134,7 @@ export function parseTurnCompletedParams(params: unknown): {
  * undeclarable spec.
  */
 export function toDynamicToolSpecs(
-  tools: RouterTool[],
+  tools: RouterFunctionTool[],
 ): SchemaDynamicFunctionToolSpec[] {
   return tools.map((tool) => {
     const name = tool.function?.name;

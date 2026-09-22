@@ -16,6 +16,7 @@
  */
 
 import { RouterError } from "./errors.js";
+import type { RouterTool } from "./model.js";
 
 /** Capability classes for a downstream tool declaration. */
 export type ToolDeclarationKind = "function" | "namespace" | "hosted" | "unknown";
@@ -96,4 +97,53 @@ export function unsupportedToolKindError(
     "unsupported_capability",
     `The Router cannot faithfully represent a tool of class '${kind}'${wire}; refusing to drop it silently`,
   );
+}
+
+/**
+ * Build the canonical representation of a declaration. Every class is
+ * representable; policy (TOOL_KIND_POLICY) decides whether it may proceed.
+ */
+export function representToolDeclaration(
+  kind: ToolDeclarationKind,
+  record: Record<string, unknown>,
+): RouterTool {
+  const declaredType = typeof record.type === "string" ? record.type : "unknown";
+  if (kind === "function") {
+    const name = typeof record.name === "string" ? record.name : "";
+    const parameters =
+      typeof record.parameters === "object" && record.parameters !== null
+        ? (record.parameters as Record<string, unknown>)
+        : {};
+    const fn =
+      typeof record.function === "object" && record.function !== null
+        ? (record.function as Record<string, unknown>)
+        : undefined;
+    const fnName = typeof fn?.name === "string" ? fn.name : name;
+    const fnParameters =
+      typeof fn?.parameters === "object" && fn.parameters !== null
+        ? (fn.parameters as Record<string, unknown>)
+        : parameters;
+    return {
+      type: "function",
+      function: {
+        name: fnName,
+        ...(typeof record.description === "string"
+          ? { description: record.description }
+          : typeof fn?.description === "string"
+            ? { description: fn.description }
+            : {}),
+        parameters: fnParameters,
+      },
+    };
+  }
+  if (kind === "namespace") {
+    return {
+      type: "namespace",
+      namespace: { name: typeof record.name === "string" ? record.name : "", raw: record },
+    };
+  }
+  if (kind === "hosted") {
+    return { type: declaredType, hosted: { type: declaredType, raw: record } };
+  }
+  return { type: declaredType, unknown: { type: declaredType, raw: record } };
 }

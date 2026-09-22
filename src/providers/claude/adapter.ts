@@ -3,7 +3,7 @@ import {
   LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX,
 } from "../../compat/legacy-identifiers.js";
 import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/provider.js";
-import type { DiscoveredModel, RouterTool } from "../../core/model.js";
+import type { DiscoveredModel, RouterFunctionTool } from "../../core/model.js";
 import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
@@ -80,7 +80,7 @@ export function defaultBridgeEntryPath(): string {
  * caller's tools are exposed — nothing native, nothing implicit.
  */
 export function bridgeToolDefinitions(
-  tools: RouterTool[],
+  tools: RouterFunctionTool[],
 ): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
   return tools.map((tool) => ({
     name: tool.function.name,

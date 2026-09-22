@@ -50,13 +50,63 @@ export const REASONING_EFFORTS = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-export interface RouterTool {
+/**
+ * A client-owned function tool. This is the ONLY executable declaration class:
+ * the client/harness executes it and the Router only relays intent and result.
+ */
+export interface RouterFunctionTool {
   type: "function";
   function: {
     name: string;
     description?: string;
     parameters: Record<string, unknown>;
   };
+}
+
+/**
+ * A grouped/namespaced declaration. Representable so the Router can classify and
+ * refuse it precisely; not executable unless a generic, reversible,
+ * collision-safe implementation is added.
+ */
+export interface RouterNamespaceTool {
+  type: "namespace";
+  namespace: { name: string; raw: Record<string, unknown> };
+}
+
+/**
+ * A provider-hosted tool. Representable so it can be refused by name: execution
+ * is client-owned, so provider-side tools stay explicitly unsupported.
+ */
+export interface RouterHostedTool {
+  type: string;
+  hosted: { type: string; raw: Record<string, unknown> };
+}
+
+/**
+ * Any declaration class the Router does not recognize. Representable only so it
+ * can be refused without guessing.
+ */
+export interface RouterUnknownTool {
+  type: string;
+  unknown: { type: string; raw: Record<string, unknown> };
+}
+
+/**
+ * The canonical tool DECLARATION algebra, discriminated by capability class.
+ *
+ * Representable is not executable and not allowed: policy decides which classes
+ * may proceed, and `RouterRequest.tools` narrows to the executable subset so a
+ * provider adapter can never be handed a class it does not support.
+ */
+export type RouterTool =
+  | RouterFunctionTool
+  | RouterNamespaceTool
+  | RouterHostedTool
+  | RouterUnknownTool;
+
+/** Narrow a declaration to the only executable class. */
+export function isFunctionTool(tool: RouterTool): tool is RouterFunctionTool {
+  return tool.type === "function" && "function" in tool;
 }
 
 export interface RouterToolCall {
@@ -98,7 +148,7 @@ export interface RouterRequest {
   requestId: string;
   model: DiscoveredModel;
   messages: RouterMessage[];
-  tools: RouterTool[];
+  tools: RouterFunctionTool[];
   stream: boolean;
   maxOutputTokens?: number;
   reasoningEffort?: ReasoningEffort;
