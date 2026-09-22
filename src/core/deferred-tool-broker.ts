@@ -3,16 +3,21 @@ import { RouterError } from "./errors.js";
 import type { ProviderId } from "./model.js";
 
 /**
- * Consumer-visible tool-call identity.
+ * Client-neutral tool-call correlation identity.
  *
- * `toolCallId` is the Qoder-visible PUBLIC id. It must be globally unique and
- * unguessable because Qoder's standard OpenAI follow-up only round-trips
- * `tool_call_id` plus ordinary message history — there is no proven way to make
- * Qoder echo a Router-private correlation field. Provider-internal identity is
- * carried separately in the entry context (see PendingToolContext).
+ * `toolCallId` is the PUBLIC id surfaced to whoever owns tool execution. It must
+ * be globally unique and unguessable because a standard OpenAI-compatible
+ * follow-up round-trips only `tool_call_id` plus ordinary message history —
+ * there is no proven way to make a client echo a Router-private correlation
+ * field. Provider-internal identity is carried separately in the entry context
+ * (see PendingToolContext).
+ *
+ * The broker deliberately carries NO client identity. Authorization happens at
+ * the HTTP boundary on the authenticated profile, and the execution owner is
+ * the client/harness. Naming that client here would add coupling without
+ * adding a control.
  */
 export interface BrokerKey {
-  consumer: "qoder";
   provider: ProviderId;
   sessionId: string;
   turnId?: string;
@@ -27,8 +32,8 @@ export interface BrokerKey {
 
 /**
  * Provider-internal identity retained alongside a pending public id. This is
- * never exposed to the consumer; it is what lets the Router answer the exact
- * provider wire request after Qoder returns the public id.
+ * never exposed to the tool-executing client; it is what lets the Router answer
+ * the exact provider wire request once that client returns the public id.
  */
 export interface PendingToolContext {
   provider: ProviderId;
@@ -100,9 +105,6 @@ export class DeferredToolBroker {
     signal?: AbortSignal,
     context?: TContext,
   ): void {
-    if (key.consumer !== "qoder") {
-      throw new RouterError("provider_protocol_error", "Broker accepts Qoder entries only");
-    }
     const id = keyOf(key);
     if (this.entries.has(id)) {
       throw new RouterError("provider_protocol_error", "Duplicate pending tool call");

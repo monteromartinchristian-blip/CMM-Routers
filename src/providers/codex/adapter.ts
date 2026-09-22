@@ -196,7 +196,7 @@ export class CodexAdapter implements ProviderAdapter {
   private readonly threadToolAcl = new Map<string, Set<string>>();
   /**
    * Cross-request parked tool sessions, keyed by the requestId that surfaced
-   * the call. The provider turn stays alive awaiting Qoder's result, so the
+   * the call. The provider turn stays alive awaiting the client's result, so the
    * session is still a live provider run: cancel() on that request releases
    * the parked correlation AND interrupts the turn. Bounded.
    */
@@ -249,9 +249,9 @@ export class CodexAdapter implements ProviderAdapter {
         upstreamModel: model.model || model.id,
         displayName: model.displayName || model.id,
         // CHAT_AND_TOOLS: the dynamic external tool round-trip (item/tool/call
-        // server request → tool call surfaced to Qoder → tool result on the
+        // server request → tool call surfaced to the client → tool result on the
         // follow-up turn) is implemented and proven deterministically against a
-        // scripted app-server. The Router NEVER executes the tool; Qoder owns
+        // scripted app-server. The Router NEVER executes the tool; the client owns
         // execution. Live re-proof is deferred to the post-audit live gate.
         capability: "CHAT_AND_TOOLS" as const,
       }));
@@ -296,9 +296,9 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     try {
-      // Follow-up turn carrying Qoder's executed tool results: resolve the
+      // Follow-up turn carrying the client's executed tool results: resolve the
       // ORIGINAL pending wire requests (same thread/turn) BEFORE opening any
-      // new thread. Qoder returns only the PUBLIC tool_call_id it was given;
+      // new thread. the client returns only the PUBLIC tool_call_id it was given;
       // the broker maps that back to the exact provider-internal call.
       const toolResults = request.messages.filter(
         (m) => m.role === "tool" && typeof m.toolCallId === "string",
@@ -317,7 +317,7 @@ export class CodexAdapter implements ProviderAdapter {
           });
           if (ctx.providerSession && ctx.providerTurn) {
             // A result just arrived: this thread is no longer "parked
-            // awaiting Qoder". The continuation re-enters the SAME reusable
+            // awaiting the client". The continuation re-enters the SAME reusable
             // per-turn tool loop, so the provider may request the NEXT tool on
             // the SAME thread/turn and it will be handled identically.
             this.releaseParkedForThread(ctx.providerSession);
@@ -341,14 +341,14 @@ export class CodexAdapter implements ProviderAdapter {
           type: "error",
           error: new RouterError(
             "provider_protocol_error",
-            "Codex tool result does not match any pending Qoder tool call",
+            "Codex tool result does not match any pending client tool call",
           ),
         };
         return;
       }
 
       const seeds = buildCodexThreadSeeds(request.messages);
-      // Qoder tool definitions are declared on the SAME thread/start that
+      // Client tool definitions are declared on the SAME thread/start that
       // creates the tool-capable thread. Experimental API was opted into during
       // initialize (buildCodexInitializeParams). Text-only turns send no
       // dynamicTools field at all so wire bytes are unchanged.
@@ -414,7 +414,7 @@ export class CodexAdapter implements ProviderAdapter {
         // server request `item/tool/call`. The Router NEVER executes the tool.
         // Every call is validated against this thread's declared-tool ACL,
         // parked in the bounded broker under an independent Router-generated
-        // public id, surfaced to Qoder (tool_call_delta + completed:
+        // public id, surfaced to the client (tool_call_delta + completed:
         // tool_calls), and answered later with success:true on the ORIGINAL
         // wire request. The SAME thread/turn then keeps draining, so a SECOND
         // (and further) sequential tool request inside the same logical Codex
@@ -448,7 +448,7 @@ export class CodexAdapter implements ProviderAdapter {
 
   /**
    * Continue listening on an already-open thread/turn after the pending tool
-   * request was resolved with Qoder's result. Streams the turn's remaining
+   * request was resolved with the client's result. Streams the turn's remaining
    * deltas/usage/completion on the SAME thread/turn — never a new thread — and
    * stays ready for the NEXT item/tool/call on that same turn.
    */
@@ -479,7 +479,7 @@ export class CodexAdapter implements ProviderAdapter {
    * arriving at any point in the turn is observed; a released or expired tool
    * waiter is immediately re-armed rather than leaving a gap in which the
    * app-server would auto-decline the call. A call that passes this thread's
-   * declared-tool ACL is parked for Qoder and ENDS this HTTP response
+   * declared-tool ACL is parked for the client and ENDS this HTTP response
    * (finish_reason tool_calls); the next request carrying the result re-enters
    * this pump on the SAME thread/turn. Parking ends the pump, so at most one
    * tool call per thread can ever be parked at a time.
@@ -621,8 +621,8 @@ export class CodexAdapter implements ProviderAdapter {
 
   /**
    * Validate and park ONE external tool request. The ORIGINAL wire request is
-   * answered later (on the follow-up request carrying Qoder's result) with
-   * success:true; the provider's own callId is kept internal while Qoder only
+   * answered later (on the follow-up request carrying the client's result) with
+   * success:true; the provider's own callId is kept internal while the client only
    * ever sees the Router-generated PUBLIC id.
    */
   private async *handleExternalToolCall(
@@ -665,7 +665,7 @@ export class CodexAdapter implements ProviderAdapter {
       typeof params.arguments === "string" ? params.arguments : JSON.stringify(params.arguments);
     if (!ctx.declaredToolNames.has(toolName)) {
       // Undeclared dynamic tool: answer the wire request so the turn
-      // terminates, then fail closed. No Qoder surface, no broker entry.
+      // terminates, then fail closed. No client surface, no broker entry.
       client.respondToServerRequest(wireRequestId, { success: false, contentItems: [] });
       yield {
         type: "error",
@@ -683,7 +683,6 @@ export class CodexAdapter implements ProviderAdapter {
     const publicToolCallId = createPublicToolCallId("chatgpt");
     this.broker.createPendingCall<PendingToolContext>(
       {
-        consumer: "qoder",
         provider: "chatgpt",
         sessionId: ctx.threadId,
         turnId: ctx.turnId,
@@ -700,12 +699,12 @@ export class CodexAdapter implements ProviderAdapter {
         wireRequestId,
       },
     );
-    // The provider turn stays alive awaiting Qoder's result: record the parked
+    // The provider turn stays alive awaiting the client's result: record the parked
     // cross-request session so cancel() can release it and interrupt the turn.
     // Recorded BEFORE the terminal yield: a consumer that stops reading on
     // `completed` closes this generator, so post-yield bookkeeping would be lost.
     this.rememberParked(ctx.requestId, ctx.threadId, ctx.turnId);
-    // Surface the structured tool call to Qoder (never execute it).
+    // Surface the structured tool call to the client (never execute it).
     yield {
       type: "tool_call_delta",
       index: 0,
@@ -768,7 +767,7 @@ export class CodexAdapter implements ProviderAdapter {
     const parkedTurn = this.parkedTurns.get(requestId);
     // A parked cross-request session has no live adapter run (the HTTP reply
     // already ended with finish_reason tool_calls) but the PROVIDER turn is
-    // still alive awaiting Qoder's result, so it is cancellable all the same.
+    // still alive awaiting the client's result, so it is cancellable all the same.
     const target = activeTurn ?? parkedTurn;
     if (!target) {
       return;
@@ -789,7 +788,7 @@ export class CodexAdapter implements ProviderAdapter {
       this.activeTurns.delete(requestId);
       this.parkedTurns.delete(requestId);
       this.threadToolAcl.delete(target.threadId);
-      // Explicit Qoder/provider cancellation releases the parked correlation
+      // Explicit the client/provider cancellation releases the parked correlation
       // for this thread so it does not linger until TTL.
       this.broker.cancelScope({ provider: "chatgpt", sessionId: target.threadId });
       if (target.threadId || target.turnId) {
@@ -857,7 +856,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.client = new CodexAppServerClient(duplex);
 
     // Initialize handshake, including the experimental-API opt-in required to
-    // declare Qoder tools via thread/start.dynamicTools.
+    // declare client tools via thread/start.dynamicTools.
     await this.client.initialize(buildCodexInitializeParams());
 
     await this.client.sendInitializedNotification();

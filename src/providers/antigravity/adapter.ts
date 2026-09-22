@@ -124,7 +124,7 @@ function ensureNeutralCwd(cwd: string): void {
 const ANTIGRAVITY_TOOL_AGENT_NAME = "cmm-router-tool-bridge";
 
 /**
- * Restricted workspace agent definition for Qoder-owned tool runs.
+ * Restricted workspace agent definition for client-owned tool runs.
  *
  * `excludeDefaultComponents: true` removes agy's default components and its
  * native tools, so `run_command`, `view_file`, `write_file`,
@@ -134,11 +134,11 @@ const ANTIGRAVITY_TOOL_AGENT_NAME = "cmm-router-tool-bridge";
  * reachable capability: the MCP dispatcher `call_mcp_tool`. The allowlist is
  * stated explicitly rather than relying on ambient defaults.
  *
- * Qoder owns tool execution; agy may only reason and dispatch through the
- * bridge. Provider-native tool names are never translated into Qoder tools.
+ * the client owns tool execution; agy may only reason and dispatch through the
+ * bridge. Provider-native tool names are never translated into client tools.
  *
  * Provider-neutral and secret-free by construction: no credentials, no request
- * content, no Qoder-specific tool schemas and no MCP arguments appear here.
+ * content, no client-specific tool schemas and no MCP arguments appear here.
  */
 const ANTIGRAVITY_TOOL_AGENT_FILE = `---
 name: ${ANTIGRAVITY_TOOL_AGENT_NAME}
@@ -781,7 +781,7 @@ export function defaultAntigravityBridgeLauncherPath(): string {
   return fileURLToPath(new URL("../../bridge/mcp-bridge-launcher.js", import.meta.url));
 }
 
-/** Qoder tool definitions as the external MCP bridge exposes them. */
+/** client tool definitions as the external MCP bridge exposes them. */
 export function antigravityBridgeToolDefinitions(
   tools: RouterTool[],
 ): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
@@ -797,7 +797,7 @@ type AsyncQueue<T> = BoundedQueue<T>;
 
 /**
  * A live agy run held across the split HTTP interaction while its external MCP
- * handler is parked waiting for Qoder's result. The Router keeps draining the
+ * handler is parked waiting for the client's result. The Router keeps draining the
  * SAME run on the follow-up request — no new agy process is spawned.
  */
 interface AgyToolSession {
@@ -968,7 +968,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         provider: "google" as const,
         upstreamModel: m.slug,
         displayName: m.displayName,
-        // Qoder-owned tools traverse the external MCP bridge; agy's native
+        // client-owned tools traverse the external MCP bridge; agy's native
         // mutation tools (run_command/replace_file_content/write_to_file) are
         // never used for them and native execution stays disabled.
         capability: "CHAT_AND_TOOLS" as const,
@@ -1154,7 +1154,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     yield { type: "error", error };
   }
 
-  /** Park a Qoder-owned tool call and keep the agy run alive. */
+  /** Park a client-owned tool call and keep the agy run alive. */
   private async *parkAgyToolCall(
     session: AgyToolSession,
     request: BridgeToolRequest,
@@ -1190,7 +1190,6 @@ export class AntigravityAdapter implements ProviderAdapter {
     try {
       this.broker.createPendingCall<AgyToolSession>(
         {
-          consumer: "qoder",
           provider: "google",
           sessionId: session.sessionId,
           toolCallId: publicId,
@@ -1457,7 +1456,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       yield* this.drainAgySession(session, signal);
     } finally {
       // A session that PARKED a call stays bound to the request that parked it:
-      // the provider is still waiting for Qoder's result, so an explicit
+      // the provider is still waiting for the client's result, so an explicit
       // cancellation of that request must reach the exact live agy run. A
       // normal tool_calls response is not a cancellation (the HTTP layer only
       // cancels a reply that closed before reaching a terminal outcome), and
@@ -1500,7 +1499,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       return;
     }
 
-    // Follow-up carrying Qoder's executed tool result: release the parked
+    // Follow-up carrying the client's executed tool result: release the parked
     // external MCP handler and keep draining the SAME agy run. No new agy
     // process is spawned and no history is reconstructed.
     const toolResults = request.messages.filter(
@@ -1538,7 +1537,7 @@ export class AntigravityAdapter implements ProviderAdapter {
                 : new RouterError("provider_protocol_error", String(error)),
           };
         } finally {
-          // Keep the binding while the provider is parked waiting for Qoder's
+          // Keep the binding while the provider is parked waiting for the client's
           // next result so this exact request can still be cancelled; a
           // terminated session is already unbound by closeToolSession.
           const bound = this.sessionsByRequest.get(request.requestId);
@@ -1552,7 +1551,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         type: "error",
         error: new RouterError(
           "provider_protocol_error",
-          "Antigravity tool result does not match any pending Qoder tool call",
+          "Antigravity tool result does not match any pending client tool call",
         ),
       };
       return;
@@ -1598,12 +1597,12 @@ export class AntigravityAdapter implements ProviderAdapter {
     });
 
     // Tool-capable run: register the CMM-owned MCP server and hold the agy run
-    // open while an external MCP tools/call is parked for Qoder. The bridge
+    // open while an external MCP tools/call is parked for the client. The bridge
     // performs transport only; agy's native mutation tools stay unused.
     if (request.tools.length > 0) {
       try {
         // Tool-capable runs are confined to the CMM-owned restricted agent:
-        // agy can then reach Qoder-owned tools only through the MCP dispatcher.
+        // agy can then reach client-owned tools only through the MCP dispatcher.
         // The agent lives in the same per-run temp cwd, so existing cleanup
         // owns its lifetime. Base `args` are copied, never mutated, so the
         // no-tools path is unaffected.
@@ -1617,7 +1616,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         // closeToolSession. When no session ever took ownership - the provider
         // run never started - this request still owns the cwd, so it removes
         // it here. The generated agent therefore cannot outlive a failed run,
-        // and a parked session waiting for Qoder is never disturbed.
+        // and a parked session waiting for the client is never disturbed.
         if (!this.sessionsByRequest.has(request.requestId)) {
           try {
             rmSync(cwd, { recursive: true, force: true });
@@ -1814,7 +1813,7 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   async cancel(requestId: string): Promise<void> {
     // A request that currently drives a live tool session (parked awaiting
-    // Qoder, or resuming after a result) is terminated through the SAME agy
+    // the client, or resuming after a result) is terminated through the SAME agy
     // AbortController, so post-result cancellation reaches the exact provider
     // process. A parked session with no request bound to it is left to its TTL:
     // the HTTP layer closes the reply socket after the normal tool_calls

@@ -214,7 +214,6 @@ describe("Codex production broker: adversarial correlation", () => {
   it("bounds pending state and expires by TTL, and duplicate/late results are classified", async () => {
     const broker = new DeferredToolBroker({ maxPending: 2, defaultTtlMs: 30 });
     const key = (toolCallId: string) => ({
-      consumer: "qoder" as const,
       provider: "chatgpt" as const,
       sessionId: "thread-1",
       toolCallId,
