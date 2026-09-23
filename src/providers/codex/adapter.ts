@@ -38,6 +38,48 @@ export function buildCodexInitializeParams(): InitializeParams {
   };
 }
 
+
+/**
+ * Resolve the Router-owned Codex home. The upstream app-server must never
+ * silently fall back to the user's default ~/.codex checkout: that checkout may
+ * itself point at CMM Routers (or another local proxy), creating recursion.
+ *
+ * An explicit constructor option wins. Production may alternatively inject
+ * CMM_ROUTER_CODEX_HOME. Returning undefined is intentional; buildCodexSpawnEnv
+ * then fails closed before spawning.
+ */
+export function resolveCodexProviderHome(
+  explicitHome: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = explicitHome ?? env.CMM_ROUTER_CODEX_HOME;
+  return configured && configured.length > 0 ? configured : undefined;
+}
+
+/**
+ * Build the child environment for `codex app-server`.
+ *
+ * Security/correctness invariant: inherited CODEX_HOME is ignored. The Router
+ * has to select its upstream profile explicitly so a downstream Codex client's
+ * config cannot leak back into the upstream provider process.
+ */
+export function buildCodexSpawnEnv(
+  codexHome: string | undefined,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (!codexHome) {
+    throw new RouterError(
+      "provider_unavailable",
+      "Codex upstream requires an isolated CODEX_HOME; configure providers.chatgpt.codexHome or CMM_ROUTER_CODEX_HOME",
+    );
+  }
+
+  return {
+    ...inheritedEnv,
+    CODEX_HOME: codexHome,
+  };
+}
+
 /**
  * Normalize Codex turn status into the neutral Router finish vocabulary.
  * Upstream uses values like "completed"; the Router contract only allows
@@ -226,7 +268,7 @@ export class CodexAdapter implements ProviderAdapter {
       broker?: DeferredToolBroker | undefined;
     } = {},
   ) {
-    this.codexHome = options.codexHome;
+    this.codexHome = resolveCodexProviderHome(options.codexHome);
     this.transportFactory = options.transportFactory;
     this.broker = options.broker ?? new DeferredToolBroker();
     // LaunchAgent-safe resolution: installer bakes CMM_ROUTER_CODEX_BIN;
@@ -817,7 +859,7 @@ export class CodexAdapter implements ProviderAdapter {
     // subscription profile without touching the user's default checkout).
     this.process = spawn(this.codexBinary, ["app-server", "--stdio"], {
       stdio: ["pipe", "pipe", "inherit"],
-      ...(this.codexHome ? { env: { ...process.env, CODEX_HOME: this.codexHome } } : {}),
+      env: buildCodexSpawnEnv(this.codexHome),
     });
 
     // Provider subprocess death releases every pending correlation for this
