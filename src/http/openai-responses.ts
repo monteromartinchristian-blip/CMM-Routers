@@ -125,6 +125,56 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
+/**
+ * Responses may carry request-scoped tool declarations inside the input stream
+ * as an `additional_tools` developer item. Codex uses this shape for Responses
+ * Lite and omits the top-level `tools` field.
+ *
+ * The item is request metadata, not a conversational message: extract and
+ * validate its tools, then remove it before message normalization.
+ */
+function normalizeResponseInputAdditionalTools(
+  input: unknown,
+):
+  | { input: unknown; tools: RouterFunctionTool[] }
+  | { error: RouterError } {
+  if (!Array.isArray(input)) return { input, tools: [] };
+
+  const normalizedInput: unknown[] = [];
+  const tools: RouterFunctionTool[] = [];
+
+  for (const entry of input) {
+    const record = asRecord(entry);
+    if (!record || record.type !== "additional_tools") {
+      normalizedInput.push(entry);
+      continue;
+    }
+
+    if (record.role !== "developer") {
+      return {
+        error: new RouterError(
+          "invalid_request",
+          'additional_tools role must be "developer"',
+        ),
+      };
+    }
+    if (record.id !== undefined && typeof record.id !== "string") {
+      return {
+        error: new RouterError(
+          "invalid_request",
+          "additional_tools id must be a string when present",
+        ),
+      };
+    }
+
+    const parsed = parseResponseTools(record.tools);
+    if ("error" in parsed) return parsed;
+    tools.push(...parsed.tools);
+  }
+
+  return { input: normalizedInput, tools };
+}
+
 function parseResponseTools(input: unknown): { tools: RouterFunctionTool[] } | { error: RouterError } {
   if (input === undefined) return { tools: [] };
   if (!Array.isArray(input)) {
@@ -242,12 +292,36 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "model must be a non-empty string" } });
     }
+    const normalizedInput = normalizeResponseInputAdditionalTools(body.input);
+    if ("error" in normalizedInput) {
+      const mapped = mapRouterErrorToHttp(normalizedInput.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
     const parsedTools = parseResponseTools(body.tools);
     if ("error" in parsedTools) {
       const mapped = mapRouterErrorToHttp(parsedTools.error);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
-    const tools = parsedTools.tools;
+
+    // `additional_tools` augments the ordinary Responses `tools` field. Both
+    // sources are validated by the same representation boundary before they can
+    // reach a provider.
+    const tools = [...parsedTools.tools, ...normalizedInput.tools];
+
+    // Profile enforcement must see the extracted declarations too. Otherwise a
+    // CHAT_ONLY bearer could hide tools inside input.additional_tools and bypass
+    // the normal body.tools guard.
+    const capabilityBody: Record<string, unknown> =
+      tools.length === 0
+        ? body
+        : {
+            ...body,
+            tools: tools.map((tool) => ({
+              type: "function",
+              function: tool.function,
+            })),
+          };
     if (body.stream !== undefined && typeof body.stream !== "boolean") {
       return reply
         .code(400)
@@ -305,13 +379,13 @@ export function registerResponsesApi(
 
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.
-    const earlyCapabilityError = rejectChatOnlyTools(effective, body, []);
+    const earlyCapabilityError = rejectChatOnlyTools(effective, capabilityBody, []);
     if (earlyCapabilityError) {
       const mapped = mapRouterErrorToHttp(earlyCapabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const messages = inputToMessages(body.input);
+    const messages = inputToMessages(normalizedInput.input);
     if (!messages) {
       return reply
         .code(400)
@@ -324,7 +398,7 @@ export function registerResponsesApi(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const capabilityError = rejectChatOnlyTools(effective, body, messages);
+    const capabilityError = rejectChatOnlyTools(effective, capabilityBody, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
