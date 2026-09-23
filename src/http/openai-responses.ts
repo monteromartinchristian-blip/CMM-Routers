@@ -292,6 +292,22 @@ export function registerResponsesApi(
         .code(400)
         .send({ error: { type: "invalid_request", message: "model must be a non-empty string" } });
     }
+
+    // OpenAI Responses carries model-level instructions separately from `input`.
+    // Preserve them explicitly as the first system message instead of silently
+    // dropping them at the Router boundary.
+    if (
+      body.instructions !== undefined &&
+      body.instructions !== null &&
+      typeof body.instructions !== "string"
+    ) {
+      return reply
+        .code(400)
+        .send({ error: { type: "invalid_request", message: "instructions must be a string or null" } });
+    }
+    const responseInstructions =
+      typeof body.instructions === "string" ? body.instructions : undefined;
+
     const normalizedInput = normalizeResponseInputAdditionalTools(body.input);
     if ("error" in normalizedInput) {
       const mapped = mapRouterErrorToHttp(normalizedInput.error);
@@ -385,12 +401,19 @@ export function registerResponsesApi(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const messages = inputToMessages(normalizedInput.input);
-    if (!messages) {
+    const inputMessages = inputToMessages(normalizedInput.input);
+    if (!inputMessages) {
       return reply
         .code(400)
         .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
     }
+
+    const messages: RouterMessage[] =
+      responseInstructions !== undefined
+        ? [{ role: "system", content: responseInstructions }, ...inputMessages]
+        : inputMessages;
+
+    // RESPONSES_TOP_LEVEL_INSTRUCTIONS_NORMALIZED
     try {
       assertToolResultsWithinBound(messages);
     } catch (error) {
