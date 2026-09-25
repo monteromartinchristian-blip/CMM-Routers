@@ -47,7 +47,10 @@ function isCavotiAckValid(ackPath: string): boolean {
 }
 
 export function resolveChatgptCodexHome(config: RouterConfig): string | undefined {
-  return config.providers.chatgpt.codexHome;
+  // Explicit config remains authoritative. The environment fallback is used by
+  // the supported macOS runtime wrapper to point Codex app-server at a
+  // Router-owned, tool-neutral profile without mutating the user's ~/.codex.
+  return config.providers.chatgpt.codexHome ?? process.env.CMM_ROUTER_CODEX_HOME;
 }
 
 export function resolveClaudeProfileDir(config: RouterConfig): string | undefined {

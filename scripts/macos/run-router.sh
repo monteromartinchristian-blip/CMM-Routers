@@ -18,6 +18,41 @@ NODE_BIN="${CMM_ROUTER_NODE_BIN:-node}"
 CONFIG_DIR="${CMM_CONFIG_DIR:-$REPO_DIR/config}"
 SHARED_JSON="$CONFIG_DIR/shared.json"
 
+DEFAULT_CODEX_UPSTREAM_PROFILE="$HOME/Library/Application Support/CMM Routers/codex-upstream"
+CHATGPT_ENABLED_FOR_RUNTIME="0"
+CHATGPT_CONFIG_CODEX_HOME=""
+
+if [ -f "$SHARED_JSON" ] && command -v python3 >/dev/null 2>&1; then
+  CODEX_PROFILE_FIELDS="$(python3 - "$SHARED_JSON" <<'PYCODEX'
+import json,sys
+try:
+    cfg=json.load(open(sys.argv[1]))
+except Exception:
+    print("0")
+    print("")
+    raise SystemExit(0)
+chatgpt=(cfg.get("providers",{}) or {}).get("chatgpt",{}) or {}
+print("1" if chatgpt.get("enabled") is True else "0")
+print(chatgpt.get("codexHome") or "")
+PYCODEX
+)"
+  CHATGPT_ENABLED_FOR_RUNTIME="$(printf '%s\n' "$CODEX_PROFILE_FIELDS" | sed -n '1p')"
+  CHATGPT_CONFIG_CODEX_HOME="$(printf '%s\n' "$CODEX_PROFILE_FIELDS" | sed -n '2p')"
+fi
+
+if [ "$CHATGPT_ENABLED_FOR_RUNTIME" = "1" ] && [ -z "$CHATGPT_CONFIG_CODEX_HOME" ]; then
+  if [ -z "${CMM_ROUTER_CODEX_HOME:-}" ]; then
+    if [ ! -f "$DEFAULT_CODEX_UPSTREAM_PROFILE/auth.json" ] \
+      || [ ! -f "$DEFAULT_CODEX_UPSTREAM_PROFILE/model_catalog.json" ] \
+      || [ ! -f "$DEFAULT_CODEX_UPSTREAM_PROFILE/config.toml" ]; then
+      echo "ChatGPT provider requires the tool-neutral Codex upstream profile." >&2
+      echo "Run: $REPO_DIR/scripts/macos/provision-codex-upstream-profile.sh" >&2
+      exit 1
+    fi
+    export CMM_ROUTER_CODEX_HOME="$DEFAULT_CODEX_UPSTREAM_PROFILE"
+  fi
+fi
+
 # Resolve configured secret env names from shared config (production source
 # of truth). Fall back to historical defaults when unreadable.
 BEARER_ENV="CMM_ROUTER_TOKEN"
