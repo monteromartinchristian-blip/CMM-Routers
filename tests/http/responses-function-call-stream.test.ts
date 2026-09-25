@@ -80,13 +80,27 @@ describe("Responses streaming function-call lifecycle", () => {
     const events = parseSse(res.body);
     const names = events.map((e) => e.event);
 
+    const created = events.find((e) => e.event === "response.created")!.data;
+    expect(created.type).toBe("response.created");
+    const createdResponse = created.response as Record<string, unknown>;
+    expect(createdResponse.object).toBe("response");
+    expect(createdResponse.status).toBe("in_progress");
+    expect(createdResponse.output).toEqual([]);
+
+    expect(names).toContain("response.content_part.added");
+    expect(names).toContain("response.output_text.done");
+    expect(names).toContain("response.content_part.done");
     expect(names).toContain("response.output_item.added");
     expect(names).toContain("response.function_call_arguments.delta");
     expect(names).toContain("response.function_call_arguments.done");
     expect(names).toContain("response.output_item.done");
     expect(names).toContain("response.completed");
 
-    const added = events.find((e) => e.event === "response.output_item.added")!.data;
+    const added = events.find(
+      (e) =>
+        e.event === "response.output_item.added" &&
+        (e.data.item as Record<string, unknown>)?.type === "function_call",
+    )!.data;
     const item = added.item as Record<string, unknown>;
     expect(item.type).toBe("function_call");
     expect(item.call_id).toBe("call_a");
@@ -110,18 +124,68 @@ describe("Responses streaming function-call lifecycle", () => {
     expect(done.output_index).toBe(1);
     console.log("RESPONSES_FUNCTION_CALL_ARGUMENTS_DONE=PASS");
 
-    const itemDone = events.find((e) => e.event === "response.output_item.done")!.data;
+    const itemDone = events.find(
+      (e) =>
+        e.event === "response.output_item.done" &&
+        (e.data.item as Record<string, unknown>)?.type === "function_call",
+    )!.data;
     expect((itemDone.item as Record<string, unknown>).arguments).toBe('{"text":"canary"}');
 
-    // Ordering: done before output_item.done before completed.
+    // Ordering: function-call arguments.done must precede the function-call
+    // output_item.done. A completed message item may legitimately appear first.
     const idx = (name: string) => names.indexOf(name);
-    expect(idx("response.function_call_arguments.done")).toBeLessThan(idx("response.output_item.done"));
-    expect(idx("response.output_item.done")).toBeLessThan(idx("response.completed"));
+    const functionCallItemDoneIndex = events.findIndex(
+      (e) =>
+        e.event === "response.output_item.done" &&
+        (e.data.item as Record<string, unknown>)?.type === "function_call",
+    );
+    expect(functionCallItemDoneIndex).toBeGreaterThanOrEqual(0);
+    expect(idx("response.function_call_arguments.done")).toBeLessThan(functionCallItemDoneIndex);
+    expect(functionCallItemDoneIndex).toBeLessThan(idx("response.completed"));
 
     // Text streaming must not regress.
+    const textAdded = events.find(
+      (e) =>
+        e.event === "response.output_item.added" &&
+        (e.data.item as Record<string, unknown>)?.type === "message",
+    );
+    expect(textAdded).toBeDefined();
+    expect((textAdded!.data.item as Record<string, unknown>).status).toBe("in_progress");
+
     const textDelta = events.find((e) => e.event === "response.output_text.delta");
     expect(textDelta).toBeDefined();
+    expect(textDelta!.data.type).toBe("response.output_text.delta");
     expect(textDelta!.data.delta).toBe("thinking");
     expect(textDelta!.data.item_id).toBe("msg-0");
+    expect(textDelta!.data.output_index).toBe(0);
+    expect(textDelta!.data.content_index).toBe(0);
+
+    const firstMessageAddedIndex = events.findIndex(
+      (e) =>
+        e.event === "response.output_item.added" &&
+        (e.data.item as Record<string, unknown>)?.type === "message",
+    );
+    expect(firstMessageAddedIndex).toBeGreaterThanOrEqual(0);
+    expect(firstMessageAddedIndex).toBeLessThan(idx("response.output_text.delta"));
+
+    const completed = events.find((e) => e.event === "response.completed")!.data;
+    expect(completed.type).toBe("response.completed");
+    const completedResponse = completed.response as Record<string, unknown>;
+    expect(completedResponse.object).toBe("response");
+    expect(completedResponse.status).toBe("completed");
+    const completedOutput = completedResponse.output as Array<Record<string, unknown>>;
+    expect(completedOutput.map((item) => item.type)).toEqual(["message", "function_call"]);
+    expect((completedOutput[0]!.content as Array<Record<string, unknown>>)[0]!.text).toBe("thinking");
+    expect(completedOutput[1]).toMatchObject({
+      type: "function_call",
+      call_id: "call_a",
+      name: "cmm_echo",
+      arguments: '{"text":"canary"}',
+      status: "completed",
+    });
+
+    console.log("RESPONSES_CODEX_0147_CANONICAL_ENVELOPE=PASS");
+    console.log("RESPONSES_TEXT_ITEM_LIFECYCLE=PASS");
+    console.log("RESPONSES_COMPLETED_OUTPUT_SNAPSHOT=PASS");
   });
 });

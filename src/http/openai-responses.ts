@@ -564,17 +564,40 @@ export function registerResponsesApi(
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache");
     reply.raw.setHeader("Connection", "keep-alive");
-    const send = (event: string, data: unknown): boolean => {
+    const send = (event: string, data: Record<string, unknown>): boolean => {
       if (reply.raw.destroyed) return false;
+      const payload = { type: event, ...data };
       reply.raw.write(`event: ${event}\n`);
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
       return true;
     };
 
     try {
-      send("response.created", { id: responseId, object: "response", model: model.id, status: "in_progress" });
+      const createdAt = Math.floor(Date.now() / 1000);
+      const completedOutputItems = new Map<number, Record<string, unknown>>();
+      const orderedOutput = (): Record<string, unknown>[] =>
+        [...completedOutputItems.entries()]
+          .sort(([a], [b]) => a - b)
+          .map(([, item]) => item);
+      const responseSnapshot = (
+        status: "in_progress" | "completed",
+      ): Record<string, unknown> => ({
+        id: responseId,
+        object: "response",
+        created_at: createdAt,
+        status,
+        background: false,
+        error: null,
+        output: orderedOutput(),
+        model: model.id,
+      });
+
+      send("response.created", { response: responseSnapshot("in_progress") });
+
       let nextOutputIndex = 0;
       let textItemIndex: number | undefined;
+      let textItemId: string | undefined;
+      let textBuffer = "";
       // Canonical function-call item lifecycle, keyed by upstream tool index.
       const pendingCalls = new Map<
         number,
@@ -596,8 +619,33 @@ export function registerResponsesApi(
           break;
         }
         if (typed.type === "text_delta") {
-          if (textItemIndex === undefined) textItemIndex = nextOutputIndex++;
-          send("response.output_text.delta", { item_id: `msg-${textItemIndex}`, delta: typed.text });
+          if (textItemIndex === undefined) {
+            textItemIndex = nextOutputIndex++;
+            textItemId = `msg-${textItemIndex}`;
+            send("response.output_item.added", {
+              output_index: textItemIndex,
+              item: {
+                id: textItemId,
+                type: "message",
+                status: "in_progress",
+                role: "assistant",
+                content: [],
+              },
+            });
+            send("response.content_part.added", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              part: { type: "output_text", text: "", annotations: [] },
+            });
+          }
+          textBuffer += typed.text;
+          send("response.output_text.delta", {
+            item_id: textItemId as string,
+            output_index: textItemIndex,
+            content_index: 0,
+            delta: typed.text,
+          });
         } else if (typed.type === "tool_call_delta") {
           // Buffer instead of forwarding fragments: the item lifecycle is only
           // emitted once the complete arguments are known to be usable JSON.
@@ -617,6 +665,38 @@ export function registerResponsesApi(
           const delta = typed.argumentsDelta ?? "";
           if (delta.length > 0) call.args += delta;
         } else if (typed.type === "completed") {
+          if (textItemIndex !== undefined && textItemId !== undefined) {
+            const textPart = {
+              type: "output_text",
+              text: textBuffer,
+              annotations: [],
+            };
+            send("response.output_text.done", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              text: textBuffer,
+            });
+            send("response.content_part.done", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              part: textPart,
+            });
+            const messageItem: Record<string, unknown> = {
+              id: textItemId,
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [textPart],
+            };
+            send("response.output_item.done", {
+              output_index: textItemIndex,
+              item: messageItem,
+            });
+            completedOutputItems.set(textItemIndex, messageItem);
+          }
+
           const ordered = [...pendingCalls.values()].sort(
             (a, b) => a.outputIndex - b.outputIndex,
           );
@@ -654,19 +734,23 @@ export function registerResponsesApi(
               arguments: call.args,
               name: call.name,
             });
+            const completedCallItem: Record<string, unknown> = {
+              type: "function_call",
+              id: call.itemId,
+              call_id: call.callId,
+              name: call.name,
+              arguments: call.args,
+              status: "completed",
+            };
             send("response.output_item.done", {
               output_index: call.outputIndex,
-              item: {
-                type: "function_call",
-                id: call.itemId,
-                call_id: call.callId,
-                name: call.name,
-                arguments: call.args,
-                status: "completed",
-              },
+              item: completedCallItem,
             });
+            completedOutputItems.set(call.outputIndex, completedCallItem);
           }
-          send("response.completed", { id: responseId, status: "completed" });
+          send("response.completed", {
+            response: responseSnapshot("completed"),
+          });
           responseCompleted = true;
           break;
         } else if (typed.type === "error") {
