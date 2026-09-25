@@ -83,7 +83,7 @@ function fixture(emitDeltaBeforeCompleted: boolean): {
             params: {
               arguments: '{"text":"canary"}',
               callId: "call-item-completed",
-              namespace: null,
+              namespace: "cmm_client",
               threadId: THREAD,
               turnId: TURN,
               tool: "cmm_echo",

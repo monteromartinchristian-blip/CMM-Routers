@@ -3,6 +3,7 @@ import type { RouterFunctionTool } from "../../core/model.js";
 import type {
   SchemaAgentMessageDeltaParams,
   SchemaDynamicFunctionToolSpec,
+  SchemaDynamicNamespaceToolSpec,
   SchemaDynamicToolSpec,
   SchemaThreadStartParams,
   SchemaTokenUsageUpdatedParams,
@@ -152,6 +153,31 @@ export function toDynamicToolSpecs(
       deferLoading: false,
     };
   });
+}
+
+export const CODEX_CLIENT_TOOL_NAMESPACE = "cmm_client";
+
+/**
+ * Client-owned tools live outside Codex's default namespace. This preserves
+ * downstream execution ownership even when public names collide with Codex-native
+ * tools such as exec_command or write_stdin.
+ */
+export function toClientDynamicToolNamespaceSpec(
+  tools: RouterFunctionTool[],
+): SchemaDynamicNamespaceToolSpec {
+  const namespaceTools = toDynamicToolSpecs(tools).map((tool) => ({
+    type: "function" as const,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    deferLoading: tool.deferLoading ?? false,
+  }));
+  return {
+    type: "namespace",
+    name: CODEX_CLIENT_TOOL_NAMESPACE,
+    description: "Tools executed by the downstream CMM client.",
+    tools: namespaceTools,
+  };
 }
 
 /** Build thread/start params with explicit ephemeral + developer instructions. */

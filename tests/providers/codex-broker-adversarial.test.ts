@@ -66,7 +66,7 @@ function multiThreadServer(providerCallId: string): {
             params: {
               arguments: '{"text":"canary"}',
               callId: providerCallId,
-              namespace: null,
+              namespace: "cmm_client",
               threadId,
               turnId,
               tool: "cmm_echo",

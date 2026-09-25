@@ -12,7 +12,8 @@ import {
   parseTokenUsageParams,
   parseTurnCompletedParams,
   parseTurnStartResponse,
-  toDynamicToolSpecs,
+  CODEX_CLIENT_TOOL_NAMESPACE,
+  toClientDynamicToolNamespaceSpec,
 } from "./schema-translator.js";
 import type { InitializeParams } from "./protocol.js";
 import {
@@ -392,11 +393,13 @@ export class CodexAdapter implements ProviderAdapter {
 
       const seeds = buildCodexThreadSeeds(request.messages);
       // Client tool definitions are declared on the SAME thread/start that
-      // creates the tool-capable thread. Experimental API was opted into during
-      // initialize (buildCodexInitializeParams). Text-only turns send no
-      // dynamicTools field at all so wire bytes are unchanged.
+      // creates the tool-capable thread. They live under the Router-owned
+      // `cmm_client` namespace so public names cannot collide with Codex-native
+      // default-namespace tools. Text-only turns send no dynamicTools field.
       const dynamicTools =
-        request.tools.length > 0 ? toDynamicToolSpecs(request.tools) : undefined;
+        request.tools.length > 0
+          ? [toClientDynamicToolNamespaceSpec(request.tools)]
+          : undefined;
       // Ephemeral per-request thread: explicitly requested per the plan's
       // privacy/lifecycle requirement (never rely on a server default).
       const threadParams = buildThreadStartParams({
@@ -688,6 +691,10 @@ export class CodexAdapter implements ProviderAdapter {
       typeof params.callId === "string" && params.callId.length > 0 ? params.callId : undefined;
     const toolName =
       typeof params.tool === "string" && params.tool.length > 0 ? params.tool : undefined;
+    const toolNamespace =
+      typeof params.namespace === "string" && params.namespace.length > 0
+        ? params.namespace
+        : undefined;
     const hasThreadId = typeof params.threadId === "string" && params.threadId.length > 0;
     const hasTurnId = typeof params.turnId === "string" && params.turnId.length > 0;
     const hasArguments = params.arguments !== undefined;
@@ -706,6 +713,21 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const args =
       typeof params.arguments === "string" ? params.arguments : JSON.stringify(params.arguments);
+
+    // A null/default namespace may resolve to a Codex-native tool with the same
+    // public name. Client-owned execution is authorized only inside cmm_client.
+    if (toolNamespace !== CODEX_CLIENT_TOOL_NAMESPACE) {
+      client.respondToServerRequest(wireRequestId, { success: false, contentItems: [] });
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          "Codex requested a client-owned dynamic tool outside the CMM client namespace",
+        ),
+      };
+      return "fatal";
+    }
+
     if (!ctx.declaredToolNames.has(toolName)) {
       // Undeclared dynamic tool: answer the wire request so the turn
       // terminates, then fail closed. No client surface, no broker entry.

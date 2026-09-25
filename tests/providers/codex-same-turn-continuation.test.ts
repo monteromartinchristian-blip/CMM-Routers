@@ -78,7 +78,7 @@ function scriptedSameTurnServer(): {
             params: {
               arguments: '{"text":"canary"}',
               callId: "call_codex_e2e",
-              namespace: null,
+              namespace: "cmm_client",
               threadId: "thread-1",
               turnId: "turn-1",
               tool: "cmm_echo",
