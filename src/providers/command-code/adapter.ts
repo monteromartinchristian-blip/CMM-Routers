@@ -42,7 +42,17 @@ interface PendingCancellation {
   abort: () => void;
 }
 
-function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknown>> {
+/**
+ * Translate canonical messages for one upstream wire.
+ *
+ * The canonical tool-result outcome is only representable on the Anthropic wire
+ * (`is_error`). An OpenAI-compatible wire has no such member, so the status stays
+ * internal there instead of being invented as a non-standard field.
+ */
+function toUpstreamMessages(
+  request: RouterRequest,
+  wire: "openai-chat-completions" | "anthropic-messages",
+): Array<Record<string, unknown>> {
   return request.messages.map((message) => {
     const base: Record<string, unknown> = {
       role: message.role,
@@ -50,6 +60,9 @@ function toUpstreamMessages(request: RouterRequest): Array<Record<string, unknow
     };
     if (message.toolCallId !== undefined) base.tool_call_id = message.toolCallId;
     if (message.name !== undefined) base.name = message.name;
+    if (wire === "anthropic-messages" && message.toolResultStatus !== undefined) {
+      base.tool_result_status = message.toolResultStatus;
+    }
     if (message.role === "assistant" && message.toolCalls !== undefined) {
       base.tool_calls = message.toolCalls.map((call) => ({
         id: call.id,
@@ -131,10 +144,10 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // the account metadata says is plan-excluded. UNKNOWN entries stay
       // visible and fail closed at request time via upstream plan enforcement.
       if (model.goatIncluded === false) continue;
-      // Tool capability is wire-truthful. BOTH wires express the Qoder-owned
+      // Tool capability is wire-truthful. BOTH wires express the client-owned
       // structured round-trip: OpenAI chat-completions via tools/tool_calls,
       // Anthropic Messages via tools[]/tool_use/input_json_delta/tool_result.
-      // The bridge never executes the tool; Qoder owns execution.
+      // The bridge never executes the tool; the client owns execution.
       const wire = model.wire ?? this.client.wireForUpstreamId(model.id);
       const capability = "CHAT_AND_TOOLS" as const;
       discovered.push({
@@ -247,7 +260,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
       const upstreamTools = toUpstreamTools(request);
       const generator = this.client.streamChatCompletion(
         request.model.upstreamModel,
-        toUpstreamMessages(request) as never,
+        toUpstreamMessages(request, "openai-chat-completions") as never,
         abortSignal,
         {
           ...(request.maxOutputTokens !== undefined
@@ -356,7 +369,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
             }
             const resolved = pendingIndexCalls.get(upstreamIndex)!;
             if (resolved.name !== undefined && !declaredToolNames.has(resolved.name)) {
-              // An undeclared function name must never reach Qoder.
+              // An undeclared function name must never reach the client.
               yield {
                 type: "error",
                 error: new RouterError(
@@ -446,11 +459,11 @@ export class CommandCodeAdapter implements ProviderAdapter {
     outerSignal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
     // Anthropic Messages natively supports client-defined tools: the Router
-    // declares Qoder tools, surfaces tool_use to Qoder, and feeds the result
-    // back as tool_result on the continuation request. Qoder owns execution.
+    // declares client tools, surfaces tool_use to the client, and feeds the result
+    // back as tool_result on the continuation request. the client owns execution.
     // Frames yield incrementally as they arrive; completion only on message_stop.
     try {
-      const messages = toUpstreamMessages(request) as never;
+      const messages = toUpstreamMessages(request, "anthropic-messages") as never;
       const upstreamTools = toAnthropicTools(request);
       const generator = this.client.streamAnthropicMessages(
         request.model.upstreamModel,

@@ -8,7 +8,7 @@ import type {
   RouterRequest,
 } from "../../src/core/provider.js";
 import type { RouterEvent } from "../../src/core/events.js";
-import { effectiveToolCapability, CONSUMER_CMMCHAT, CONSUMER_QODER } from "../../src/core/consumer-capability.js";
+import { effectiveToolCapability, CONSUMER_CMMCHAT, CONSUMER_QODER } from "../../src/compat/deprecated-consumer.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
 const CMMCHAT_TOKEN = "cmmchat-token";

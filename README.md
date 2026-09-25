@@ -101,8 +101,29 @@ CMM Routers.
 - **Qoder** — the first documented `CMM Code Router` consumer. Qoder is a
   supported client of the project, not the identity of the project or of the
   profile; Qoder owns and executes the tools it is given.
+- **Hermes** and the **Codex CLI** — additional compatibility targets of the same
+  `CMM Code Router` profile. Both are configured as ordinary OpenAI-compatible
+  clients; neither is an authorization role.
 
 The architecture is open to additional compatible clients and harnesses.
+Real-client verification status per client is stated in
+[capability and real-client status](docs/code-router-capability-status.md).
+
+See [CMM Code Router — generic client setup](docs/code-router-setup.md) for the
+client-agnostic protocol: authentication, model capability discovery, the tool
+round-trip contract, streaming and cancellation.
+
+## Credentials
+
+Authenticate with the canonical Code Router bearer for tool-owning clients:
+
+```text
+CMM_CODE_ROUTER_TOKEN
+```
+
+`CMM_QODER_TOKEN` remains a legacy compatibility alias for the SAME Code Router
+profile. The CMMChat bearer (`CMM_ROUTER_TOKEN`) is separate and permanently
+`CHAT_ONLY`. See [migration](docs/code-router-migration.md).
 
 ## Setup
 
@@ -141,7 +162,15 @@ relaunch it** before the UI will reflect updated model metadata. A window reload
 is not enough. Never commit that settings file: it may hold plaintext
 credentials.
 
-## Legacy compatibility identifiers
+## Current and legacy identifiers
+
+Current-facing identifiers:
+
+| Identifier | Purpose |
+|---|---|
+| `CMM_CODE_ROUTER_TOKEN` | Canonical Code Router bearer (profile credential) |
+| `code-router-bearer` | macOS Keychain account for the canonical bearer |
+| `CMM_CODE_ROUTER_KEYCHAIN_SERVICE`, `CMM_CODE_ROUTER_KEYCHAIN_ACCOUNT` | Keychain lookup overrides |
 
 Some internal identifiers still carry the project's earlier name. These are
 **legacy compatibility identifiers**, not current branding, and they are retained
@@ -154,13 +183,16 @@ on purpose so existing installations keep working without migration.
 | `cmm-subscription-router` | macOS Keychain service |
 | `router-bearer`, `qoder-bearer`, `command-code-secret` | Keychain account names |
 | `qoder-custom-cmm-router` | Qoder provider ID |
-| `CMM_ROUTER_TOKEN`, `CMM_QODER_TOKEN` | Environment variable names |
+| `CMM_ROUTER_TOKEN`, `CMM_QODER_TOKEN` | Environment variable names (CMMChat; legacy Code Router alias) |
+| `cmm-qoder-tools`, `mcp__cmm_qoder__`, `cmm_qoder` | MCP bridge / registration names |
 | `~/Library/Logs/CMM-Subscription-Router/` | Local log directory |
 
 Renaming any of these would break an installed LaunchAgent, orphan stored
-Keychain items, or detach an already-registered Qoder provider — all for purely
-cosmetic gain. Historical audit records and earlier evidence documents likewise
-keep the names that were accurate when they were written.
+Keychain items, detach an already-registered Qoder provider, or invalidate a
+persisted MCP registration — all for purely cosmetic gain. `mcp(cmm-qoder-tools/*)`
+is additionally an active security scope and must never be widened. Historical
+audit records and earlier evidence documents likewise keep the names that were
+accurate when they were written.
 
 ## Verification
 
@@ -182,11 +214,50 @@ bash scripts/security-audit.sh
 
 ## Roadmap
 
-- Additional clients and harnesses on the `CMM Code Router` profile.
-- Command Code live enablement, gated on an explicit human spend decision.
-- Multi-Mac Qoder model synchronization.
-- Additional compatible subscription providers.
+CMM Routers will remain pre-stable until the current provider set is proven end-to-end in real clients and the catalog/runtime architecture is ready to evolve with upstream providers.
 
+### 1. Close current compatibility gaps
+
+- Finish live tool compatibility for the remaining Google/Antigravity edge cases, including GPT-OSS and real Qoder tool selection.
+- Revalidate ChatGPT/Codex when subscription quota is available.
+- Complete Command Code live enablement only after an explicit human spend decision.
+- Complete multi-Mac Qoder synchronization and the final real-Qoder compatibility gate.
+- Treat models that require optional paid credits as discoverable catalog entries even when local credit use is disabled; billing availability is separate from catalog truth.
+
+### 2. Make provider catalogs dynamic
+
+The provider is the source of truth for which models exist. CMM Routers is the source of truth for how those models are exposed safely and truthfully to consumers.
+
+- Reflect provider model additions, removals, aliases, and relevant metadata changes automatically.
+- Replace the current fixed managed-model layout with namespace-aware reconciliation.
+- Keep provider discovery, Router capability truth, live compatibility status, and local billing availability as separate concerns.
+- Reconcile CMM-managed models into Qoder without deleting or rewriting legitimate unmanaged user models.
+- Never enable PAYG, paid-credit usage, cross-provider fallback, or unknown-model fallback implicitly.
+
+### 3. Normalize the local repository path
+
+- Rename the local checkout from `$HOME/CMM-Routers` to `$HOME/CMM Routers`.
+- Repair all path-bound local integrations, including launchd, AGY MCP registration, scripts, tests, and Qoder-facing configuration.
+- Prove that no active runtime dependency still points to the old local path.
+- Keep the GitHub repository slug hyphenated where spaces are impractical.
+
+### 4. Expand provider support
+
+- Add additional compatible subscription providers one at a time through the same provider contract.
+- Require truthful discovery, capability mapping, secure credential handling, fail-closed routing, and client-owned tool round-trips where supported.
+- Keep Qoder as a supported client/harness rather than making any single client the identity of CMM Routers.
+
+### 5. Stable public release
+
+A stable tag is created only after:
+
+- the current provider compatibility matrix is green or explicitly truthful about unsupported capabilities;
+- dynamic provider catalog reconciliation is proven;
+- the local path migration is complete and audited;
+- the intended provider expansion for the target release is complete;
+- build, tests, typecheck, security audit, privacy/secret checks, public export verification, and real-client compatibility gates pass.
+
+Until then, public `main` remains pre-stable.
 ## Safe public maintenance
 
 Public updates are prepared through a one-way sanitization pipeline that keeps the private development history separate from the public Git history. Preparation, guarded push, and fresh-clone verification are separate fail-closed steps.

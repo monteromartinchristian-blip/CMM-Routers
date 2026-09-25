@@ -1,5 +1,10 @@
+import {
+  LEGACY_BRIDGE_SERVER_NAME,
+  LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX,
+} from "../../compat/legacy-identifiers.js";
 import type { ProviderAdapter, ProviderHealth, RouterRequest } from "../../core/provider.js";
-import type { DiscoveredModel, RouterTool } from "../../core/model.js";
+import type { DiscoveredModel, RouterFunctionTool } from "../../core/model.js";
+import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { fileURLToPath } from "node:url";
@@ -29,7 +34,7 @@ const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
 
 /**
  * A live Claude SDK query held across the split HTTP interaction while its
- * external MCP handler is parked waiting for Qoder's result. The Router keeps
+ * external MCP handler is parked waiting for the client's result. The Router keeps
  * consuming the SAME query on the follow-up request: no new session, no
  * textual history reconstruction.
  */
@@ -47,7 +52,7 @@ interface LiveClaudeSession {
   usageYielded: boolean;
   /** Bridge request id currently parked with the Router (one at a time). */
   parkedRequestId: string | undefined;
-  /** Public id handed to Qoder for the parked call. */
+  /** Public id handed to the client for the parked call. */
   publicToolCallId: string | undefined;
   /**
    * True WHILE a call is parked: a second, genuinely concurrent call is
@@ -71,11 +76,11 @@ export function defaultBridgeEntryPath(): string {
 }
 
 /**
- * Qoder tool definitions as the external MCP bridge exposes them. Only the
+ * Client tool definitions as the external MCP bridge exposes them. Only the
  * caller's tools are exposed — nothing native, nothing implicit.
  */
 export function bridgeToolDefinitions(
-  tools: RouterTool[],
+  tools: RouterFunctionTool[],
 ): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
   return tools.map((tool) => ({
     name: tool.function.name,
@@ -143,7 +148,7 @@ export function buildClaudeConversation(messages: RouterRequest["messages"]): {
     // turn (the external tool loop owns execution; the SDK only sees words).
     const label =
       message.role === "tool" && typeof message.toolCallId === "string"
-        ? `[tool_result ${message.toolCallId}] ${text}`
+        ? `[tool_result ${message.toolCallId}${toolResultStatusSuffix(message.toolResultStatus)}] ${text}`
         : text;
     if (label || images.length > 0) {
       frames.push({
@@ -316,7 +321,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           provider: "claude",
           upstreamModel: modelValue,
           displayName: modelInfo.displayName || modelValue,
-          // Qoder-owned tools traverse the external MCP bridge held open across
+          // client-owned tools traverse the external MCP bridge held open across
           // the split HTTP interaction; the Router never executes the tool and
           // Claude's native shell/file/edit tools stay disabled.
           capability: "CHAT_AND_TOOLS",
@@ -573,7 +578,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   /**
-   * Park a Qoder-owned tool call: surface it to the consumer and keep the SDK
+   * Park a client-owned tool call: surface it to the consumer and keep the SDK
    * query alive so the follow-up resolves the SAME logical session. The Router
    * never executes the tool.
    */
@@ -614,7 +619,6 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       this.broker.createPendingCall<LiveClaudeSession>(
         {
-          consumer: "qoder",
           provider: "claude",
           sessionId: session.sessionKey,
           toolCallId: publicId,
@@ -719,7 +723,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     request: RouterRequest,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
-    // Follow-up carrying Qoder's executed tool result: release the parked
+    // Follow-up carrying the client's executed tool result: release the parked
     // external MCP handler and keep draining the SAME SDK query. This is the
     // cross-request continuation; no new session is opened.
     const toolResults = request.messages.filter(
@@ -742,7 +746,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           const parkedRequestId = session.parkedRequestId;
           session.parkedRequestId = undefined;
           if (session.control.resolve(parkedRequestId, result.content ?? "")) {
-            // The parked round-trip is COMPLETE: Qoder's result has been
+            // The parked round-trip is COMPLETE: the client's result has been
             // delivered to the provider-facing MCP handler. Reopen the gate so
             // the SAME logical run may issue its NEXT sequential tools/call. A
             // genuinely PARALLEL call that arrived before this point was
@@ -770,7 +774,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         type: "error",
         error: new RouterError(
           "provider_protocol_error",
-          "Claude tool result does not match any pending Qoder tool call",
+          "Claude tool result does not match any pending client tool call",
         ),
       };
       return;
@@ -847,13 +851,13 @@ export class ClaudeAdapter implements ProviderAdapter {
           PATH: process.env.PATH ?? "",
           CMM_BRIDGE_SOCKET: control.socketPath,
           CMM_BRIDGE_TOKEN: control.token,
-          CMM_BRIDGE_SERVER_NAME: "cmm_qoder",
+          CMM_BRIDGE_SERVER_NAME: LEGACY_BRIDGE_SERVER_NAME,
           CMM_BRIDGE_TOOLS: JSON.stringify(bridgeToolDefinitions(request.tools)),
         };
         // Exactly ONE provider-facing MCP config is declared; the SDK owns and
         // spawns that single stdio process. The Router never spawns a second.
         mcpServers = {
-          cmm_qoder: {
+          [LEGACY_BRIDGE_SERVER_NAME]: {
             type: "stdio",
             command: this.bridgeCommand,
             args: [this.bridgeEntryPath],
@@ -886,7 +890,7 @@ export class ClaudeAdapter implements ProviderAdapter {
               },
             }
           : {}),
-        // Disable all native tools - Qoder remains the tool owner
+        // Disable all native tools - the client remains the tool owner
         disallowedTools: [
           "Bash",
           "Read",
@@ -909,11 +913,15 @@ export class ClaudeAdapter implements ProviderAdapter {
         CLAUDE_EFFORT_LEVELS.includes(request.reasoningEffort)
           ? { effort: request.reasoningEffort as ClaudeEffortLevel }
           : {}),
-        // Qoder-owned tools are the ONLY extra capability: the external MCP
+        // client-owned tools are the ONLY extra capability: the external MCP
         // bridge exposes exactly the caller's tools and nothing else.
         ...(mcpServers !== undefined ? { mcpServers } : {}),
         ...(request.tools.length > 0
-          ? { allowedTools: request.tools.map((tool) => `mcp__cmm_qoder__${tool.function.name}`) }
+          ? {
+              allowedTools: request.tools.map(
+                (tool) => `${LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX}${tool.function.name}`,
+              ),
+            }
           : {}),
       };
 
@@ -992,7 +1000,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   /**
    * Cancel an active request using the SDK-supported cancellation handle.
    *
-   * A request that currently drives a live tool session (parked awaiting Qoder,
+   * A request that currently drives a live tool session (parked awaiting the client,
    * or resuming after a result) is terminated through the same AbortController,
    * so post-result cancellation reaches the exact provider run. A session that
    * is merely parked with no request bound to it is left to its TTL: the HTTP

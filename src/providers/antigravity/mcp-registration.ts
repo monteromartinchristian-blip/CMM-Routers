@@ -1,3 +1,4 @@
+import { LEGACY_ANTIGRAVITY_MCP_SERVER_NAME } from "../../compat/legacy-identifiers.js";
 import { execFileSync } from "node:child_process";
 import { RouterError } from "../../core/errors.js";
 
@@ -10,7 +11,7 @@ import { RouterError } from "../../core/errors.js";
  * idempotence: after a Router restart the persisted state is unknown and may
  * have been deleted, edited or duplicated by something else. This module reads
  * the real state back from the CLI and converges it onto exactly one canonical
- * entry for `cmm-qoder-tools`.
+ * entry for the persisted legacy MCP server name.
  *
  * Observed CLI surface (agy 1.2.0):
  *   `agy mcp add [--env K=V]... <name> <command> [args...]`  — "Add or update"
@@ -26,7 +27,7 @@ import { RouterError } from "../../core/errors.js";
  */
 
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
-export const CMM_QODER_TOOLS_MCP_SERVER_NAME = "cmm-qoder-tools";
+export const CMM_QODER_TOOLS_MCP_SERVER_NAME = LEGACY_ANTIGRAVITY_MCP_SERVER_NAME;
 
 /**
  * Finite bound on every CMM-owned `agy mcp` CLI call. The Router must never be
@@ -349,7 +350,7 @@ function failureDetail(outcome: AgyRunOutcome): string {
 }
 
 /**
- * Converge the persisted `cmm-qoder-tools` registration to exactly one canonical
+ * Converge the persisted legacy MCP registration to exactly one canonical
  * entry and describe what was done. Throws `provider_unavailable` when the CLI
  * cannot be read or written, because a Router that cannot register the tools
  * bridge would silently lose every tool call.
@@ -415,7 +416,7 @@ export function ensureAntigravityMcpRegistration(
   if (after.length !== 1 || !isCanonical(after[0] as AgyMcpRegistration)) {
     throw new RouterError(
       "provider_unavailable",
-      "agy MCP registration did not converge to exactly one canonical cmm-qoder-tools entry",
+      "agy MCP registration did not converge to exactly one canonical legacy MCP entry",
     );
   }
 

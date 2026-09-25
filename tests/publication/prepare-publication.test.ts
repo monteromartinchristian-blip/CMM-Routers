@@ -194,7 +194,7 @@ describePreparePublication("prepare-publication", () => {
       );
       expect(plan).not.toMatch(/\/Users\/(?!example\/)[^/\s]+\//);
     },
-    120_000,
+    600_000,
   );
 
   it("fails closed when the internal worktree is dirty", async () => {

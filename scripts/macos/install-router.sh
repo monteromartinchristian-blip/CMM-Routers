@@ -137,6 +137,18 @@ echo "node: $NODE_BIN"
 echo "codex: $CODEX_BIN"
 echo "agy: $AGY_BIN"
 
+# Canonical Code Router bearer provisioning (optional profile). Same idempotent,
+# value-free treatment as the legacy alias below.
+CODE_SERVICE="${CMM_CODE_ROUTER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
+CODE_ACCOUNT="${CMM_CODE_ROUTER_KEYCHAIN_ACCOUNT:-code-router-bearer}"
+if security find-generic-password -s "$CODE_SERVICE" -a "$CODE_ACCOUNT" >/dev/null 2>&1; then
+  echo "code-router-bearer: already provisioned in Keychain ($CODE_SERVICE/$CODE_ACCOUNT)"
+else
+  echo "code-router-bearer not provisioned. To enable the Code Router profile on this Mac:"
+  echo "  security add-generic-password -s $CODE_SERVICE -a $CODE_ACCOUNT -w"
+  echo "(prompts for the token without echoing it; never stored in the repo)"
+fi
+
 # Qoder bearer provisioning (optional consumer). The runtime wrapper already
 # reads service=cmm-subscription-router account=qoder-bearer from Keychain; a
 # fresh machine needs the item created intentionally. Idempotent: an existing

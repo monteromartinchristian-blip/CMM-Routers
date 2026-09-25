@@ -174,10 +174,11 @@ export function enforceProviderToolPolicy(
       }
       return null;
 
-    // Command Code: the OpenAI wire forwards both fields verbatim; the
-    // Anthropic Messages wire maps every canonical shape exactly
-    // (auto/none/any/tool + disable_parallel_tool_use), so nothing is dropped.
+    // Command Code and Cavoti OpenAI Chat routes can represent the canonical
+    // policy exactly. Command Code's Anthropic wire also maps every canonical
+    // shape exactly, while Cavoti forwards the OpenAI Chat shape directly.
     case "command-code":
+    case "cavoti":
       return null;
   }
 }
@@ -229,4 +230,28 @@ export function toAnthropicToolChoice(
     choice.disable_parallel_tool_use = true;
   }
   return choice;
+}
+
+/**
+ * How completely a provider represents tool-selection and parallel-execution
+ * constraints. This is a property of the UPSTREAM provider wire, published so a
+ * downstream client can tell what a route can carry without trial and error.
+ *
+ * It mirrors `enforceProviderToolPolicy` above: `full` means every canonical
+ * tool_choice shape is representable; `auto_only` means only absence/`auto` is,
+ * and anything else is rejected by that function.
+ */
+export function providerToolPolicySupport(provider: ProviderId): {
+  tool_choice: "full" | "auto_only";
+  parallel_tool_calls: boolean;
+} {
+  switch (provider) {
+    case "chatgpt":
+    case "claude":
+    case "google":
+      return { tool_choice: "auto_only", parallel_tool_calls: false };
+    case "command-code":
+    case "cavoti":
+      return { tool_choice: "full", parallel_tool_calls: true };
+  }
 }

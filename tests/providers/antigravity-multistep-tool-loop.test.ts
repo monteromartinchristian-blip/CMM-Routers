@@ -6,7 +6,7 @@ import {
   type InferenceRunner,
 } from "../../src/providers/antigravity/adapter.js";
 import { DeferredToolBroker } from "../../src/core/deferred-tool-broker.js";
-import type { RouterRequest, RouterTool } from "../../src/core/model.js";
+import type { RouterRequest, RouterFunctionTool } from "../../src/core/model.js";
 import type { RouterEvent } from "../../src/core/events.js";
 import { CMM_ECHO_TOOL } from "../fixtures/tool-contract.js";
 
@@ -41,7 +41,7 @@ afterAll(() => {
 function req(
   requestId: string,
   messages: RouterRequest["messages"],
-  tools: RouterTool[] = [CMM_ECHO_TOOL],
+  tools: RouterFunctionTool[] = [CMM_ECHO_TOOL],
 ): RouterRequest {
   return {
     requestId,

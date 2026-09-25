@@ -1,3 +1,4 @@
+import { LEGACY_ANTIGRAVITY_MCP_SERVER_NAME } from "../../compat/legacy-identifiers.js";
 import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,7 +18,8 @@ import type {
   ProviderHealth,
   RouterRequest,
 } from "../../core/provider.js";
-import type { DiscoveredModel, RouterTool } from "../../core/model.js";
+import type { DiscoveredModel, RouterFunctionTool } from "../../core/model.js";
+import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
@@ -67,13 +69,6 @@ function enforceAccountOnlySettings(): void {
 const PRINT_TIMEOUT_MS = 120_000;
 const MODELS_TIMEOUT_MS = 30_000;
 
-/**
- * Effort vocabulary accepted by `agy --effort` (verified against agy 1.2.1).
- * The Gemini slugs already fix their level in the model id; only the
- * adjustable routes forward a caller-supplied level.
- */
-export const AGY_EFFORT_LEVELS = ["low", "medium", "high"] as const;
-export type AgyEffortLevel = (typeof AGY_EFFORT_LEVELS)[number];
 
 const ANSI_PATTERN = /\[[0-9;?]*[ -/]*[@-~]/g;
 const ANSI_RESIDUE_PATTERN = /\[1m/;
@@ -121,6 +116,56 @@ export function parseAgyModelsOutput(stdout: string): ParsedModel[] {
 
 function ensureNeutralCwd(cwd: string): void {
   mkdirSync(cwd, { recursive: true });
+}
+
+/**
+ * Fixed, CMM-owned workspace agent name for tool-capable agy runs. It is an
+ * internal constant: not user-configurable and never derived from request
+ * content, so a request cannot influence which agent definition is loaded.
+ */
+const ANTIGRAVITY_TOOL_AGENT_NAME = "cmm-router-tool-bridge";
+
+/**
+ * Restricted workspace agent definition for client-owned tool runs.
+ *
+ * `excludeDefaultComponents: true` removes agy's default components and its
+ * native tools, so `run_command`, `view_file`, `write_file`,
+ * `replace_file_content`, `grep_search`, `code_search` and the browser tools
+ * are never selectable. `inheritMcp: true` keeps the CMM-owned external MCP
+ * bridge visible, and the explicit `tools` allowlist leaves exactly one
+ * reachable capability: the MCP dispatcher `call_mcp_tool`. The allowlist is
+ * stated explicitly rather than relying on ambient defaults.
+ *
+ * the client owns tool execution; agy may only reason and dispatch through the
+ * bridge. Provider-native tool names are never translated into client tools.
+ *
+ * Provider-neutral and secret-free by construction: no credentials, no request
+ * content, no client-specific tool schemas and no MCP arguments appear here.
+ */
+const ANTIGRAVITY_TOOL_AGENT_FILE = `---
+name: ${ANTIGRAVITY_TOOL_AGENT_NAME}
+description: CMM Router tool bridge agent.
+mainAgent: true
+subagent: false
+excludeDefaultComponents: true
+inheritMcp: true
+tools:
+  - call_mcp_tool
+---
+
+Client-owned tools are reached only through the MCP dispatcher. Native
+filesystem, shell and browser execution are not part of this agent.
+`;
+
+/**
+ * Materialize the restricted agent inside the per-run temp cwd that the
+ * request/session cleanup path already owns. No second cleanup mechanism is
+ * introduced: removing the cwd removes the agent with it.
+ */
+function ensureAntigravityToolAgent(cwd: string): void {
+  const agentDir = join(cwd, ".agents", "agents", ANTIGRAVITY_TOOL_AGENT_NAME);
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "agent.md"), ANTIGRAVITY_TOOL_AGENT_FILE, "utf-8");
 }
 
 function verifyNoPaygInChildEnv(env: Record<string, string>): void {
@@ -311,7 +356,12 @@ export function parseAgyStreamJson(stdout: string): StreamParseResult {
  * prompt is never logged (only its length is observable in argv).
  */
 export function serializeConversationForHeadlessPrompt(
-  messages: Array<{ role: string; content: string | null; toolCallId?: string }>,
+  messages: Array<{
+    role: string;
+    content: string | null;
+    toolCallId?: string;
+    toolResultStatus?: "success" | "error";
+  }>,
 ): string {
   const sections: string[] = [];
   for (const message of messages) {
@@ -324,8 +374,8 @@ export function serializeConversationForHeadlessPrompt(
     } else if (message.role === "tool") {
       const label =
         typeof message.toolCallId === "string"
-          ? `[USER: tool_result ${message.toolCallId}]\n${text}`
-          : `[USER: tool_result]\n${text}`;
+          ? `[USER: tool_result ${message.toolCallId}${toolResultStatusSuffix(message.toolResultStatus)}]\n${text}`
+          : `[USER: tool_result${toolResultStatusSuffix(message.toolResultStatus)}]\n${text}`;
       sections.push(label);
     } else {
       sections.push(`[USER]\n${text}`);
@@ -458,6 +508,7 @@ export interface ParsedStreamEvent {
 export function feedStreamLine(
   line: string,
   emit: (event: ParsedStreamEvent) => void,
+  state?: { sawText: boolean },
 ): { terminal: boolean } {
   const trimmed = line.trim();
   if (!trimmed) return { terminal: false };
@@ -481,7 +532,10 @@ export function feedStreamLine(
       : envelope;
   if (type === "step_update") {
     const texts = extractTextFromStepUpdate(event);
-    if (texts.length > 0) emit({ kind: "text", texts });
+    if (texts.length > 0) {
+      if (state !== undefined) state.sawText = true;
+      emit({ kind: "text", texts });
+    }
     const usageField = (event.usage ?? envelope.usage) as unknown;
     if (usageField && typeof usageField === "object") {
       const u = usageField as Record<string, unknown>;
@@ -528,8 +582,9 @@ export function feedStreamLine(
       });
     }
     const response = event.response ?? envelope.response;
-    // A terminal text-bearing result with no prior deltas still surfaces.
-    if (typeof response === "string" && response.length > 0) {
+    // result.response is the provider's accumulated final response. Surface it
+    // only as a fallback when this stream emitted no incremental text deltas.
+    if (typeof response === "string" && response.length > 0 && state?.sawText !== true) {
       emit({ kind: "text", texts: [response], terminalResponse: true });
     }
     emit({ kind: "completed", finishReason });
@@ -595,6 +650,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       const stdoutBuf = new CappedTextBuffer(this.maxStdoutDiagnosticBytes);
       const stderrBuf = new CappedTextBuffer(this.maxStderrDiagnosticBytes);
       let lineBuffer = "";
+    const streamState = { sawText: false };
       let settled = false;
       let lineOverflowed = false;
       let terminationPromise: Promise<"exited" | "killed"> | undefined;
@@ -658,7 +714,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
             return;
           }
           if (options.signal.aborted) return;
-          feedStreamLine(part, onEvent);
+          feedStreamLine(part, onEvent, streamState);
         }
         if (Buffer.byteLength(lineBuffer, "utf8") > this.maxNdjsonLineBytes) {
           failClosedOversizeLine();
@@ -673,7 +729,7 @@ export class SpawnInferenceRunner implements InferenceRunner {
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         if (!lineOverflowed && lineBuffer.trim()) {
           if (Buffer.byteLength(lineBuffer, "utf8") <= this.maxNdjsonLineBytes) {
-            feedStreamLine(lineBuffer, onEvent);
+            feedStreamLine(lineBuffer, onEvent, streamState);
           }
           lineBuffer = "";
         }
@@ -713,7 +769,7 @@ const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
 const MAX_STREAM_EVENTS = 4096;
 
 /** Dedicated, CMM Router-owned MCP server name. Never a user-chosen name. */
-export const ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools";
+export const ANTIGRAVITY_MCP_SERVER_NAME = LEGACY_ANTIGRAVITY_MCP_SERVER_NAME;
 
 export type McpRegistrar = (
   name: string,
@@ -732,9 +788,9 @@ export function defaultAntigravityBridgeLauncherPath(): string {
   return fileURLToPath(new URL("../../bridge/mcp-bridge-launcher.js", import.meta.url));
 }
 
-/** Qoder tool definitions as the external MCP bridge exposes them. */
+/** client tool definitions as the external MCP bridge exposes them. */
 export function antigravityBridgeToolDefinitions(
-  tools: RouterTool[],
+  tools: RouterFunctionTool[],
 ): Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> {
   return tools.map((tool) => ({
     name: tool.function.name,
@@ -748,7 +804,7 @@ type AsyncQueue<T> = BoundedQueue<T>;
 
 /**
  * A live agy run held across the split HTTP interaction while its external MCP
- * handler is parked waiting for Qoder's result. The Router keeps draining the
+ * handler is parked waiting for the client's result. The Router keeps draining the
  * SAME run on the follow-up request — no new agy process is spawned.
  */
 interface AgyToolSession {
@@ -856,14 +912,13 @@ export class AntigravityAdapter implements ProviderAdapter {
     return this.registry.maxLiveSessions();
   }
 
-  buildInferenceArgs(upstreamSlug: string, prompt: string, effort?: string): string[] {
-    // `agy` only accepts low|medium|high. The Gemini slugs already encode their
-    // level in the model id, so a caller-supplied effort is forwarded only for
-    // the adjustable models and only when it is inside agy's vocabulary.
-    const agyEffort =
-      effort !== undefined && AGY_EFFORT_LEVELS.includes(effort as AgyEffortLevel)
-        ? effort
-        : undefined;
+  buildInferenceArgs(upstreamSlug: string, prompt: string, _effort?: string): string[] {
+    // agy 1.2.2 exposes --effort globally in CLI help, but support is
+    // model-specific. Current discovered subscription routes do not expose a
+    // machine-readable effort capability: Gemini/GPT-OSS variants encode their
+    // level in the slug, while Claude Sonnet 4.6 explicitly rejects --effort.
+    // Do not synthesize an unsupported control until agy exposes truthful
+    // per-model capability metadata that can be discovered and tested.
     return [
       "--print",
       prompt,
@@ -871,7 +926,6 @@ export class AntigravityAdapter implements ProviderAdapter {
       "stream-json",
       "--model",
       upstreamSlug,
-      ...(agyEffort !== undefined ? ["--effort", agyEffort] : []),
       "--mode",
       "plan",
       "--sandbox",
@@ -921,7 +975,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         provider: "google" as const,
         upstreamModel: m.slug,
         displayName: m.displayName,
-        // Qoder-owned tools traverse the external MCP bridge; agy's native
+        // client-owned tools traverse the external MCP bridge; agy's native
         // mutation tools (run_command/replace_file_content/write_to_file) are
         // never used for them and native execution stays disabled.
         capability: "CHAT_AND_TOOLS" as const,
@@ -959,7 +1013,7 @@ export class AntigravityAdapter implements ProviderAdapter {
    * Register the CMM-owned MCP server, reconciling against the durable `agy`
    * state rather than trusting an in-memory flag: after a Router restart, or
    * after an external edit, the persisted entry is read back and converged onto
-   * exactly one canonical, secret-free `cmm-qoder-tools` registration.
+   * exactly one canonical, secret-free legacy MCP registration.
    */
   private ensureMcpServerRegistered(): void {
     if (this.mcpRegistered) return;
@@ -1107,7 +1161,7 @@ export class AntigravityAdapter implements ProviderAdapter {
     yield { type: "error", error };
   }
 
-  /** Park a Qoder-owned tool call and keep the agy run alive. */
+  /** Park a client-owned tool call and keep the agy run alive. */
   private async *parkAgyToolCall(
     session: AgyToolSession,
     request: BridgeToolRequest,
@@ -1143,7 +1197,6 @@ export class AntigravityAdapter implements ProviderAdapter {
     try {
       this.broker.createPendingCall<AgyToolSession>(
         {
-          consumer: "qoder",
           provider: "google",
           sessionId: session.sessionId,
           toolCallId: publicId,
@@ -1410,7 +1463,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       yield* this.drainAgySession(session, signal);
     } finally {
       // A session that PARKED a call stays bound to the request that parked it:
-      // the provider is still waiting for Qoder's result, so an explicit
+      // the provider is still waiting for the client's result, so an explicit
       // cancellation of that request must reach the exact live agy run. A
       // normal tool_calls response is not a cancellation (the HTTP layer only
       // cancels a reply that closed before reaching a terminal outcome), and
@@ -1453,7 +1506,7 @@ export class AntigravityAdapter implements ProviderAdapter {
       return;
     }
 
-    // Follow-up carrying Qoder's executed tool result: release the parked
+    // Follow-up carrying the client's executed tool result: release the parked
     // external MCP handler and keep draining the SAME agy run. No new agy
     // process is spawned and no history is reconstructed.
     const toolResults = request.messages.filter(
@@ -1491,7 +1544,7 @@ export class AntigravityAdapter implements ProviderAdapter {
                 : new RouterError("provider_protocol_error", String(error)),
           };
         } finally {
-          // Keep the binding while the provider is parked waiting for Qoder's
+          // Keep the binding while the provider is parked waiting for the client's
           // next result so this exact request can still be cancelled; a
           // terminated session is already unbound by closeToolSession.
           const bound = this.sessionsByRequest.get(request.requestId);
@@ -1505,7 +1558,7 @@ export class AntigravityAdapter implements ProviderAdapter {
         type: "error",
         error: new RouterError(
           "provider_protocol_error",
-          "Antigravity tool result does not match any pending Qoder tool call",
+          "Antigravity tool result does not match any pending client tool call",
         ),
       };
       return;
@@ -1551,14 +1604,33 @@ export class AntigravityAdapter implements ProviderAdapter {
     });
 
     // Tool-capable run: register the CMM-owned MCP server and hold the agy run
-    // open while an external MCP tools/call is parked for Qoder. The bridge
+    // open while an external MCP tools/call is parked for the client. The bridge
     // performs transport only; agy's native mutation tools stay unused.
     if (request.tools.length > 0) {
       try {
-        yield* this.runToolSession(request, signal, args, cwd, abortController);
+        // Tool-capable runs are confined to the CMM-owned restricted agent:
+        // agy can then reach client-owned tools only through the MCP dispatcher.
+        // The agent lives in the same per-run temp cwd, so existing cleanup
+        // owns its lifetime. Base `args` are copied, never mutated, so the
+        // no-tools path is unaffected.
+        ensureAntigravityToolAgent(cwd);
+        const toolSessionArgs = [...args, "--agent", ANTIGRAVITY_TOOL_AGENT_NAME];
+        yield* this.runToolSession(request, signal, toolSessionArgs, cwd, abortController);
       } finally {
         signal.removeEventListener("abort", onAbort);
         this.activeRequests.delete(request.requestId);
+        // A live tool session owns the run cwd and removes it in
+        // closeToolSession. When no session ever took ownership - the provider
+        // run never started - this request still owns the cwd, so it removes
+        // it here. The generated agent therefore cannot outlive a failed run,
+        // and a parked session waiting for the client is never disturbed.
+        if (!this.sessionsByRequest.has(request.requestId)) {
+          try {
+            rmSync(cwd, { recursive: true, force: true });
+          } catch {
+            // Best-effort cleanup; the run verdict was already delivered.
+          }
+        }
       }
       return;
     }
@@ -1748,7 +1820,7 @@ export class AntigravityAdapter implements ProviderAdapter {
 
   async cancel(requestId: string): Promise<void> {
     // A request that currently drives a live tool session (parked awaiting
-    // Qoder, or resuming after a result) is terminated through the SAME agy
+    // the client, or resuming after a result) is terminated through the SAME agy
     // AbortController, so post-result cancellation reaches the exact provider
     // process. A parked session with no request bound to it is left to its TTL:
     // the HTTP layer closes the reply socket after the normal tool_calls

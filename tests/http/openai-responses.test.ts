@@ -137,9 +137,19 @@ describe("OpenAI Responses API", () => {
     expect(response.headers["content-type"]).toContain("text/event-stream");
     const body = response.body;
     expect(body).toContain("response.created");
+    expect(body).toContain("response.output_item.added");
+    expect(body).toContain("response.content_part.added");
     expect(body).toContain("response.output_text.delta");
+    expect(body).toContain("response.output_text.done");
+    expect(body).toContain("response.content_part.done");
+    expect(body).toContain("response.output_item.done");
     expect(body).toContain("response.completed");
+    expect(body).toContain('"type":"response.created"');
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('"response":{"id":"');
+    expect(body).toContain('"type":"message"');
     expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+    console.log("RESPONSES_BASIC_TEXT_CANONICAL_LIFECYCLE=PASS");
   });
 
   it("emits function-call deltas for tool calls", async () => {

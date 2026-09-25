@@ -16,6 +16,12 @@
     "command-code": {
       "enabled": false,
       "secretEnv": "COMMAND_CODE_SECRET"
+    },
+    "cavoti": {
+      "enabled": false,
+      "baseUrl": "https://cavoti.com/v1",
+      "secretEnv": "CAVOTI_API_KEY",
+      "model": "deepseek-v4.1-flash"
     }
   }
 }

@@ -1,23 +1,24 @@
+import { LEGACY_BRIDGE_SERVER_NAME } from "../compat/legacy-identifiers.js";
 import { BridgeControlClient } from "./control-ipc.js";
 
 /**
  * External stdio MCP bridge process.
  *
  * This process is provider-facing: Claude / Antigravity launch it as an MCP
- * server. It exposes the Qoder-owned tool schemas and, on `tools/call`, parks
+ * server. It exposes the client-owned tool schemas and, on `tools/call`, parks
  * the request over the Router-facing bridge-control IPC and waits for the
- * already-produced Qoder result. It performs NO filesystem, shell, or edit
+ * already-produced client result. It performs NO filesystem, shell, or edit
  * side effect of any kind — transport only.
  *
  * Authorization: `tools/call` accepts ONLY names in the declared tool set. The
  * MCP transport being authenticated is not authorization to call an arbitrary
  * function. An undeclared name fails closed with an MCP error and is never
- * forwarded to the Router, so no Router/Qoder executable tool call is surfaced
+ * forwarded to the Router, so no Router/client executable tool call is surfaced
  * and no broker entry is created.
  *
  * Request identity: `tools/call` is a request/response operation. It must carry
  * `jsonrpc: "2.0"`, a string/number `id` and an object `params` BEFORE any
- * Broker/Router/Qoder surface is touched. A frame that fails any check is
+ * Router/client surface is touched. A frame that fails any check is
  * refused with a JSON-RPC error and creates no Router/broker/tool state; a
  * notification-shaped `tools/call` is never treated as a notification.
  *
@@ -25,7 +26,7 @@ import { BridgeControlClient } from "./control-ipc.js";
  * request-scoped without touching any global provider configuration:
  *   CMM_BRIDGE_SOCKET       Unix socket path of the control channel
  *   CMM_BRIDGE_TOKEN        per-session authentication token
- *   CMM_BRIDGE_SERVER_NAME  MCP server name (default: cmm_qoder)
+ *   CMM_BRIDGE_SERVER_NAME  MCP server name (default: the legacy bridge name)
  *   CMM_BRIDGE_TOOLS        JSON array of {name, description?, inputSchema}
  */
 
@@ -175,7 +176,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
   const declaredTools = options.declaredTools;
   const tools = options.tools ?? [];
   const request = options.request;
-  const serverName = options.serverName ?? "cmm_qoder";
+  const serverName = options.serverName ?? LEGACY_BRIDGE_SERVER_NAME;
   const exit = options.exit ?? failClosedExit;
 
   let buffer = "";
@@ -216,7 +217,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
     code: number,
     message: string,
   ): void => {
-    // Fail closed before any control-channel/broker/Qoder surface exists.
+    // Fail closed before any control-channel/broker/client surface exists.
     protocolError(id, code, message);
   };
 
@@ -229,7 +230,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
     }
     if (frameId === null) {
       // A tools/call without a valid id is NOT a notification: refuse it rather
-      // than let it create an executable Qoder call with an unanswerable id.
+      // than let it create an executable client call with an unanswerable id.
       refuseToolCall(null, MCP_INVALID_REQUEST, "tools/call requires a string or number id");
       return;
     }
@@ -245,7 +246,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
     }
     if (!declaredTools.has(name)) {
       // Authentication is not authorization: an undeclared tool is refused
-      // here and never reaches the Router or Qoder.
+      // here and never reaches the Router or the client.
       refuseToolCall(
         frameId,
         MCP_INVALID_PARAMS,
@@ -287,7 +288,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
       );
       return;
     }
-    // Every check passed: only now may a Qoder-owned call be parked.
+    // Every check passed: only now may a client-owned call be parked.
     const controlId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     inFlight.add(frameId);
     request(controlId, name, input).then(
@@ -357,7 +358,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
           result: {
             tools: tools.map((tool) => ({
               name: tool.name,
-              description: tool.description ?? `Qoder-owned tool ${tool.name}`,
+              description: tool.description ?? `client-owned tool ${tool.name}`,
               inputSchema: tool.inputSchema,
             })),
           },
@@ -408,7 +409,7 @@ export function createMcpStdioParser(options: McpStdioParserOptions): McpStdioPa
 export function startMcpBridgeProcess(write: (line: string) => void = (line) => process.stdout.write(line)): void {
   const socketPath = process.env.CMM_BRIDGE_SOCKET;
   const token = process.env.CMM_BRIDGE_TOKEN;
-  const serverName = process.env.CMM_BRIDGE_SERVER_NAME ?? "cmm_qoder";
+  const serverName = process.env.CMM_BRIDGE_SERVER_NAME ?? LEGACY_BRIDGE_SERVER_NAME;
   const tools = readToolsFromEnv();
   // Immutable per-session declared-tool ACL.
   const declaredTools = new Set(tools.map((tool) => tool.name));

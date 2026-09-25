@@ -1,3 +1,4 @@
+import { LEGACY_BRIDGE_SERVER_NAME } from "../compat/legacy-identifiers.js";
 import { resolveBridgeSession, SESSION_SELECTOR_ENV, type BridgeSessionDescriptor } from "./session-registry.js";
 import { startMcpBridgeProcess } from "./mcp-bridge-process.js";
 
@@ -73,7 +74,8 @@ export function startMcpBridgeLauncher(
   const session = resolved.descriptor;
   process.env.CMM_BRIDGE_SOCKET = session.socketPath;
   process.env.CMM_BRIDGE_TOKEN = session.token;
-  process.env.CMM_BRIDGE_SERVER_NAME = process.env.CMM_BRIDGE_SERVER_NAME ?? "cmm_qoder";
+  process.env.CMM_BRIDGE_SERVER_NAME =
+    process.env.CMM_BRIDGE_SERVER_NAME ?? LEGACY_BRIDGE_SERVER_NAME;
   process.env.CMM_BRIDGE_TOOLS = JSON.stringify(session.tools);
   startMcpBridgeProcess(write);
   return true;

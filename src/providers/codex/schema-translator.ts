@@ -1,8 +1,9 @@
 import { RouterError } from "../../core/errors.js";
-import type { RouterTool } from "../../core/model.js";
+import type { RouterFunctionTool } from "../../core/model.js";
 import type {
   SchemaAgentMessageDeltaParams,
   SchemaDynamicFunctionToolSpec,
+  SchemaDynamicNamespaceToolSpec,
   SchemaDynamicToolSpec,
   SchemaThreadStartParams,
   SchemaTokenUsageUpdatedParams,
@@ -126,7 +127,7 @@ export function parseTurnCompletedParams(params: unknown): {
 }
 
 /**
- * Map Qoder/OpenAI function tools onto the Codex 0.153.4 experimental
+ * Map the client/OpenAI function tools onto the Codex 0.153.4 experimental
  * `DynamicToolSpec` function variant. Field names/shape come from the tracked
  * experimental fixture (see tests/fixtures/generated/codex-experimental-0.153.4).
  *
@@ -134,7 +135,7 @@ export function parseTurnCompletedParams(params: unknown): {
  * undeclarable spec.
  */
 export function toDynamicToolSpecs(
-  tools: RouterTool[],
+  tools: RouterFunctionTool[],
 ): SchemaDynamicFunctionToolSpec[] {
   return tools.map((tool) => {
     const name = tool.function?.name;
@@ -152,6 +153,31 @@ export function toDynamicToolSpecs(
       deferLoading: false,
     };
   });
+}
+
+export const CODEX_CLIENT_TOOL_NAMESPACE = "cmm_client";
+
+/**
+ * Client-owned tools live outside Codex's default namespace. This preserves
+ * downstream execution ownership even when public names collide with Codex-native
+ * tools such as exec_command or write_stdin.
+ */
+export function toClientDynamicToolNamespaceSpec(
+  tools: RouterFunctionTool[],
+): SchemaDynamicNamespaceToolSpec {
+  const namespaceTools = toDynamicToolSpecs(tools).map((tool) => ({
+    type: "function" as const,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    deferLoading: tool.deferLoading ?? false,
+  }));
+  return {
+    type: "namespace",
+    name: CODEX_CLIENT_TOOL_NAMESPACE,
+    description: "Tools executed by the downstream CMM client.",
+    tools: namespaceTools,
+  };
 }
 
 /** Build thread/start params with explicit ephemeral + developer instructions. */

@@ -48,6 +48,11 @@
     <string>cmm-subscription-router</string>
     <key>CMM_QODER_KEYCHAIN_ACCOUNT</key>
     <string>qoder-bearer</string>
+    <!-- Canonical Code Router bearer (identifiers only; never a value). -->
+    <key>CMM_CODE_ROUTER_KEYCHAIN_SERVICE</key>
+    <string>cmm-subscription-router</string>
+    <key>CMM_CODE_ROUTER_KEYCHAIN_ACCOUNT</key>
+    <string>code-router-bearer</string>
   </dict>
 </dict>
 </plist>

@@ -77,18 +77,27 @@ function strictAppServer(expectedToolNames: string[]): {
         });
       } else if (msg.method === "thread/start") {
         const dynamicTools = params.dynamicTools;
+        const namespaceSpec =
+          Array.isArray(dynamicTools) && dynamicTools.length === 1
+            ? (dynamicTools[0] as Record<string, unknown>)
+            : undefined;
+        const namespaceTools =
+          namespaceSpec && Array.isArray(namespaceSpec.tools)
+            ? (namespaceSpec.tools as Array<Record<string, unknown>>)
+            : [];
         const valid =
           optIn &&
-          Array.isArray(dynamicTools) &&
-          dynamicTools.length === expectedToolNames.length &&
-          dynamicTools.every((spec, i) => {
-            const s = spec as Record<string, unknown>;
+          namespaceSpec?.type === "namespace" &&
+          namespaceSpec?.name === "cmm_client" &&
+          typeof namespaceSpec?.description === "string" &&
+          namespaceTools.length === expectedToolNames.length &&
+          namespaceTools.every((toolSpec, i) => {
             return (
-              s.type === "function" &&
-              s.name === expectedToolNames[i] &&
-              typeof s.description === "string" &&
-              s.inputSchema !== undefined &&
-              s.deferLoading === false
+              toolSpec.type === "function" &&
+              toolSpec.name === expectedToolNames[i] &&
+              typeof toolSpec.description === "string" &&
+              toolSpec.inputSchema !== undefined &&
+              toolSpec.deferLoading === false
             );
           });
         if (!valid) {
@@ -127,7 +136,7 @@ function strictAppServer(expectedToolNames: string[]): {
       jsonrpc: "2.0",
       id: 901,
       method: "item/tool/call",
-      params: { namespace: null, threadId: "thread-1", turnId: "turn-1", ...params },
+      params: { namespace: "cmm_client", threadId: "thread-1", turnId: "turn-1", ...params },
     });
   }
 
@@ -200,17 +209,27 @@ describe("Codex 0.153.4 experimental dynamic tools", () => {
 
     const threadStart = server.seen.find((m) => m.method === "thread/start");
     expect(threadStart).toBeDefined();
-    expect(threadStart!.params.dynamicTools).toEqual([
-      {
-        type: "function",
-        name: "cmm_echo",
-        description: "Return the supplied text unchanged.",
-        inputSchema: CMM_ECHO_TOOL.function.parameters,
-        deferLoading: false,
-      },
-    ]);
+    const dynamicTools = threadStart!.params.dynamicTools as Array<Record<string, unknown>>;
+    expect(dynamicTools).toHaveLength(1);
+    expect(dynamicTools[0]).toMatchObject({
+      type: "namespace",
+      name: "cmm_client",
+      description: expect.any(String),
+    });
+    const namespaceTools = dynamicTools[0]!.tools as Array<Record<string, unknown>>;
+    expect(namespaceTools).toHaveLength(1);
+    expect(namespaceTools[0]).toMatchObject({
+      type: "function",
+      name: "cmm_echo",
+      description: "Return the supplied text unchanged.",
+      inputSchema: CMM_ECHO_TOOL.function.parameters,
+      deferLoading: false,
+    });
     expect(server.declarationAccepted()).toBe(true);
     console.log("CODEX_DYNAMIC_TOOLS_SENT=PASS");
+    console.log("CODEX_CLIENT_TOOL_NAMESPACE_DECLARED=PASS");
+    console.log("CODEX_PUBLIC_TOOL_NAME_PRESERVED_INSIDE_NAMESPACE=PASS");
+    console.log("CODEX_CLIENT_TOOL_DEFINITIONS_SENT=PASS");
     console.log("CODEX_QODER_TOOL_DEFINITIONS_SENT=PASS");
 
     server.emitToolCall({ arguments: '{"text":"canary"}', callId: "call_codex_1", tool: "cmm_echo" });
@@ -220,4 +239,37 @@ describe("Codex 0.153.4 experimental dynamic tools", () => {
     expect(server.toolCalls.length).toBe(1);
     console.log("CODEX_STRICT_DECLARATION_E2E=PASS");
   }, 15000);
+
+  it("fails closed instead of substituting a Codex-native/default-namespace tool", async () => {
+    const server = strictAppServer(["cmm_echo"]);
+    const adapter = server.makeAdapter();
+
+    const runPromise = collect(
+      adapter.run(
+        makeRequest("r-namespace-guard", [CMM_ECHO_TOOL]),
+        new AbortController().signal,
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+
+    server.emitToolCall({
+      arguments: '{"text":"must-stay-client-owned"}',
+      callId: "call_codex_wrong_namespace",
+      tool: "cmm_echo",
+      namespace: null,
+    });
+
+    const events = await runPromise;
+    const error = events.find((e) => e.type === "error") as
+      | { error: { code: string; message?: string } }
+      | undefined;
+
+    expect(error?.error.code).toBe("provider_protocol_error");
+    expect(error?.error.message).toContain("outside the CMM client namespace");
+    expect(events.find((e) => e.type === "tool_call_delta")).toBeUndefined();
+
+    console.log("CODEX_DEFAULT_NAMESPACE_NATIVE_SUBSTITUTION=BLOCKED");
+    console.log("CODEX_CLIENT_EXECUTION_OWNERSHIP=PASS");
+  }, 15000);
+
 });

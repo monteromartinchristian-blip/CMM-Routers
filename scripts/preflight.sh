@@ -48,9 +48,11 @@ CHATGPT_ENABLED=1
 CLAUDE_ENABLED=1
 GOOGLE_ENABLED=1
 COMMAND_CODE_ENABLED=0
+CAVOTI_ENABLED=0
 CLAUDE_PROFILE_DIR=""
 AGY_PATH_CONFIG=""
 COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
+CAVOTI_SECRET_ENV="CAVOTI_API_KEY"
 
 case "$CONFIG_STATUS" in
   0)
@@ -59,10 +61,13 @@ case "$CONFIG_STATUS" in
     CLAUDE_ENABLED="$(config_field CLAUDE_ENABLED)"; CLAUDE_ENABLED="${CLAUDE_ENABLED:-1}"
     GOOGLE_ENABLED="$(config_field GOOGLE_ENABLED)"; GOOGLE_ENABLED="${GOOGLE_ENABLED:-1}"
     COMMAND_CODE_ENABLED="$(config_field COMMAND_CODE_ENABLED)"; COMMAND_CODE_ENABLED="${COMMAND_CODE_ENABLED:-0}"
+    CAVOTI_ENABLED="$(config_field CAVOTI_ENABLED)"; CAVOTI_ENABLED="${CAVOTI_ENABLED:-0}"
     CLAUDE_PROFILE_DIR="$(config_field CLAUDE_PROFILE_DIR)"
     AGY_PATH_CONFIG="$(config_field AGY_PATH)"
     COMMAND_CODE_SECRET_ENV="$(config_field COMMAND_CODE_SECRET_ENV)"
     [ -z "$COMMAND_CODE_SECRET_ENV" ] && COMMAND_CODE_SECRET_ENV="COMMAND_CODE_SECRET"
+    CAVOTI_SECRET_ENV="$(config_field CAVOTI_SECRET_ENV)"
+    [ -z "$CAVOTI_SECRET_ENV" ] && CAVOTI_SECRET_ENV="CAVOTI_API_KEY"
     ;;
   3)
     # No shared.json: documented bootstrap defaults apply (unchanged behavior).
@@ -205,6 +210,56 @@ else
     BLOCKING=1
   else
     echo "COMMAND_CODE_STATE=SKIPPED_DISABLED"
+  fi
+fi
+
+# --- cavoti / explicit PAYG ---
+echo "CAVOTI_PROVIDER=$(enabled_label "$CAVOTI_ENABLED")"
+echo "CAVOTI_SECRET_ENV=$CAVOTI_SECRET_ENV"
+if [ -n "${!CAVOTI_SECRET_ENV:-}" ]; then
+  echo "CAVOTI_SECRET=SET"
+  if [ "$CAVOTI_ENABLED" = "1" ]; then
+    CAVOTI_ACK_PATH="${CMM_CAVOTI_ACK_PATH:-${HOME}/Library/Application Support/CMM/SubscriptionRouter/cavoti-payg-ack.json}"
+    CAVOTI_ACK_VALID=0
+    if command -v python3 >/dev/null 2>&1; then
+      if python3 - "$CAVOTI_ACK_PATH" >/dev/null 2>&1 <<'PYACK'
+import json, sys
+expected = {
+    "version": 1,
+    "provider": "cavoti",
+    "billing": "PAYG",
+    "model": "deepseek-v4.1-flash",
+    "automaticFallback": False,
+}
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        value = json.load(fh)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if value == expected else 1)
+PYACK
+      then
+        CAVOTI_ACK_VALID=1
+      fi
+    fi
+    if [ "$CAVOTI_ACK_VALID" = "1" ]; then
+      echo "CAVOTI_ACK=VALID"
+      echo "CAVOTI_STATE=READY"
+    else
+      echo "CAVOTI_ACK=INVALID_OR_MISSING"
+      echo "CAVOTI_STATE=ACK_REQUIRED"
+      BLOCKING=1
+    fi
+  else
+    echo "CAVOTI_STATE=SKIPPED_DISABLED"
+  fi
+else
+  echo "CAVOTI_SECRET=ABSENT"
+  if [ "$CAVOTI_ENABLED" = "1" ]; then
+    echo "CAVOTI_STATE=AUTH_REQUIRED"
+    BLOCKING=1
+  else
+    echo "CAVOTI_STATE=SKIPPED_DISABLED"
   fi
 fi
 

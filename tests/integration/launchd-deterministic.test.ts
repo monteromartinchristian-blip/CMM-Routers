@@ -23,8 +23,18 @@ function renderWith(
 describe("launchd deterministic runtime wiring", () => {
   it("bakes absolute node/codex paths and a safe PATH", () => {
     const home = mkdtempSync(join(tmpdir(), "cmm-launchd-det-"));
+    const configDir = mkdtempSync(join(tmpdir(), "cmm-launchd-det-config-"));
     try {
-      const { plist } = renderWith(home);
+      const config = JSON.parse(
+        readFileSync(join(REPO, "config", "shared.example.json"), "utf-8"),
+      ) as { providers: { google: { enabled: boolean } } };
+      config.providers.google.enabled = false;
+      writeFileSync(
+        join(configDir, "shared.json"),
+        `${JSON.stringify(config, null, 2)}\n`,
+        "utf-8",
+      );
+      const { plist } = renderWith(home, { CMM_CONFIG_DIR: configDir });
       const nodeBin = execFileSync("bash", ["-c", "command -v node"], { encoding: "utf-8" }).trim();
       expect(nodeBin.startsWith("/")).toBe(true);
       expect(plist).toContain(nodeBin);
@@ -37,6 +47,7 @@ describe("launchd deterministic runtime wiring", () => {
       console.log("LAUNCHD_NODE_PATH_ABSOLUTE=PASS");
       console.log("LAUNCHD_CODEX_PATH_RESOLVED=PASS");
     } finally {
+      rmSync(configDir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
     }
   });

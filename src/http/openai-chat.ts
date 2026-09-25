@@ -5,18 +5,30 @@ import type {
   ProviderId,
   ReasoningEffort,
   RouterMessage,
-  RouterTool,
+  RouterFunctionTool,
 } from "../core/model.js";
 import { REASONING_EFFORTS } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { RouterError } from "../core/errors.js";
+import { isFunctionTool } from "../core/model.js";
 import { enforceProviderToolPolicy, parseChatToolChoice } from "../core/tool-policy.js";
+import {
+  classifyToolDeclarationType,
+  representToolDeclaration,
+  unsupportedToolKindError,
+} from "../core/tool-kind.js";
 import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
-import { effectiveToolCapability } from "../core/consumer-capability.js";
+import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
+import { validateToolArguments } from "../core/tool-arguments.js";
+import {
+  OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+  rejectUnsupportedControls,
+  unsupportedRequestControlError,
+} from "../core/request-controls.js";
 import type { ConsumerRequest } from "./server.js";
 
 interface ChatMessageInput {
@@ -63,12 +75,12 @@ function parseMessages(input: unknown): RouterMessage[] | null {
   for (const entry of input) {
     const record = asRecord(entry);
     if (!record) return null;
-    if (
-      record.role !== "system" &&
-      record.role !== "user" &&
-      record.role !== "assistant" &&
-      record.role !== "tool"
-    ) {
+    // `developer` is the system-level instruction role used by newer OpenAI
+    // clients on this surface too; normalize it exactly as the Responses surface
+    // does. It carries instructions and no tools.
+    const rawRole = record.role;
+    const role = rawRole === "developer" ? "system" : rawRole;
+    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
       return null;
     }
     let content: string | null = null;
@@ -104,7 +116,7 @@ function parseMessages(input: unknown): RouterMessage[] | null {
     } else {
       return null;
     }
-    const message: RouterMessage = { role: record.role, content };
+    const message: RouterMessage = { role, content };
     if (images !== undefined) message.images = images;
     if (typeof record.tool_call_id === "string") message.toolCallId = record.tool_call_id;
     if (typeof record.name === "string") message.name = record.name;
@@ -130,32 +142,51 @@ function parseMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseTools(input: unknown): RouterTool[] | null {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) return null;
-  const tools: RouterTool[] = [];
+function parseTools(input: unknown): { tools: RouterFunctionTool[] } | { error: RouterError } {
+  if (input === undefined) return { tools: [] };
+  if (!Array.isArray(input)) {
+    return { error: new RouterError("invalid_request", "tools must be an array") };
+  }
+  const tools: RouterFunctionTool[] = [];
   for (const entry of input) {
     const record = asRecord(entry) as ChatToolInput | null;
-    if (!record || record.type !== "function") return null;
+    if (!record) {
+      return { error: new RouterError("invalid_request", "each entry in tools must be an object") };
+    }
+    // Capability-class classification: only client-owned functions are
+    // representable, and an unsupported class is refused by name rather than
+    // silently dropped.
+    const kind = classifyToolDeclarationType(record.type);
+    if (kind !== "function") {
+      return { error: unsupportedToolKindError(kind, record.type) };
+    }
     const fn = record.function;
-    if (!fn || typeof fn.name !== "string") return null;
+    if (!fn || typeof fn.name !== "string") {
+      return { error: new RouterError("invalid_request", "a function tool requires a name") };
+    }
     const parameters =
       fn.parameters === undefined
         ? {}
         : asRecord(fn.parameters) !== null
           ? (fn.parameters as Record<string, unknown>)
           : null;
-    if (parameters === null) return null;
-    tools.push({
+    if (parameters === null) {
+      return {
+        error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+      };
+    }
+    const represented = representToolDeclaration("function", {
       type: "function",
-      function: {
-        name: fn.name,
-        ...(typeof fn.description === "string" ? { description: fn.description } : {}),
-        parameters,
-      },
+      name: fn.name,
+      ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+      parameters: parameters,
     });
+    if (!isFunctionTool(represented)) {
+      return { error: unsupportedToolKindError("function", record.type) };
+    }
+    tools.push(represented);
   }
-  return tools;
+  return { tools };
 }
 
 /**
@@ -179,7 +210,8 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
         type === "function_call" ||
         type === "function_call_output" ||
         type === "tool_call" ||
-        type === "tool_result"
+        type === "tool_result" ||
+        type === "tool_use"
       ) {
         return true;
       }
@@ -193,7 +225,8 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
           partType === "function_call" ||
           partType === "function_call_output" ||
           partType === "tool_call" ||
-          partType === "tool_result"
+          partType === "tool_result" ||
+          partType === "tool_use"
         ) {
           return true;
         }
@@ -255,7 +288,7 @@ export function rejectChatOnlyTools(
  * parses its OWN wire shape first, so this function never sees a raw public
  * tool_choice object.
  */
-export function codexUnsupportedToolPolicy(
+export function enforceSelectedProviderToolPolicy(
   provider: string,
   policy: NormalizedToolChoice | undefined,
   parallelToolCalls: boolean | undefined,
@@ -363,6 +396,19 @@ export function registerChatCompletions(
       return reply.code(400).send({ error: { type: "invalid_request", message: "Body must be an object" } });
     }
 
+    // Fail closed on semantic controls this surface cannot represent rather than
+    // accepting and ignoring them. The published capability descriptor is derived
+    // from the same list.
+    const unsupportedControl = rejectUnsupportedControls(
+      body,
+      OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+      "The Chat Completions surface",
+    );
+    if (unsupportedControl) {
+      const mapped = mapRouterErrorToHttp(unsupportedControl);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
     if (typeof body.model !== "string" || body.model.length === 0) {
       return reply
         .code(400)
@@ -382,12 +428,12 @@ export function registerChatCompletions(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const tools = parseTools(body.tools);
-    if (tools === null) {
-      return reply
-        .code(400)
-        .send({ error: { type: "invalid_request", message: "tools must be an array" } });
+    const parsedTools = parseTools(body.tools);
+    if ("error" in parsedTools) {
+      const mapped = mapRouterErrorToHttp(parsedTools.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
+    const tools = parsedTools.tools;
 
     if (body.stream !== undefined && typeof body.stream !== "boolean") {
       return reply
@@ -434,18 +480,20 @@ export function registerChatCompletions(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
-    const consumerId = (request as ConsumerRequest).consumerId;
-    const effective = effectiveToolCapability(consumerId, model.capability);
+    // Authorization subject is the authenticated PROFILE, never the client
+    // application identifier.
+    const identity = (request as ConsumerRequest).identity;
+    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
     const capabilityError = rejectChatOnlyTools(effective, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    // Codex 0.153.4 CAN declare Qoder tools (experimental dynamicTools), but it
+    // Codex 0.153.4 CAN declare client tools (experimental dynamicTools), but it
     // still cannot represent a caller tool-selection or parallel-execution
     // constraint. Reject those instead of silently dropping them.
-    const codexPolicyError = codexUnsupportedToolPolicy(
+    const codexPolicyError = enforceSelectedProviderToolPolicy(
       model.provider,
       toolChoice,
       parallelToolCalls,
@@ -501,6 +549,7 @@ export function registerChatCompletions(
           model.id,
           adapter.run(routerRequest, abortController.signal),
           abortController.signal,
+          identity,
         );
         for await (const event of tracked) {
           events.push(event as RouterEvent);
@@ -512,6 +561,17 @@ export function registerChatCompletions(
       const aggregated = aggregateEvents(events);
       if ("error" in aggregated) {
         const mapped = mapRouterErrorToHttp(aggregated.error);
+        responseCompleted = true;
+        return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+      }
+      // Fail closed on provider arguments that are not usable JSON: a
+      // fabricated `{}` would hand the client an executable call with invented
+      // parameters.
+      const argumentsError = validateToolArguments(
+        aggregated.toolCalls.map((call) => call.arguments),
+      );
+      if (argumentsError) {
+        const mapped = mapRouterErrorToHttp(argumentsError);
         responseCompleted = true;
         return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
       }
@@ -560,6 +620,10 @@ export function registerChatCompletions(
 
     try {
       let contentIndex = 0;
+      const streamedCalls = new Map<
+        number,
+        { index: number; id: string; name: string; args: string }
+      >();
       const tracked = trackProviderStream(
         usageStore,
         requestId,
@@ -567,6 +631,7 @@ export function registerChatCompletions(
         model.id,
         adapter.run(routerRequest, abortController.signal),
         abortController.signal,
+        identity,
       );
       for await (const event of tracked) {
         const typed = event as RouterEvent;
@@ -584,34 +649,55 @@ export function registerChatCompletions(
           });
           contentIndex += 1;
         } else if (typed.type === "tool_call_delta") {
-          sendChunk({
-            id: chunkId,
-            object: "chat.completion.chunk",
-            created,
-            model: model.id,
-            choices: [
-              {
-                index: 0,
-                delta: {
-                  tool_calls: [
-                    {
-                      index: typed.index,
-                      id: typed.id,
-                      type: "function",
-                      function: {
-                        ...(typed.name !== undefined ? { name: typed.name } : {}),
-                        ...(typed.argumentsDelta !== undefined
-                          ? { arguments: typed.argumentsDelta }
-                          : {}),
-                      },
-                    },
-                  ],
-                },
-                finish_reason: null,
-              },
-            ],
-          });
+          // Buffer instead of forwarding fragments: a tool call is only surfaced
+          // once its complete arguments are known to be usable JSON, so a
+          // malformed provider payload can never become an executable call.
+          const index = typed.index ?? 0;
+          const existing = streamedCalls.get(index) ?? {
+            index,
+            id: typed.id,
+            name: typed.name ?? "",
+            args: "",
+          };
+          if (typed.name !== undefined) existing.name = typed.name;
+          if (typed.argumentsDelta !== undefined) existing.args += typed.argumentsDelta;
+          streamedCalls.set(index, existing);
         } else if (typed.type === "completed") {
+          const streamed = [...streamedCalls.values()].sort((a, b) => a.index - b.index);
+          const streamedError = validateToolArguments(streamed.map((call) => call.args));
+          if (streamedError) {
+            const mapped = mapRouterErrorToHttp(streamedError);
+            sendChunk({ error: { type: mapped.type, message: mapped.message } });
+            responseCompleted = true;
+            break;
+          }
+          for (const call of streamed) {
+            sendChunk({
+              id: chunkId,
+              object: "chat.completion.chunk",
+              created,
+              model: model.id,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: call.index,
+                        id: call.id,
+                        type: "function",
+                        function: {
+                          ...(call.name.length > 0 ? { name: call.name } : {}),
+                          ...(call.args.length > 0 ? { arguments: call.args } : {}),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            });
+          }
           sendChunk({
             id: chunkId,
             object: "chat.completion.chunk",

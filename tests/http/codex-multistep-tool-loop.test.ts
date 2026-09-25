@@ -98,7 +98,7 @@ class HttpMultiStepCodexServer {
           params: {
             arguments: '{"text":"A"}',
             callId: "call_codex_A",
-            namespace: null,
+            namespace: "cmm_client",
             threadId: THREAD,
             turnId: TURN,
             tool: "cmm_echo",
@@ -159,7 +159,7 @@ class HttpMultiStepCodexServer {
       params: {
         arguments: '{"text":"B"}',
         callId: "call_codex_B",
-        namespace: null,
+        namespace: "cmm_client",
         threadId: THREAD,
         turnId: TURN,
         tool: "cmm_echo",

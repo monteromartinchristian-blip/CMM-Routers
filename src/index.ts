@@ -7,6 +7,11 @@ import { CodexAdapter } from "./providers/codex/adapter.js";
 import { ClaudeAdapter } from "./providers/claude/adapter.js";
 import { AntigravityAdapter } from "./providers/antigravity/adapter.js";
 import { CommandCodeAdapter } from "./providers/command-code/adapter.js";
+import { CavotiAdapter } from "./providers/cavoti/adapter.js";
+import {
+  defaultCavotiAckPath,
+  requireCavotiSpendAcknowledgement,
+} from "./providers/cavoti/spend-guard.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
 
 export interface ProductionComposition {
@@ -17,7 +22,7 @@ export interface ProductionComposition {
   skippedProviders: Array<{ id: string; reason: string }>;
   /**
    * Single Router-owned bounded pending-tool broker shared by every provider
-   * adapter that needs cross-request Qoder tool correlation. Injected
+   * adapter that needs cross-request client tool correlation. Injected
    * explicitly; never a per-adapter instance in production.
    */
   toolBroker: DeferredToolBroker;
@@ -32,8 +37,20 @@ function isCommandCodeAckValid(): boolean {
   }
 }
 
+function isCavotiAckValid(ackPath: string): boolean {
+  try {
+    requireCavotiSpendAcknowledgement(ackPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveChatgptCodexHome(config: RouterConfig): string | undefined {
-  return config.providers.chatgpt.codexHome;
+  // Explicit config remains authoritative. The environment fallback is used by
+  // the supported macOS runtime wrapper to point Codex app-server at a
+  // Router-owned, tool-neutral profile without mutating the user's ~/.codex.
+  return config.providers.chatgpt.codexHome ?? process.env.CMM_ROUTER_CODEX_HOME;
 }
 
 export function resolveClaudeProfileDir(config: RouterConfig): string | undefined {
@@ -44,15 +61,22 @@ export function resolveGoogleAgyPath(config: RouterConfig): string | undefined {
   return config.providers.google.agyPath;
 }
 
+export type TestProviderMode = "scripted" | "scripted-tools";
+
 /**
  * Narrowly scoped test-provider injection for the compiled-process E2E.
- * Active ONLY when CMM_TEST_PROVIDER=scripted is set explicitly; normal
- * production never sets it and always uses real subscription adapters.
- * The scripted double serves one canned model with no network, no quota,
- * and no secrets.
+ * Active ONLY when CMM_TEST_PROVIDER is set explicitly to one of the two
+ * supported values; normal production never sets it and always uses real
+ * subscription adapters. Both doubles serve canned models with no network, no
+ * quota and no secrets, and neither executes a tool.
  */
+export function testProviderMode(): TestProviderMode | null {
+  const value = process.env.CMM_TEST_PROVIDER;
+  return value === "scripted" || value === "scripted-tools" ? value : null;
+}
+
 export function isTestProviderEnabled(): boolean {
-  return process.env.CMM_TEST_PROVIDER === "scripted";
+  return testProviderMode() !== null;
 }
 
 export async function createProductionRegistry(
@@ -71,9 +95,12 @@ export async function createProductionRegistry(
   const registeredProviders: string[] = [];
   const skippedProviders: Array<{ id: string; reason: string }> = [];
 
-  if (isTestProviderEnabled()) {
+  const testProvider = testProviderMode();
+  if (testProvider !== null) {
     const { ScriptedTestAdapter } = await import("./testing/scripted-adapter.js");
-    const adapter = new ScriptedTestAdapter();
+    const { ScriptedToolAdapter } = await import("./testing/scripted-tool-adapter.js");
+    const adapter =
+      testProvider === "scripted-tools" ? new ScriptedToolAdapter() : new ScriptedTestAdapter();
     await registry.register(adapter);
     registeredProviders.push(adapter.id);
     await registry.refresh();
@@ -97,7 +124,7 @@ export async function createProductionRegistry(
     // from this value per request. No global process.env mutation — the
     // configured profile is effective even though sdk-client was imported
     // long before this factory runs. The shared broker backs the
-    // cross-request Qoder tool correlation held across the HTTP split.
+    // cross-request client tool correlation held across the HTTP split.
     const profileDir = resolveClaudeProfileDir(resolved);
     const adapter = new ClaudeAdapter({
       ...(profileDir ? { profileDir } : {}),
@@ -146,20 +173,75 @@ export async function createProductionRegistry(
     skippedProviders.push({ id: "command-code", reason: "disabled in config" });
   }
 
+  if (resolved.providers.cavoti.enabled) {
+    const cavoti = resolved.providers.cavoti;
+    const configuredAckPath = process.env.CMM_CAVOTI_ACK_PATH?.trim();
+    const ackPath =
+      configuredAckPath && configuredAckPath.length > 0
+        ? configuredAckPath
+        : defaultCavotiAckPath();
+
+    if (!isCavotiAckValid(ackPath)) {
+      skippedProviders.push({
+        id: "cavoti",
+        reason: "PAYG spend acknowledgement missing or invalid",
+      });
+    } else {
+      const secret = process.env[cavoti.secretEnv]?.trim();
+      if (!secret) {
+        skippedProviders.push({
+          id: "cavoti",
+          reason: `secret env ${cavoti.secretEnv} absent`,
+        });
+      } else {
+        const adapter = new CavotiAdapter({
+          baseUrl: cavoti.baseUrl,
+          secretEnv: cavoti.secretEnv,
+          ackPath,
+        });
+        await registry.register(adapter);
+        registeredProviders.push(adapter.id);
+      }
+    }
+  } else {
+    skippedProviders.push({ id: "cavoti", reason: "disabled in config" });
+  }
+
   await registry.refresh();
 
   return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
 }
 
-export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {
+export interface ProductionServerSecrets {
+  /** Canonical Code Router bearer (CMM_CODE_ROUTER_TOKEN). */
+  codeRouterSecret?: string;
+  /** @deprecated Legacy Code Router bearer (CMM_QODER_TOKEN). */
+  legacyQoderSecret?: string;
+}
+
+export function createProductionServer(
+  composition: ProductionComposition,
+  bearerSecret: string,
+  secrets: ProductionServerSecrets = {},
+) {
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
     bearerSecret,
-    ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
+    ...(secrets.codeRouterSecret !== undefined
+      ? { codeRouterToken: secrets.codeRouterSecret }
+      : {}),
+    ...(secrets.legacyQoderSecret !== undefined
+      ? { qoderToken: secrets.legacyQoderSecret }
+      : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
   });
+}
+
+function optionalSecret(name: string): string | undefined {
+  const value = process.env[name];
+  return value !== undefined && value.length > 0 ? value : undefined;
 }
 
 async function main() {
@@ -181,11 +263,17 @@ async function main() {
     process.exit(1);
   }
 
-  // Optional Qoder consumer token. When unset there is no Qoder consumer and
-  // every authenticated client is CMMChat (permanently CHAT_ONLY).
-  const qoderSecret = process.env.CMM_QODER_TOKEN;
+  // Optional Code Router profile credentials. The canonical bearer is preferred
+  // for new installs/clients; the legacy alias is retained so existing
+  // installations keep working. When neither is set there is no Code Router
+  // profile and every authenticated request is CMMChat (permanently CHAT_ONLY).
+  const codeRouterSecret = optionalSecret("CMM_CODE_ROUTER_TOKEN");
+  const legacyQoderSecret = optionalSecret("CMM_QODER_TOKEN");
 
-  const server = createProductionServer(composition, bearerSecret, qoderSecret);
+  const server = createProductionServer(composition, bearerSecret, {
+    ...(codeRouterSecret !== undefined ? { codeRouterSecret } : {}),
+    ...(legacyQoderSecret !== undefined ? { legacyQoderSecret } : {}),
+  });
 
   const shutdown = async () => {
     try {

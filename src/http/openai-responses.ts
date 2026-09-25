@@ -1,13 +1,26 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ProviderRegistry } from "../registry/provider-registry.js";
-import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.js";
+import type { DiscoveredModel, RouterMessage, RouterFunctionTool } from "../core/model.js";
+import { isFunctionTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools, enforceSelectedProviderToolPolicy, parseReasoningEffort } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
-import { effectiveToolCapability } from "../core/consumer-capability.js";
+import {
+  classifyToolDeclarationType,
+  representToolDeclaration,
+  unsupportedToolKindError,
+} from "../core/tool-kind.js";
+import { effectiveProfileToolCapability } from "../core/router-profile.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
+import { validateToolArguments } from "../core/tool-arguments.js";
+import {
+  OPENAI_RESPONSES_REJECTED_CONTROLS,
+  OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+  rejectUnsupportedControls,
+  unsupportedRequestControlError,
+} from "../core/request-controls.js";
 import type { ConsumerRequest } from "./server.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
@@ -55,7 +68,12 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
       messages.push({ role: "tool", content: record.output, toolCallId: record.call_id });
       continue;
     }
-    const role = record.role;
+    // Responses uses `developer` for system-level instructions; it maps onto the
+    // Router's internal `system` role. This is a boundary normalization for a
+    // genuine wire difference, not a privilege: the role carries instructions and
+    // no tools.
+    const rawRole = record.role;
+    const role = rawRole === "developer" ? "system" : rawRole;
     if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
       return null;
     }
@@ -107,13 +125,67 @@ function inputToMessages(input: unknown): RouterMessage[] | null {
   return messages;
 }
 
-function parseResponseTools(input: unknown): RouterTool[] | null {
-  if (input === undefined) return [];
-  if (!Array.isArray(input)) return null;
-  const tools: RouterTool[] = [];
+/**
+ * Responses may carry request-scoped tool declarations inside the input stream
+ * as an `additional_tools` developer item. Codex uses this shape for Responses
+ * Lite and omits the top-level `tools` field.
+ *
+ * The item is request metadata, not a conversational message: extract and
+ * validate its tools, then remove it before message normalization.
+ */
+function normalizeResponseInputAdditionalTools(
+  input: unknown,
+):
+  | { input: unknown; tools: RouterFunctionTool[] }
+  | { error: RouterError } {
+  if (!Array.isArray(input)) return { input, tools: [] };
+
+  const normalizedInput: unknown[] = [];
+  const tools: RouterFunctionTool[] = [];
+
   for (const entry of input) {
     const record = asRecord(entry);
-    if (!record) return null;
+    if (!record || record.type !== "additional_tools") {
+      normalizedInput.push(entry);
+      continue;
+    }
+
+    if (record.role !== "developer") {
+      return {
+        error: new RouterError(
+          "invalid_request",
+          'additional_tools role must be "developer"',
+        ),
+      };
+    }
+    if (record.id !== undefined && typeof record.id !== "string") {
+      return {
+        error: new RouterError(
+          "invalid_request",
+          "additional_tools id must be a string when present",
+        ),
+      };
+    }
+
+    const parsed = parseResponseTools(record.tools);
+    if ("error" in parsed) return parsed;
+    tools.push(...parsed.tools);
+  }
+
+  return { input: normalizedInput, tools };
+}
+
+function parseResponseTools(input: unknown): { tools: RouterFunctionTool[] } | { error: RouterError } {
+  if (input === undefined) return { tools: [] };
+  if (!Array.isArray(input)) {
+    return { error: new RouterError("invalid_request", "tools must be an array") };
+  }
+  const tools: RouterFunctionTool[] = [];
+  for (const entry of input) {
+    const record = asRecord(entry);
+    if (!record) {
+      return { error: new RouterError("invalid_request", "each entry in tools must be an object") };
+    }
     // Responses-style: {type:"function", name, description?, parameters?}
     if (record.type === "function" && typeof record.name === "string") {
       const parameters =
@@ -122,41 +194,57 @@ function parseResponseTools(input: unknown): RouterTool[] | null {
           : asRecord(record.parameters) !== null
             ? (record.parameters as Record<string, unknown>)
             : null;
-      if (parameters === null) return null;
-      tools.push({
+      if (parameters === null) {
+        return {
+          error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+        };
+      }
+      const represented = representToolDeclaration("function", {
         type: "function",
-        function: {
-          name: record.name,
-          ...(typeof record.description === "string" ? { description: record.description } : {}),
-          parameters,
-        },
+        name: String(record.name),
+        ...(typeof record.description === "string" ? { description: record.description } : {}),
+        parameters: parameters,
       });
+      if (!isFunctionTool(represented)) {
+        return { error: unsupportedToolKindError("function", record.type) };
+      }
+      tools.push(represented);
       continue;
     }
     // Chat-style passthrough
     if (record.type === "function" && asRecord(record.function) !== null) {
       const fn = record.function as Record<string, unknown>;
-      if (typeof fn.name !== "string") return null;
+      if (typeof fn.name !== "string") {
+        return { error: new RouterError("invalid_request", "a function tool requires a name") };
+      }
       const parameters =
         fn.parameters === undefined
           ? {}
           : asRecord(fn.parameters) !== null
             ? (fn.parameters as Record<string, unknown>)
             : null;
-      if (parameters === null) return null;
-      tools.push({
+      if (parameters === null) {
+        return {
+          error: new RouterError("invalid_request", "a function tool's parameters must be an object"),
+        };
+      }
+      const represented = representToolDeclaration("function", {
         type: "function",
-        function: {
-          name: fn.name,
-          ...(typeof fn.description === "string" ? { description: fn.description } : {}),
-          parameters,
-        },
+        name: String(fn.name),
+        ...(typeof fn.description === "string" ? { description: fn.description } : {}),
+        parameters: parameters,
       });
+      if (!isFunctionTool(represented)) {
+        return { error: unsupportedToolKindError("function", record.type) };
+      }
+      tools.push(represented);
       continue;
     }
-    return null;
+    return {
+      error: unsupportedToolKindError(classifyToolDeclarationType(record.type), record.type),
+    };
   }
-  return tools;
+  return { tools };
 }
 
 function newId(prefix: string): string {
@@ -173,17 +261,83 @@ export function registerResponsesApi(
     if (!body) {
       return reply.code(400).send({ error: { type: "invalid_request", message: "Body must be an object" } });
     }
+    const unsupportedControl = rejectUnsupportedControls(
+      body,
+      OPENAI_UNSUPPORTED_SEMANTIC_CONTROLS,
+      "The Responses surface",
+    );
+    if (unsupportedControl) {
+      const mapped = mapRouterErrorToHttp(unsupportedControl);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+    // The Chat-shaped token name is not accepted here; say so explicitly instead
+    // of ignoring it.
+    const rejectedAlias = rejectUnsupportedControls(
+      body,
+      OPENAI_RESPONSES_REJECTED_CONTROLS,
+      "The Responses surface",
+    );
+    if (rejectedAlias) {
+      const error = unsupportedRequestControlError(
+        "max_tokens",
+        "The Responses surface",
+        "use 'max_output_tokens'",
+      );
+      const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
     if (typeof body.model !== "string" || body.model.length === 0) {
       return reply
         .code(400)
         .send({ error: { type: "invalid_request", message: "model must be a non-empty string" } });
     }
-    const tools = parseResponseTools(body.tools);
-    if (tools === null) {
+
+    // OpenAI Responses carries model-level instructions separately from `input`.
+    // Preserve them explicitly as the first system message instead of silently
+    // dropping them at the Router boundary.
+    if (
+      body.instructions !== undefined &&
+      body.instructions !== null &&
+      typeof body.instructions !== "string"
+    ) {
       return reply
         .code(400)
-        .send({ error: { type: "invalid_request", message: "tools must be an array" } });
+        .send({ error: { type: "invalid_request", message: "instructions must be a string or null" } });
     }
+    const responseInstructions =
+      typeof body.instructions === "string" ? body.instructions : undefined;
+
+    const normalizedInput = normalizeResponseInputAdditionalTools(body.input);
+    if ("error" in normalizedInput) {
+      const mapped = mapRouterErrorToHttp(normalizedInput.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    const parsedTools = parseResponseTools(body.tools);
+    if ("error" in parsedTools) {
+      const mapped = mapRouterErrorToHttp(parsedTools.error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    // `additional_tools` augments the ordinary Responses `tools` field. Both
+    // sources are validated by the same representation boundary before they can
+    // reach a provider.
+    const tools = [...parsedTools.tools, ...normalizedInput.tools];
+
+    // Profile enforcement must see the extracted declarations too. Otherwise a
+    // CHAT_ONLY bearer could hide tools inside input.additional_tools and bypass
+    // the normal body.tools guard.
+    const capabilityBody: Record<string, unknown> =
+      tools.length === 0
+        ? body
+        : {
+            ...body,
+            tools: tools.map((tool) => ({
+              type: "function",
+              function: tool.function,
+            })),
+          };
     if (body.stream !== undefined && typeof body.stream !== "boolean") {
       return reply
         .code(400)
@@ -234,23 +388,32 @@ export function registerResponsesApi(
       return reply.code(400).send({ error: { type: "unknown_provider", message: "Unknown provider" } });
     }
 
-    const consumerId = (request as ConsumerRequest).consumerId;
-    const effective = effectiveToolCapability(consumerId, model.capability);
+    // Authorization subject is the authenticated PROFILE, never the client
+    // application identifier.
+    const identity = (request as ConsumerRequest).identity;
+    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
 
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.
-    const earlyCapabilityError = rejectChatOnlyTools(effective, body, []);
+    const earlyCapabilityError = rejectChatOnlyTools(effective, capabilityBody, []);
     if (earlyCapabilityError) {
       const mapped = mapRouterErrorToHttp(earlyCapabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const messages = inputToMessages(body.input);
-    if (!messages) {
+    const inputMessages = inputToMessages(normalizedInput.input);
+    if (!inputMessages) {
       return reply
         .code(400)
         .send({ error: { type: "invalid_request", message: "input must be a string or message array" } });
     }
+
+    const messages: RouterMessage[] =
+      responseInstructions !== undefined
+        ? [{ role: "system", content: responseInstructions }, ...inputMessages]
+        : inputMessages;
+
+    // RESPONSES_TOP_LEVEL_INSTRUCTIONS_NORMALIZED
     try {
       assertToolResultsWithinBound(messages);
     } catch (error) {
@@ -258,7 +421,7 @@ export function registerResponsesApi(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const capabilityError = rejectChatOnlyTools(effective, body, messages);
+    const capabilityError = rejectChatOnlyTools(effective, capabilityBody, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
@@ -266,7 +429,7 @@ export function registerResponsesApi(
 
     // Same Codex tool-policy rejection as /v1/chat/completions: an
     // unrepresentable constraint must fail identically on both surfaces.
-    const codexPolicyError = codexUnsupportedToolPolicy(
+    const codexPolicyError = enforceSelectedProviderToolPolicy(
       model.provider,
       toolChoice,
       parallelToolCalls,
@@ -319,6 +482,7 @@ export function registerResponsesApi(
           model.id,
           adapter.run(routerRequest, abortController.signal),
           abortController.signal,
+          identity,
         );
         for await (const event of tracked) {
           events.push(event as RouterEvent);
@@ -362,6 +526,12 @@ export function registerResponsesApi(
           total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
         };
       }
+      const argumentsError = validateToolArguments(functionCalls.map((call) => call.arguments));
+      if (argumentsError) {
+        const mapped = mapRouterErrorToHttp(argumentsError);
+        responseCompleted = true;
+        return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+      }
       responseCompleted = true;
       return reply.send(
         redactObject({
@@ -394,17 +564,40 @@ export function registerResponsesApi(
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache");
     reply.raw.setHeader("Connection", "keep-alive");
-    const send = (event: string, data: unknown): boolean => {
+    const send = (event: string, data: Record<string, unknown>): boolean => {
       if (reply.raw.destroyed) return false;
+      const payload = { type: event, ...data };
       reply.raw.write(`event: ${event}\n`);
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
       return true;
     };
 
     try {
-      send("response.created", { id: responseId, object: "response", model: model.id, status: "in_progress" });
+      const createdAt = Math.floor(Date.now() / 1000);
+      const completedOutputItems = new Map<number, Record<string, unknown>>();
+      const orderedOutput = (): Record<string, unknown>[] =>
+        [...completedOutputItems.entries()]
+          .sort(([a], [b]) => a - b)
+          .map(([, item]) => item);
+      const responseSnapshot = (
+        status: "in_progress" | "completed",
+      ): Record<string, unknown> => ({
+        id: responseId,
+        object: "response",
+        created_at: createdAt,
+        status,
+        background: false,
+        error: null,
+        output: orderedOutput(),
+        model: model.id,
+      });
+
+      send("response.created", { response: responseSnapshot("in_progress") });
+
       let nextOutputIndex = 0;
       let textItemIndex: number | undefined;
+      let textItemId: string | undefined;
+      let textBuffer = "";
       // Canonical function-call item lifecycle, keyed by upstream tool index.
       const pendingCalls = new Map<
         number,
@@ -417,6 +610,7 @@ export function registerResponsesApi(
         model.id,
         adapter.run(routerRequest, abortController.signal),
         abortController.signal,
+        identity,
       );
       for await (const event of tracked) {
         const typed = event as RouterEvent;
@@ -425,9 +619,36 @@ export function registerResponsesApi(
           break;
         }
         if (typed.type === "text_delta") {
-          if (textItemIndex === undefined) textItemIndex = nextOutputIndex++;
-          send("response.output_text.delta", { item_id: `msg-${textItemIndex}`, delta: typed.text });
+          if (textItemIndex === undefined) {
+            textItemIndex = nextOutputIndex++;
+            textItemId = `msg-${textItemIndex}`;
+            send("response.output_item.added", {
+              output_index: textItemIndex,
+              item: {
+                id: textItemId,
+                type: "message",
+                status: "in_progress",
+                role: "assistant",
+                content: [],
+              },
+            });
+            send("response.content_part.added", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              part: { type: "output_text", text: "", annotations: [] },
+            });
+          }
+          textBuffer += typed.text;
+          send("response.output_text.delta", {
+            item_id: textItemId as string,
+            output_index: textItemIndex,
+            content_index: 0,
+            delta: typed.text,
+          });
         } else if (typed.type === "tool_call_delta") {
+          // Buffer instead of forwarding fragments: the item lifecycle is only
+          // emitted once the complete arguments are known to be usable JSON.
           const index = typed.index ?? 0;
           let call = pendingCalls.get(index);
           if (call === undefined) {
@@ -439,6 +660,56 @@ export function registerResponsesApi(
               outputIndex: nextOutputIndex++,
             };
             pendingCalls.set(index, call);
+          }
+          if (typed.name !== undefined) call.name = typed.name;
+          const delta = typed.argumentsDelta ?? "";
+          if (delta.length > 0) call.args += delta;
+        } else if (typed.type === "completed") {
+          if (textItemIndex !== undefined && textItemId !== undefined) {
+            const textPart = {
+              type: "output_text",
+              text: textBuffer,
+              annotations: [],
+            };
+            send("response.output_text.done", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              text: textBuffer,
+            });
+            send("response.content_part.done", {
+              item_id: textItemId,
+              output_index: textItemIndex,
+              content_index: 0,
+              part: textPart,
+            });
+            const messageItem: Record<string, unknown> = {
+              id: textItemId,
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [textPart],
+            };
+            send("response.output_item.done", {
+              output_index: textItemIndex,
+              item: messageItem,
+            });
+            completedOutputItems.set(textItemIndex, messageItem);
+          }
+
+          const ordered = [...pendingCalls.values()].sort(
+            (a, b) => a.outputIndex - b.outputIndex,
+          );
+          // A malformed completed call must never be presented as an executable
+          // one: emit the failure and do not complete the response.
+          const streamedError = validateToolArguments(ordered.map((call) => call.args));
+          if (streamedError) {
+            const mapped = mapRouterErrorToHttp(streamedError);
+            send("response.failed", { error: { type: mapped.type, message: mapped.message } });
+            responseCompleted = true;
+            break;
+          }
+          for (const call of ordered) {
             send("response.output_item.added", {
               output_index: call.outputIndex,
               item: {
@@ -449,41 +720,37 @@ export function registerResponsesApi(
                 arguments: "",
               },
             });
-          }
-          const delta = typed.argumentsDelta ?? "";
-          if (delta.length > 0) call.args += delta;
-          send("response.function_call_arguments.delta", {
-            item_id: call.itemId,
-            output_index: call.outputIndex,
-            delta,
-            name: call.name,
-          });
-        } else if (typed.type === "completed") {
-          // Close every open function-call item with its fully assembled
-          // arguments before the terminal event.
-          const ordered = [...pendingCalls.values()].sort(
-            (a, b) => a.outputIndex - b.outputIndex,
-          );
-          for (const call of ordered) {
+            if (call.args.length > 0) {
+              send("response.function_call_arguments.delta", {
+                item_id: call.itemId,
+                output_index: call.outputIndex,
+                delta: call.args,
+                name: call.name,
+              });
+            }
             send("response.function_call_arguments.done", {
               item_id: call.itemId,
               output_index: call.outputIndex,
               arguments: call.args,
               name: call.name,
             });
+            const completedCallItem: Record<string, unknown> = {
+              type: "function_call",
+              id: call.itemId,
+              call_id: call.callId,
+              name: call.name,
+              arguments: call.args,
+              status: "completed",
+            };
             send("response.output_item.done", {
               output_index: call.outputIndex,
-              item: {
-                type: "function_call",
-                id: call.itemId,
-                call_id: call.callId,
-                name: call.name,
-                arguments: call.args,
-                status: "completed",
-              },
+              item: completedCallItem,
             });
+            completedOutputItems.set(call.outputIndex, completedCallItem);
           }
-          send("response.completed", { id: responseId, status: "completed" });
+          send("response.completed", {
+            response: responseSnapshot("completed"),
+          });
           responseCompleted = true;
           break;
         } else if (typed.type === "error") {

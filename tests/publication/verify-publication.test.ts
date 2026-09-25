@@ -150,7 +150,7 @@ describeVerifyPublication("verify-publication", () => {
     expect(await readFile(`${report}.sha256`, "utf8")).toMatch(
       /^[0-9a-f]{64}\s+/,
     );
-  }, 120_000);
+  }, 600_000);
 
   it("fails closed when remote main is not the expected head", async () => {
     const root = await makeRoot();

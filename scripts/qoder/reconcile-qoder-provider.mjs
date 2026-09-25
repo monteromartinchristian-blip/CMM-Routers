@@ -9,8 +9,8 @@
  *  - each existing model id and displayName is carried over byte-for-byte, so
  *    the catalog identity cannot drift while capabilities are corrected;
  *  - the existing bearer is carried over untouched and is never printed;
- *  - the catalog must match the expected 25-model family layout, else it fails
- *    closed without writing;
+ *  - the CMM-managed catalog prefix must match the expected family layout;
+ *    legitimate user-added tail models are preserved byte-for-byte;
  *  - a secret-bearing backup goes to a LOCAL-ONLY directory (never iCloud).
  */
 import { readFileSync, writeFileSync, mkdirSync, renameSync, chmodSync, copyFileSync } from "node:fs";
@@ -25,7 +25,6 @@ const BACKUP_DIR =
 const PROVIDER_ID = "qoder-custom-cmm-router";
 
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-const AGY_EFFORTS = ["low", "medium", "high"];
 const CHATGPT_5_5 = ["low", "medium", "high", "xhigh"];
 const CHATGPT_MODERN = ["low", "medium", "high", "xhigh", "max"];
 
@@ -60,9 +59,10 @@ const LAYOUT = [
   { match: (id) => isClaude(id) && id.endsWith("/haiku"), cap: CLAUDE_HAIKU, efforts: null },
   { match: (id) => isClaude(id) && id.endsWith("/opus"), cap: CLAUDE_1M, efforts: CLAUDE_EFFORTS },
   { match: (id) => isClaude(id) && id.endsWith("/sonnet"), cap: CLAUDE_1M, efforts: CLAUDE_EFFORTS },
-  // agy-routed Claude: adjustable effort, no separate level in the slug.
-  { match: isAgyClaude, cap: AGY_CLAUDE, efforts: AGY_EFFORTS },
-  { match: isAgyClaude, cap: AGY_CLAUDE, efforts: AGY_EFFORTS },
+  // agy-routed Claude: no effort selector. agy 1.2.2 rejects --effort for
+  // Sonnet 4.6, and no machine-readable per-model effort capability is exposed.
+  { match: isAgyClaude, cap: AGY_CLAUDE, efforts: null },
+  { match: isAgyClaude, cap: AGY_CLAUDE, efforts: null },
   // Gemini slugs already encode -low/-medium/-high: no extra effort selector.
   { match: isGemini, cap: GEMINI, efforts: null },
   { match: isGemini, cap: GEMINI, efforts: null },
@@ -93,12 +93,12 @@ if (typeof provider.apiKey !== "string" || provider.apiKey.length === 0) {
 
 const current = provider.models;
 if (!Array.isArray(current)) fail("provider.models is not an array");
-if (current.length !== LAYOUT.length) {
-  fail(`expected ${LAYOUT.length} models, found ${current.length}`);
+if (current.length < LAYOUT.length) {
+  fail(`expected at least ${LAYOUT.length} models, found ${current.length}`);
 }
 
-// Fail closed on catalog shape drift: an unexpected id at a position means the
-// family assumptions below no longer hold.
+// Fail closed on managed catalog shape drift. Canonical CMM models occupy
+// the managed prefix; later entries are user-owned and remain untouched.
 LAYOUT.forEach((slot, index) => {
   const id = current[index]?.model;
   if (typeof id !== "string" || !slot.match(id)) {
@@ -110,6 +110,8 @@ const bearerBefore = provider.apiKey;
 
 // Ids and display names are preserved verbatim; only capability truth changes.
 const models = current.map((entry, index) => {
+  if (index >= LAYOUT.length) return entry;
+
   const slot = LAYOUT[index];
   return {
     ...entry,

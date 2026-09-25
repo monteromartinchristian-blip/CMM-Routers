@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { buildServer } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
-import { codexUnsupportedToolPolicy } from "../../src/http/openai-chat.js";
+import { enforceSelectedProviderToolPolicy } from "../../src/http/openai-chat.js";
 import type {
   ProviderAdapter,
   DiscoveredModel,
@@ -107,24 +107,24 @@ describe("Codex tool-policy constraints are never silently dropped", () => {
 
   it("does not constrain non-Codex providers", () => {
     // The shared policy consumes the API-independent NORMALIZED form.
-    expect(codexUnsupportedToolPolicy("command-code", { kind: "required" }, false)).toBeNull();
-    expect(codexUnsupportedToolPolicy("chatgpt", { kind: "auto" }, true)).toBeNull();
-    expect(codexUnsupportedToolPolicy("chatgpt", { kind: "required" }, undefined)).not.toBeNull();
+    expect(enforceSelectedProviderToolPolicy("command-code", { kind: "required" }, false)).toBeNull();
+    expect(enforceSelectedProviderToolPolicy("chatgpt", { kind: "auto" }, true)).toBeNull();
+    expect(enforceSelectedProviderToolPolicy("chatgpt", { kind: "required" }, undefined)).not.toBeNull();
     // No proven provider-side parallel control for claude/google: absence is
     // accepted, ANY explicit boolean is refused.
-    expect(codexUnsupportedToolPolicy("claude", { kind: "auto" }, undefined)).toBeNull();
-    expect(codexUnsupportedToolPolicy("claude", undefined, false)?.code).toBe(
+    expect(enforceSelectedProviderToolPolicy("claude", { kind: "auto" }, undefined)).toBeNull();
+    expect(enforceSelectedProviderToolPolicy("claude", undefined, false)?.code).toBe(
       "unsupported_capability",
     );
-    expect(codexUnsupportedToolPolicy("claude", undefined, true)?.code).toBe(
+    expect(enforceSelectedProviderToolPolicy("claude", undefined, true)?.code).toBe(
       "unsupported_capability",
     );
-    expect(codexUnsupportedToolPolicy("google", { kind: "named", name: "t" }, undefined)?.code).toBe(
+    expect(enforceSelectedProviderToolPolicy("google", { kind: "named", name: "t" }, undefined)?.code).toBe(
       "unsupported_capability",
     );
-    expect(codexUnsupportedToolPolicy("google", undefined, false)?.code).toBe(
+    expect(enforceSelectedProviderToolPolicy("google", undefined, false)?.code).toBe(
       "unsupported_capability",
     );
-    expect(codexUnsupportedToolPolicy("google", undefined, undefined)).toBeNull();
+    expect(enforceSelectedProviderToolPolicy("google", undefined, undefined)).toBeNull();
   });
 });

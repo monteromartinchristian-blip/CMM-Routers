@@ -159,7 +159,7 @@ class MultiStepCodexServer {
     const params = {
       arguments: '{"text":"A"}',
       callId: "call_codex_A",
-      namespace: null,
+      namespace: "cmm_client",
       threadId: THREAD,
       turnId: TURN,
       tool: "cmm_echo",
@@ -175,7 +175,7 @@ class MultiStepCodexServer {
     const params = {
       arguments: '{"text":"B"}',
       callId: "call_codex_B",
-      namespace: null,
+      namespace: "cmm_client",
       threadId: THREAD,
       turnId: TURN,
       tool: "cmm_echo",
@@ -192,7 +192,7 @@ class MultiStepCodexServer {
     const params = {
       arguments: "{}",
       callId: "call_codex_evil",
-      namespace: null,
+      namespace: "cmm_client",
       threadId: THREAD,
       turnId: TURN,
       tool: "run_command",

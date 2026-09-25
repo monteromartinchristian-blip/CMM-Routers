@@ -97,10 +97,12 @@ async function main() {
   emit(`CLAUDE_ENABLED=${providers.claude.enabled ? "1" : "0"}`);
   emit(`GOOGLE_ENABLED=${providers.google.enabled ? "1" : "0"}`);
   emit(`COMMAND_CODE_ENABLED=${providers["command-code"].enabled ? "1" : "0"}`);
+  emit(`CAVOTI_ENABLED=${providers.cavoti.enabled ? "1" : "0"}`);
   emit(`BEARER_SECRET_ENV=${shared.data.bearerSecretEnv}`);
   emit(`CLAUDE_PROFILE_DIR=${providers.claude.profileDir ?? ""}`);
   emit(`AGY_PATH=${providers.google.agyPath ?? ""}`);
   emit(`COMMAND_CODE_SECRET_ENV=${providers["command-code"].secretEnv}`);
+  emit(`CAVOTI_SECRET_ENV=${providers.cavoti.secretEnv}`);
   return 0;
 }
 

@@ -246,4 +246,52 @@ describe("HTTP server", () => {
 
     expect(response.statusCode).toBe(200);
   });
+
+  it("accepts the canonical Code Router bearer for /v1/*", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      codeRouterToken: "code-router-server-test",
+      registry,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: "Bearer code-router-server-test" },
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("still accepts the deprecated legacy qoderToken option", async () => {
+    const server = buildServer({
+      host: "127.0.0.1",
+      port: 0,
+      bearerSecret,
+      qoderToken: "legacy-qoder-server-test",
+      registry,
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: { authorization: "Bearer legacy-qoder-server-test" },
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("refuses to build when the CMMChat and Code Router secrets collide", () => {
+    expect(() =>
+      buildServer({
+        host: "127.0.0.1",
+        port: 0,
+        bearerSecret,
+        codeRouterToken: bearerSecret,
+        registry,
+      }),
+    ).toThrow();
+  });
 });

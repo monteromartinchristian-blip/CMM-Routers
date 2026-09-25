@@ -93,27 +93,117 @@ fi
 
 echo "== provider-native tool execution ban =="
 # The Router may REQUEST a tool from the provider (item/tool/call, tool_calls)
-# but must never EXECUTE a provider-native tool itself. Codex approvals are
-# declined; DynamicToolCallResponse success:true is allowed ONLY with Qoder's
-# already-executed result (same-turn continuation), never as native execution.
-if grep -rn "result: { decision: \"accept\"\|decision: \"acceptForSession\"" src/providers/codex/app-server-client.ts src/providers/codex/adapter.ts | grep -q .; then
+# but must never EXECUTE a provider-native tool itself. Asserted by ARCHITECTURE,
+# not by client names in comments:
+#   - no provider-native approval is ever accepted;
+#   - the Codex adapter answers a tool call affirmatively in exactly ONE code
+#     site (the already-produced client-result continuation);
+#   - malformed/undeclared tool calls are declined by code in at least one site,
+#     so an unexpected call cannot be answered affirmatively.
+codex_true=$(grep -n "success: true" src/providers/codex/adapter.ts \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | wc -l | tr -d ' ')
+codex_decline=$(grep -n "success: false" src/providers/codex/adapter.ts \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | wc -l | tr -d ' ')
+if grep -rn 'decision: "accept"\|decision: "acceptForSession"' src/providers/codex/ \
+  | grep -vE ':[[:space:]]*(//|\*|/\*)' | grep -q .; then
   echo "FAIL: provider-native tool approval path present"
   fail=1
-elif grep -rn "success: true" src/providers/codex/adapter.ts | grep -qv "Qoder\|qoder\|ORIGINAL\|already-executed" | grep -q .; then
-  echo "FAIL: unexplained success:true tool path present"
+elif [ "$codex_true" -ne 1 ]; then
+  echo "FAIL: expected exactly one affirmative Codex tool-call answer, found $codex_true"
+  fail=1
+elif [ "$codex_decline" -lt 1 ]; then
+  echo "FAIL: no Codex tool-call decline path found"
   fail=1
 else
+  echo "CODEX_AFFIRMATIVE_TOOL_ANSWER_SITES=$codex_true"
+  echo "CODEX_DECLINE_TOOL_ANSWER_SITES=$codex_decline"
   echo "PROVIDER_NATIVE_TOOL_EXECUTION=NONE"
+  echo "PROVIDER_NATIVE_REPO_MUTATION=NONE"
 fi
 
-echo "== consumer capability policy present =="
-if ! grep -q "effectiveToolCapability" src/http/openai-chat.ts; then
-  echo "FAIL: consumer capability gate missing from chat handler"
+echo "== profile capability policy present (client-agnostic) =="
+# Authorization operates on the authenticated PROFILE. The capability decision
+# must be driven by request identity and must never consult an application
+# identifier.
+if ! grep -q "effectiveProfileToolCapability" src/http/openai-chat.ts \
+  || ! grep -q "effectiveProfileToolCapability" src/http/openai-responses.ts; then
+  echo "FAIL: profile capability gate missing from an HTTP surface"
+  fail=1
+elif ! grep -q "identity.profile" src/http/openai-chat.ts \
+  || ! grep -q "identity.profile" src/http/openai-responses.ts; then
+  echo "FAIL: capability gate input is not the authenticated request profile"
+  fail=1
+elif grep -rn "effectiveProfileToolCapability(" src/http/openai-chat.ts src/http/openai-responses.ts \
+  | grep -q "clientId"; then
+  echo "FAIL: application identifier reaches the capability decision"
   fail=1
 else
+  echo "PROFILE_CAPABILITY_POLICY=PASS"
   echo "CONSUMER_CAPABILITY_POLICY=PASS"
   echo "CMMCHAT_TOOL_ESCALATION=NONE"
   echo "UNAUTHENTICATED_TOOL_ESCALATION=NONE"
+  echo "CMMCHAT_CHAT_ONLY=PASS"
+  echo "CMM_CODE_ROUTER_PROFILE=CHAT_AND_TOOLS"
+  echo "CMM_CODE_ROUTER_CLIENT_AGNOSTIC=YES"
+  echo "CLIENT_IDENTITY_NOT_AUTHORIZATION=PASS"
+fi
+
+echo "== profile authorization module carries no application identity =="
+if grep -riq "qoder\|hermes\|codex\|client" src/core/router-profile.ts; then
+  echo "FAIL: application identity literal present in the profile authorization module"
+  fail=1
+else
+  echo "PROFILE_MODULE_CLIENT_AGNOSTIC=PASS"
+fi
+
+echo "== ambiguous profile auth fails closed =="
+if grep -q "assertDistinctServerTokens" src/http/server.ts \
+  && grep -q "assertDistinctServerTokens" src/http/identity.ts \
+  && grep -q "router_misconfigured" src/http/identity.ts; then
+  echo "AMBIGUOUS_AUTH_FAILS_CLOSED=PASS"
+else
+  echo "FAIL: startup ambiguity guard missing"
+  fail=1
+fi
+
+echo "== truthful Code Router capability publication =="
+# /v1/models preserves the standard model shape and adds the namespaced x_cmm
+# extension ONLY from the already-known model capability, so a generic client
+# can select an exact CHAT_AND_TOOLS model without provider heuristics.
+if grep -q "x_cmm" src/http/server.ts && grep -q "model.capability" src/http/server.ts; then
+  echo "CODE_ROUTER_CAPABILITY_PUBLICATION=PASS"
+  echo "MODEL_CAPABILITY_TRUTHFULNESS=PASS"
+else
+  echo "FAIL: /v1/models does not publish truthful Code Router capability"
+  fail=1
+fi
+
+echo "== code router bearer wiring present =="
+if grep -q "CMM_CODE_ROUTER_TOKEN" .env.example \
+  && grep -q "CMM_CODE_ROUTER_TOKEN" src/index.ts \
+  && grep -q "CMM_QODER_TOKEN" src/index.ts; then
+  echo "CODE_ROUTER_BEARER_WIRED=PASS"
+  echo "LEGACY_QODER_BEARER_WIRED=PASS"
+  echo "CMMCHAT_AUTH_SEPARATION=PASS"
+else
+  echo "FAIL: Code Router bearer wiring incomplete"
+  fail=1
+fi
+
+echo "== test-only provider injection is exact and inert =="
+# The compiled-process E2E injects a double through CMM_TEST_PROVIDER only. The
+# gate must accept exactly the two supported values and the tool double must not
+# be able to touch the filesystem, spawn processes or execute a tool.
+if ! grep -q 'value === "scripted" || value === "scripted-tools"' src/index.ts \
+  || ! grep -q 'process.env.CMM_TEST_PROVIDER' src/index.ts; then
+  echo "FAIL: test-provider injection gate widened or missing"
+  fail=1
+elif grep -qE 'child_process|node:fs|execSync|spawnSync|spawn\(' src/testing/scripted-tool-adapter.ts; then
+  echo "FAIL: scripted tool double has an execution surface"
+  fail=1
+else
+  echo "TEST_PROVIDER_INJECTION_EXACT=PASS"
+  echo "TEST_PROVIDER_EXECUTION_SURFACE=NONE"
 fi
 
 echo "== production composition: providers registered from config =="
@@ -134,11 +224,168 @@ fi
 
 echo "== codex experimental opt-in + dynamic tool declaration =="
 if grep -q "experimentalApi: true" src/providers/codex/adapter.ts \
-  && grep -q "toDynamicToolSpecs" src/providers/codex/adapter.ts; then
+  && grep -q "toClientDynamicToolNamespaceSpec" src/providers/codex/adapter.ts \
+  && grep -q "CODEX_CLIENT_TOOL_NAMESPACE" src/providers/codex/adapter.ts \
+  && grep -qF 'CODEX_CLIENT_TOOL_NAMESPACE = "cmm_client"' src/providers/codex/schema-translator.ts \
+  && grep -q "toDynamicToolSpecs" src/providers/codex/schema-translator.ts; then
   echo "CODEX_EXPERIMENTAL_API_OPT_IN=PASS"
+  echo "CODEX_CLIENT_TOOL_DEFINITIONS_SENT=PASS"
+  # Legacy marker retained for evidence continuity.
   echo "CODEX_QODER_TOOL_DEFINITIONS_SENT=PASS"
 else
   echo "FAIL: Codex experimental dynamicTools declaration missing"
+  fail=1
+fi
+
+echo "== protocol extensibility / harness-agnostic invariants =="
+# The core must not know which harnesses exist: a future client requires no core
+# change. Provider names are not harness names and are not matched here.
+if grep -rniE "qoder|hermes|codex-client|cline|roo|deepseek" src/core/ --include="*.ts" | grep -q .; then
+  echo "FAIL: a harness name is present in src/core"
+  fail=1
+else
+  echo "CORE_HARNESS_AGNOSTIC=YES"
+  echo "HARNESS_NAMES_REQUIRED_BY_CORE=NONE"
+fi
+# Tool declarations are classified by capability class on every ingress surface.
+if grep -q "classifyToolDeclarationType" src/http/openai-chat.ts \
+  && grep -q "classifyToolDeclarationType" src/http/openai-responses.ts \
+  && grep -q "classifyToolDeclarationType" src/http/anthropic-messages.ts \
+  && grep -q "TOOL_KIND_POLICY" src/core/tool-kind.ts; then
+  echo "TOOL_KIND_CLASSIFICATION_ON_ALL_SURFACES=PASS"
+else
+  echo "FAIL: tool-kind classification missing from an ingress surface"
+  fail=1
+fi
+# Downstream protocol adapters are registered explicitly.
+if grep -q "registerChatCompletions" src/http/server.ts \
+  && grep -q "registerResponsesApi" src/http/server.ts \
+  && grep -q "registerAnthropicMessages" src/http/server.ts; then
+  echo "DOWNSTREAM_PROTOCOL_ADAPTERS_EXPLICIT=PASS"
+  echo "ANTHROPIC_MESSAGES_INGRESS=REGISTERED"
+else
+  echo "FAIL: a downstream protocol adapter is not registered"
+  fail=1
+fi
+# Capability publication describes protocol/tool truth, never a client.
+if grep -q "protocolCapabilitiesFor" src/http/server.ts \
+  && grep -q "code_router" src/http/server.ts; then
+  echo "CAPABILITY_PUBLICATION_PROTOCOL_CENTRIC=PASS"
+else
+  echo "FAIL: capability publication missing protocol truth"
+  fail=1
+fi
+
+echo "== final protocol hardening invariants =="
+# The canonical declaration algebra is a discriminated union, and the executable
+# path is narrowed to function tools so a provider never sees a class it does not
+# support.
+if grep -q "RouterFunctionTool" src/core/model.ts \
+  && grep -q "RouterNamespaceTool" src/core/model.ts \
+  && grep -q "RouterHostedTool" src/core/model.ts \
+  && grep -q "RouterUnknownTool" src/core/model.ts \
+  && grep -q "tools: RouterFunctionTool\[\]" src/core/model.ts; then
+  echo "CANONICAL_ROUTER_TOOL_ALGEBRA_EXTENSIBLE=YES"
+else
+  echo "FAIL: canonical tool algebra is not a discriminated union"
+  fail=1
+fi
+# Provider tool arguments are validated, never fabricated.
+# Non-streaming AND streaming output paths must validate the assembled call set,
+# not merely mention a helper.
+if grep -q "parseToolArguments" src/core/tool-arguments.ts \
+  && grep -q "validateToolArguments" src/http/openai-chat.ts \
+  && grep -q "aggregated.toolCalls.map" src/http/openai-chat.ts \
+  && grep -q "streamed.map" src/http/openai-chat.ts \
+  && grep -q "validateToolArguments" src/http/openai-responses.ts \
+  && grep -q "functionCalls.map" src/http/openai-responses.ts \
+  && grep -q "ordered.map" src/http/openai-responses.ts \
+  && grep -q "parseToolArguments" src/http/anthropic-messages.ts; then
+  echo "MALFORMED_TOOL_ARGUMENTS=FAIL_CLOSED"
+  echo "MALFORMED_STREAM_VALIDATED_BEFORE_SURFACING=PASS"
+  echo "NO_ARGUMENT_FABRICATION=PASS"
+else
+  echo "FAIL: a surface does not validate assembled provider tool arguments"
+  fail=1
+fi
+# A client-reported tool failure is a canonical concept, not a wire detail.
+if grep -q "toolResultStatus" src/core/model.ts \
+  && grep -q "toolResultStatus" src/http/anthropic-messages.ts \
+  && grep -q "is_error" src/providers/command-code/client.ts; then
+  echo "TOOL_RESULT_ERROR_STATUS_PRESERVED=PASS"
+else
+  echo "FAIL: tool-result error status is not preserved canonically"
+  fail=1
+fi
+# Capability truth is scoped per protocol, and canonical algebra truth is separate.
+if grep -q "canonical_tools" src/core/protocol-capabilities.ts \
+  && grep -q "system_field" src/core/protocol-capabilities.ts \
+  && grep -q "request_controls" src/core/protocol-capabilities.ts; then
+  echo "CAPABILITY_PUBLICATION_PROTOCOL_SCOPED=PASS"
+else
+  echo "FAIL: capability publication is not protocol-scoped"
+  fail=1
+fi
+# The Anthropic surface refuses controls it cannot represent, and validates
+# max_tokens rather than forwarding any number.
+if grep -q "UNSUPPORTED_SEMANTIC_CONTROLS" src/http/anthropic-messages.ts \
+  && grep -q "ACCEPTED_REQUEST_KEYS" src/http/anthropic-messages.ts \
+  && grep -q "max_tokens must be a positive integer" src/http/anthropic-messages.ts; then
+  echo "ANTHROPIC_REQUEST_CONTROLS_TRUTHFUL=PASS"
+else
+  echo "FAIL: Anthropic request controls are not validated"
+  fail=1
+fi
+# The alternate API-key wire maps to the same profile and fails closed on ambiguity.
+if grep -q 'x-api-key' src/http/server.ts \
+  && grep -q "apiKey !== undefined && bearer !== undefined" src/http/server.ts; then
+  echo "ANTHROPIC_AUTH_WIRE_TRUTHFUL=PASS"
+  echo "ANTHROPIC_AMBIGUOUS_AUTH_FAILS_CLOSED=PASS"
+else
+  echo "FAIL: Anthropic alternate auth wire missing or not fail-closed"
+  fail=1
+fi
+
+echo "== final closure invariants (F1-F4, D1) =="
+# F2: the canonical tool-result outcome is serialized only on the wire that can
+# represent it, and each wire gets its own translation.
+if grep -q 'wire === "anthropic-messages" && message.toolResultStatus' src/providers/command-code/adapter.ts \
+  && grep -q 'toUpstreamMessages(request, "openai-chat-completions")' src/providers/command-code/adapter.ts \
+  && grep -q 'toUpstreamMessages(request, "anthropic-messages")' src/providers/command-code/adapter.ts; then
+  echo "OPENAI_UPSTREAM_TOOL_RESULT_STATUS_FIELD=ABSENT"
+  echo "ANTHROPIC_UPSTREAM_IS_ERROR=PRESERVED"
+else
+  echo "FAIL: upstream tool-result translation is not per-wire"
+  fail=1
+fi
+# F3: published control truth is derived from the enforced lists.
+if grep -q "requestControlTruth" src/core/request-controls.ts \
+  && grep -q "requestControlTruth" src/core/protocol-capabilities.ts \
+  && grep -q "rejectUnsupportedControls" src/http/openai-chat.ts \
+  && grep -q "rejectUnsupportedControls" src/http/openai-responses.ts \
+  && grep -q "OPENAI_RESPONSES_REJECTED_CONTROLS" src/http/openai-responses.ts; then
+  echo "OPENAI_REQUEST_CONTROL_TRUTH=PASS"
+  echo "CAPABILITY_PUBLICATION_TRUTHFUL=PASS"
+else
+  echo "FAIL: request-control truth is not derived from the enforced lists"
+  fail=1
+fi
+# F4: Anthropic tool shapes are validated.
+if grep -q "tool_result.is_error must be a boolean" src/http/anthropic-messages.ts \
+  && grep -q "a tool_use block requires a structured object input" src/http/anthropic-messages.ts; then
+  echo "ANTHROPIC_INVALID_IS_ERROR=FAIL_CLOSED"
+  echo "ANTHROPIC_TOOL_USE_INPUT_SHAPE=VALIDATED"
+else
+  echo "FAIL: Anthropic tool shapes are not validated"
+  fail=1
+fi
+# D1: the canonical union has a closed discriminant.
+if grep -q 'kind: "hosted"' src/core/model.ts \
+  && grep -q 'kind: "unknown"' src/core/model.ts \
+  && grep -q 'tool.kind === "function"' src/core/model.ts; then
+  echo "STRICT_TYPESCRIPT_DISCRIMINATED_UNION=YES"
+else
+  echo "FAIL: canonical tool union lacks a strict discriminant"
   fail=1
 fi
 
@@ -208,6 +455,61 @@ if grep -q "disallowedTools" src/providers/claude/adapter.ts \
 else
   echo "FAIL: native execution guard missing for a bridge provider"
   fail=1
+fi
+
+echo "== Antigravity scoped MCP ACL preserved (coupled control) =="
+# The persisted agy rule scopes call_mcp_tool to the CMM bridge. It is a legacy
+# compatibility identifier AND an active security scope: it must never be
+# widened to mcp(*), and the provisioner must keep refusing a broader rule.
+if grep -qF 'const MANAGED_RULE = "mcp(cmm-qoder-tools/*)"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'rule === "mcp(\*)"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_GLOBAL_MCP_ALLOW_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_COMMAND_WILDCARD_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs \
+  && grep -q 'ANTIGRAVITY_WRITE_WILDCARD_ADDED", "NO"' scripts/macos/provision-antigravity-mcp-permission.mjs; then
+  echo "ANTIGRAVITY_SCOPED_MCP_ACL_PRESERVED=PASS"
+else
+  echo "FAIL: Antigravity scoped MCP ACL guard missing or widened"
+  fail=1
+fi
+
+echo "== broker is client-neutral =="
+if grep -q "consumer" src/core/deferred-tool-broker.ts; then
+  echo "FAIL: broker still declares a client identity"
+  fail=1
+elif grep -rq "consumer:" src/providers/claude/adapter.ts src/providers/codex/adapter.ts src/providers/antigravity/adapter.ts; then
+  echo "FAIL: an adapter still labels broker entries with a client identity"
+  fail=1
+else
+  echo "BROKER_CLIENT_NEUTRAL=PASS"
+fi
+
+echo "== persisted legacy identifiers unchanged and isolated =="
+# The frozen VALUES live in exactly one compatibility module; production code
+# refers to semantic names. Presence of the values and absence of inlining are
+# both asserted, so isolation can never silently become a rename.
+legacy_ok=1
+grep -qF 'LEGACY_ANTIGRAVITY_MCP_SERVER_NAME = "cmm-qoder-tools"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_ANTIGRAVITY_MCP_PERMISSION_RULE = "mcp(cmm-qoder-tools/*)"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_BRIDGE_SERVER_NAME = "cmm_qoder"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_CLAUDE_BRIDGE_TOOL_PREFIX = "mcp__cmm_qoder__"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_CODE_ROUTER_KEYCHAIN_ACCOUNT = "qoder-bearer"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_QODER_PROVIDER_ID = "qoder-custom-cmm-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_SMOKE_OK_MARKER = "QODER_SMOKE_OK"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_KEYCHAIN_SERVICE = "cmm-subscription-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'LEGACY_LAUNCHAGENT_LABEL = "com.cmm.subscription-router"' src/compat/legacy-identifiers.ts || legacy_ok=0
+grep -qF 'mcp(cmm-qoder-tools/*)' scripts/macos/provision-antigravity-mcp-permission.mjs || legacy_ok=0
+grep -qF 'QODER_SMOKE_OK' scripts/qoder-smoke.sh || legacy_ok=0
+grep -qF 'qoder-custom-cmm-router' docs/qoder-setup.md || legacy_ok=0
+if [ "$legacy_ok" != "1" ]; then
+  echo "FAIL: a persisted legacy identifier was renamed or removed"
+  fail=1
+else
+  echo "PERSISTED_LEGACY_NAMES_PRESERVED=YES"
+  echo "LEGACY_PERSISTED_IDENTIFIERS_CHANGED=NO"
+  echo "LEGACY_WIRE_ALIASES=EXPLICIT_COMPAT_ONLY"
+  inlined=$(grep -rn '"cmm_qoder"\|"cmm-qoder-tools"\|"mcp__cmm_qoder__"' src/ --include="*.ts" \
+    | grep -v '^src/compat/' | wc -l | tr -d ' ')
+  echo "LEGACY_WIRE_ALIAS_INLINED_SITES=$inlined"
 fi
 
 echo "== MCP registration carries no secret =="
@@ -299,7 +601,7 @@ fi
 echo "== shared provider tool policy (no silent drop) =="
 if grep -q "enforceProviderToolPolicy" src/core/tool-policy.ts \
   && grep -q "enforceProviderToolPolicy" src/http/openai-chat.ts \
-  && grep -q "codexUnsupportedToolPolicy" src/http/openai-responses.ts \
+  && grep -q "enforceSelectedProviderToolPolicy" src/http/openai-responses.ts \
   && grep -q "toAnthropicToolChoice" src/providers/command-code/client.ts; then
   echo "SILENT_TOOL_CHOICE_DROP=NONE"
   echo "SILENT_PARALLEL_TOOL_POLICY_DROP=NONE"

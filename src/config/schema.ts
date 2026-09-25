@@ -21,6 +21,24 @@ const commandCodeProviderSchema = providerConfigSchema.extend({
   secretEnv: z.string(),
 }).strict();
 
+const cavotiProviderSchema = providerConfigSchema
+  .extend({
+    baseUrl: z
+      .literal("https://cavoti.com/v1")
+      .default("https://cavoti.com/v1"),
+    secretEnv: z.literal("CAVOTI_API_KEY").default("CAVOTI_API_KEY"),
+    model: z
+      .literal("deepseek-v4.1-flash")
+      .default("deepseek-v4.1-flash"),
+  })
+  .strict()
+  .default({
+    enabled: false,
+    baseUrl: "https://cavoti.com/v1",
+    secretEnv: "CAVOTI_API_KEY",
+    model: "deepseek-v4.1-flash",
+  });
+
 export const sharedConfigSchema = z.object({
   mode: z.literal("standalone"),
   host: z.literal("127.0.0.1"),
@@ -32,6 +50,7 @@ export const sharedConfigSchema = z.object({
       claude: claudeProviderSchema,
       google: googleProviderSchema,
       "command-code": commandCodeProviderSchema,
+      cavoti: cavotiProviderSchema,
     })
     .strict()
     .default(() => ({
@@ -42,6 +61,12 @@ export const sharedConfigSchema = z.object({
         enabled: false,
         baseUrl: "https://api.commandcode.ai/provider/v1",
         secretEnv: "COMMAND_CODE_SECRET",
+      },
+      cavoti: {
+        enabled: false,
+        baseUrl: "https://cavoti.com/v1" as const,
+        secretEnv: "CAVOTI_API_KEY" as const,
+        model: "deepseek-v4.1-flash" as const,
       },
     })),
 }).strict();

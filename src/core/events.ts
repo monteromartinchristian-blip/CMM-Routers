@@ -13,6 +13,7 @@ export type RouterEvent =
       outputTokens?: number;
       reasoningTokens?: number;
       cacheReadTokens?: number;
+      costUsd?: number;
     }
   | { type: "completed"; finishReason: "stop" | "tool_calls" | "length" }
   | { type: "error"; error: unknown };

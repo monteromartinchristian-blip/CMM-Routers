@@ -2,6 +2,7 @@ import type { DiscoveredModel, ProviderId, RouterRequest } from "./model.js";
 import type { RouterEvent } from "./events.js";
 import type { ProviderHealth } from "./provider.js";
 import { RouterError } from "./errors.js";
+import { isProviderId } from "./model.js";
 
 export const WIRE_VERSION = 1 as const;
 
@@ -107,12 +108,7 @@ export function parseRequestEnvelope(raw: string): WorkerRequestEnvelope {
   if (typeof envelope.requestId !== "string" || envelope.requestId.length === 0) {
     throw new RouterError("provider_protocol_error", "Wire request needs a requestId");
   }
-  if (
-    envelope.provider !== "chatgpt" &&
-    envelope.provider !== "claude" &&
-    envelope.provider !== "google" &&
-    envelope.provider !== "command-code"
-  ) {
+  if (!isProviderId(envelope.provider)) {
     throw new RouterError("provider_protocol_error", "Wire request has unknown provider");
   }
   if (

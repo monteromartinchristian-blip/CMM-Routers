@@ -35,6 +35,8 @@ export interface CommandCodeChatMessage {
   tool_call_id?: string;
   name?: string;
   tool_calls?: unknown;
+  /** Canonical tool-result outcome; mapped to `is_error` on the Anthropic wire. */
+  tool_result_status?: string;
 }
 
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
@@ -1039,6 +1041,8 @@ export function buildAnthropicRequestBody(
             type: "tool_result",
             tool_use_id: toolUseId,
             content: anthropicTextOf(message.content),
+            // Representable on this wire, so it is preserved rather than dropped.
+            ...(message.tool_result_status === "error" ? { is_error: true } : {}),
           },
         ],
       });

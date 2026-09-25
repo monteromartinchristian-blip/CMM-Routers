@@ -1,47 +1,83 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
-import { verifyBearer } from "../security/bearer-auth.js";
 import { ProviderRegistry } from "../registry/provider-registry.js";
 import { registerDiagnostics } from "./diagnostics.js";
 import { registerChatCompletions } from "./openai-chat.js";
 import { registerResponsesApi } from "./openai-responses.js";
+import { registerAnthropicMessages } from "./anthropic-messages.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
+import type { RouterProfile } from "../core/router-profile.js";
+import { protocolCapabilitiesFor } from "../core/protocol-capabilities.js";
 import {
-  CONSUMER_CMMCHAT,
-  CONSUMER_QODER,
-  type ConsumerId,
-} from "../core/consumer-capability.js";
+  CLIENT_LABEL_HEADER,
+  assertDistinctServerTokens,
+  resolveRequestIdentity,
+  type ResolvedIdentity,
+  type ServerTokens,
+} from "./identity.js";
 
 export interface ServerOptions {
   host: string;
   port: number;
+  /** Bearer for the CMMChat profile (permanently CHAT_ONLY). */
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
   /**
-   * Optional second bearer token bound to the Qoder consumer. When absent
-   * there is no Qoder consumer and every authenticated client is CMMChat
-   * (permanently CHAT_ONLY). Server-side and configuration-controlled: a
-   * client can never enable tools by itself, and CMMChat can never use them.
+   * Canonical Code Router bearer. Requests presenting it authenticate the Code
+   * Router profile, whose effective capability is the intersection of the
+   * profile and the resolved provider/model capability.
+   */
+  codeRouterToken?: string;
+  /**
+   * @deprecated Legacy Code Router bearer. It authenticates the SAME Code
+   * Router profile and is retained so existing installations keep working
+   * during the compatibility window. No client identity grants capability.
    */
   qoderToken?: string;
 }
 
-export type ConsumerRequest = FastifyRequest & { consumerId: ConsumerId };
+export type ConsumerRequest = FastifyRequest & {
+  identity: ResolvedIdentity;
+  /**
+   * @deprecated Derived from `identity.profile`; retained for compatibility.
+   */
+  consumerId: RouterProfile;
+};
 
+function serverTokens(
+  options: Pick<ServerOptions, "bearerSecret" | "codeRouterToken" | "qoderToken">,
+): ServerTokens {
+  return {
+    cmmchatToken: options.bearerSecret,
+    ...(options.codeRouterToken !== undefined ? { codeRouterToken: options.codeRouterToken } : {}),
+    ...(options.qoderToken !== undefined ? { legacyQoderToken: options.qoderToken } : {}),
+  };
+}
+
+/**
+ * @deprecated Use `resolveRequestIdentity`. Retained as a thin compatibility
+ * wrapper that returns the resolved profile.
+ */
 export function resolveConsumerId(
   request: FastifyRequest,
-  options: Pick<ServerOptions, "bearerSecret" | "qoderToken">,
-): ConsumerId | null {
-  const authorization = request.headers.authorization;
-  if (verifyBearer(authorization, options.bearerSecret)) return CONSUMER_CMMCHAT;
-  if (options.qoderToken !== undefined && verifyBearer(authorization, options.qoderToken)) {
-    return CONSUMER_QODER;
-  }
-  return null;
+  options: Pick<ServerOptions, "bearerSecret" | "codeRouterToken" | "qoderToken">,
+): RouterProfile | null {
+  const clientHeader = request.headers[CLIENT_LABEL_HEADER];
+  const identity = resolveRequestIdentity(
+    request.headers.authorization,
+    serverTokens(options),
+    typeof clientHeader === "string" ? clientHeader : undefined,
+  );
+  return identity === null ? null : identity.profile;
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
+  // Fail closed at startup: a configuration in which one secret could
+  // authenticate two different profiles is rejected rather than silently
+  // resolved to CMMChat at request time.
+  assertDistinctServerTokens(serverTokens(options));
+
   const fastify = Fastify({
     logger: false,
     // Headroom over the 1 MiB tool-result policy so an at-bound result plus
@@ -50,23 +86,56 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     bodyLimit: 2 * 1024 * 1024,
   });
 
-  // Bearer auth pre-handler for /v1/* routes. Two configured server-side
-  // tokens exist: the default (CMMChat, always CHAT_ONLY) and the optional
-  // Qoder token. A request authenticates as exactly one consumer; anything
-  // else is 401. Consumer identity is never inferred from prompt text,
-  // User-Agent, or model names.
+  // Bearer auth pre-handler for /v1/* routes. The authenticated PROFILE is the
+  // authorization subject: CMMChat (always CHAT_ONLY) or the Code Router
+  // profile. A request authenticates as exactly one profile; anything else is
+  // 401. Profile identity is never inferred from prompt text, User-Agent,
+  // model names, or any request-supplied metadata — the optional application
+  // identifier is diagnostics only.
   fastify.addHook("preHandler", async (request: FastifyRequest, reply) => {
     if (request.url.startsWith("/v1/")) {
-      const consumerId = resolveConsumerId(request, options);
-      if (consumerId === null) {
-        return reply.code(401).send({
-          error: {
-            type: "router_unauthorized",
-            message: "Invalid or missing bearer token",
-          },
-        });
+      const clientHeader = request.headers[CLIENT_LABEL_HEADER];
+
+      // The Anthropic-compatible surface also accepts an API-key-style header, as
+      // a WIRE ALTERNATIVE for the exact same configured secrets. It maps to the
+      // same profile logic and creates no additional credential role. Two
+      // competing credentials on one request are ambiguous and fail closed.
+      const isAnthropicSurface = request.url.startsWith("/v1/messages");
+      const apiKeyHeader = isAnthropicSurface ? request.headers["x-api-key"] : undefined;
+      const apiKey = typeof apiKeyHeader === "string" && apiKeyHeader.length > 0 ? apiKeyHeader : undefined;
+      const bearer =
+        typeof request.headers.authorization === "string" && request.headers.authorization.length > 0
+          ? request.headers.authorization
+          : undefined;
+
+      const unauthorized = (): unknown =>
+        isAnthropicSurface
+          ? {
+              type: "error",
+              error: { type: "authentication_error", message: "Invalid or missing credentials" },
+            }
+          : {
+              error: {
+                type: "router_unauthorized",
+                message: "Invalid or missing bearer token",
+              },
+            };
+
+      if (apiKey !== undefined && bearer !== undefined) {
+        return reply.code(401).send(unauthorized());
       }
-      (request as ConsumerRequest).consumerId = consumerId;
+
+      const identity = resolveRequestIdentity(
+        apiKey !== undefined ? `Bearer ${apiKey}` : bearer,
+        serverTokens(options),
+        typeof clientHeader === "string" ? clientHeader : undefined,
+      );
+      if (identity === null) {
+        return reply.code(401).send(unauthorized());
+      }
+      const consumerRequest = request as ConsumerRequest;
+      consumerRequest.identity = identity;
+      consumerRequest.consumerId = identity.profile;
     }
   });
 
@@ -98,28 +167,51 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return { status: "ready" };
   });
 
-  // OpenAI-compatible models endpoint
+  // OpenAI-compatible models endpoint. The standard model shape is preserved
+  // exactly; a namespaced `x_cmm` extension is added ONLY when the Router
+  // already knows the model's Code Router capability verdict, so a generic
+  // client can select an exact CHAT_AND_TOOLS model without relying on model
+  // names or provider heuristics. Unknown extra fields are ignored by
+  // ordinary OpenAI-compatible clients. Publication is a fact about the
+  // model, never an authorization grant.
   fastify.get("/v1/models", async () => {
     const models = options.registry.listModels();
+    const entries = models.map((model) => ({
+      id: model.id,
+      object: "model",
+      owned_by: `cmm:${model.provider}`,
+      ...(model.capability !== undefined
+        ? {
+            x_cmm: {
+              // Preserved for compatibility with existing clients.
+              code_router: model.capability,
+              ...protocolCapabilitiesFor(model.capability, model.provider),
+            },
+          }
+        : {}),
+    }));
+    // `data` is the OpenAI list shape. `models` is an additive alias carrying
+    // exactly the same entries so a client that expects that member can decode
+    // this discovery response without the Router branching on client identity.
     return redactObject({
       object: "list",
-      data: models.map((model) => ({
-        id: model.id,
-        object: "model",
-        owned_by: `cmm:${model.provider}`,
-      })),
+      data: entries,
+      models: entries,
     });
   });
 
   // Diagnostic endpoints
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
-  // OpenAI-compatible chat completions. Tool semantics are gated per consumer
-  // (CMMChat vs Qoder) inside the handler via effectiveToolCapability.
+  // OpenAI-compatible chat completions. Tool semantics are gated on the
+  // authenticated profile via effectiveProfileToolCapability.
   registerChatCompletions(fastify, options.registry, options.usageStore);
 
   // OpenAI-compatible responses API
   registerResponsesApi(fastify, options.registry, options.usageStore);
+
+  // Anthropic Messages-compatible downstream protocol adapter
+  registerAnthropicMessages(fastify, options.registry, options.usageStore);
 
   return fastify;
 }
