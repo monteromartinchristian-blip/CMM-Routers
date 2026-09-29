@@ -88,6 +88,34 @@ export interface ParsedModel {
   displayName: string;
 }
 
+/**
+ * The exact version a discovered Antigravity slug names, or `undefined`.
+ *
+ * `agy models` advertises both bare families (a size or effort token and no
+ * dotted version) and versioned routes, whose slug spells the version out with
+ * dots or with hyphens. The version is read out of the upstream slug the CLI
+ * itself printed — never from a table of which model is current — and a bare
+ * family yields nothing rather than a guess.
+ */
+export function antigravityDeclaredVersion(slug: string): string | undefined {
+  const dotted = /\b(\d+(?:\.\d+)+)(?![\d.])/g;
+  let last: string | undefined;
+  for (const found of slug.matchAll(dotted)) {
+    last = found[1];
+  }
+  if (last !== undefined) return last;
+
+  // Hyphenated form, e.g. a Claude route whose slug ends `...-4-6` or
+  // `...-4-6-thinking`. The boundary must not be another hyphen-digit, so a
+  // longer version is taken whole rather than truncated at its first group.
+  const hyphenated = /(?:^|[-_])(\d+-\d+(?:-\d+)*)(?!-\d)/g;
+  for (const found of slug.matchAll(hyphenated)) {
+    const captured = found[1];
+    if (captured !== undefined) last = captured.replace(/-/g, ".");
+  }
+  return last;
+}
+
 export function parseAgyModelsOutput(stdout: string): ParsedModel[] {
   const models: ParsedModel[] = [];
   const seen = new Set<string>();
@@ -963,16 +991,22 @@ export class AntigravityAdapter implements ProviderAdapter {
         );
       }
 
-      return parsed.map((m) => ({
-        id: `google/${m.slug}`,
-        provider: "google" as const,
-        upstreamModel: m.slug,
-        displayName: m.displayName,
-        // Qoder-owned tools traverse the external MCP bridge; agy's native
-        // mutation tools (run_command/replace_file_content/write_to_file) are
-        // never used for them and native execution stays disabled.
-        capability: "CHAT_AND_TOOLS" as const,
-      }));
+      return parsed.map((m) => {
+        const declaredVersion = antigravityDeclaredVersion(m.slug);
+        return {
+          id: `google/${m.slug}`,
+          provider: "google" as const,
+          upstreamModel: m.slug,
+          // The CLI's own display name is the product truth ("Claude Sonnet
+          // 4.6 (Thinking)"), not a name re-derived from the slug.
+          displayName: m.displayName,
+          // Qoder-owned tools traverse the external MCP bridge; agy's native
+          // mutation tools (run_command/replace_file_content/write_to_file) are
+          // never used for them and native execution stays disabled.
+          capability: "CHAT_AND_TOOLS" as const,
+          ...(declaredVersion !== undefined ? { version: declaredVersion } : {}),
+        };
+      });
     } finally {
       // Discovery temp dirs must not accumulate on a long-running router.
       try {

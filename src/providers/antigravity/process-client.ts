@@ -157,7 +157,34 @@ export const MAX_AGY_STDERR_DIAGNOSTIC_BYTES = 64 * 1024;
  */
 export const MAX_AGY_NDJSON_LINE_BYTES = 1024 * 1024;
 
-export const AGY_PATH = join(homedir(), ".local", "bin", "agy");
+/**
+ * The launchd-plist override for the Antigravity CLI.
+ *
+ * The LaunchAgent has always advertised `CMM_ROUTER_AGY_BIN`, but nothing read
+ * it, so the variable was inert configuration: an operator who set it and saw
+ * the adapter still fail with "agy CLI not found" had no way to tell that the
+ * override was simply ignored. It is honoured here, below the explicit
+ * `config.providers.google.agyPath`, and a blank value is treated as unset
+ * rather than as an empty path.
+ */
+export const AGY_PATH_ENV = "CMM_ROUTER_AGY_BIN";
+
+/** The installed default location of the Antigravity CLI. */
+export const AGY_DEFAULT_PATH = join(homedir(), ".local", "bin", "agy");
+
+/**
+ * Resolve the Antigravity CLI: explicit configuration first, then the launchd
+ * override, then the installed default.
+ */
+export function resolveAgyPath(configured?: string | undefined): string {
+  const explicit = configured?.trim();
+  if (explicit) return explicit;
+  const override = process.env[AGY_PATH_ENV]?.trim();
+  if (override) return override;
+  return AGY_DEFAULT_PATH;
+}
+
+export const AGY_PATH = resolveAgyPath();
 
 export const GLOBAL_SETTINGS_PATH = join(
   homedir(),

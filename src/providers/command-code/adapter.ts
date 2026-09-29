@@ -85,6 +85,43 @@ function toAnthropicTools(request: RouterRequest): unknown[] | undefined {
   }));
 }
 
+/**
+ * The exact version a Command Code model identifier names, or `undefined`.
+ *
+ * The upstream serves a bare catalog whose only name for a model is its id, and
+ * those ids spell the version out — as a family token followed by hyphen- or
+ * dot-separated numbers. The read is a match against the upstream's own string,
+ * never a lookup in a table of "which model is current", and an id that names
+ * no version yields nothing rather than a guess.
+ */
+export function commandCodeDeclaredVersion(modelId: string): string | undefined {
+  const collect = (pattern: RegExp): string | undefined => {
+    let last: string | undefined;
+    for (const found of modelId.matchAll(pattern)) {
+      const captured = found[1];
+      if (captured !== undefined) last = captured;
+    }
+    return last;
+  };
+
+  const raw =
+    collect(/(?:^|[-_/])(\d+(?:-\d+)+)(?!-\d)/g) ?? collect(/(?:^|[-_/])(\d+(?:\.\d+)+)(?![\d.])/g);
+  if (raw === undefined) return undefined;
+
+  // A trailing eight-digit group that opens with a century is a snapshot date,
+  // not part of the version: `...-4-5-20251001` is version 4.5. Stripping it is
+  // a formatting rule about how the upstream spells a date, not a judgement
+  // about which model is current.
+  const groups = raw.replace(/-/g, ".").split(".").filter((part) => /^\d+$/.test(part));
+  while (
+    groups.length > 1 &&
+    /^(19|20)\d{6}$/.test(groups[groups.length - 1]!)
+  ) {
+    groups.pop();
+  }
+  return groups.length > 0 ? groups.join(".") : undefined;
+}
+
 export class CommandCodeAdapter implements ProviderAdapter {
   readonly id = "command-code" as const;
   private readonly client: CommandCodeClient;
@@ -137,6 +174,12 @@ export class CommandCodeAdapter implements ProviderAdapter {
       // The bridge never executes the tool; Qoder owns execution.
       const wire = model.wire ?? this.client.wireForUpstreamId(model.id);
       const capability = "CHAT_AND_TOOLS" as const;
+      // The upstream serves a bare catalog: it names each model only by its
+      // identifier. Where that identifier spells out a version, the version is
+      // knowable and is read straight out of the upstream string; a bare family
+      // name declares no version and is left unversioned rather than guessed at
+      // from a table of what is current.
+      const declaredVersion = commandCodeDeclaredVersion(model.id);
       discovered.push({
         id: `command-code/${model.id}`,
         provider: "command-code",
@@ -145,6 +188,7 @@ export class CommandCodeAdapter implements ProviderAdapter {
         capability,
         wire: model.wire,
         ...(model.family !== undefined ? { family: model.family } : {}),
+        ...(declaredVersion !== undefined ? { version: declaredVersion } : {}),
         goatIncluded: model.goatIncluded,
       } as DiscoveredModel);
     }

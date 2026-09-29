@@ -108,6 +108,31 @@ export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as
 export type ClaudeEffortLevel = (typeof CLAUDE_EFFORT_LEVELS)[number];
 
 /**
+ * The exact version a Claude model value names, or `undefined` when it names
+ * none.
+ *
+ * The subscription SDK offers two kinds of entry and they must not be conflated:
+ *
+ *   * a **rolling alias** — `default`, `sonnet`, `haiku`, `opus[1m]`. The
+ *     upstream genuinely does not resolve these to a version, so the honest
+ *     answer is `undefined` and the selector shows the alias. Inventing a
+ *     version for these would be a fabricated product claim.
+ *   * a **versioned value** — `claude-fable-5-1[1m]`, which names `5.1` in the
+ *     upstream's own identifier. Here the version is knowable and is read
+ *     directly out of the upstream string.
+ *
+ * The read is deliberately a match against the upstream's own token, never a
+ * lookup in a table of "which Claude is current".
+ */
+export function claudeDeclaredVersion(modelValue: string): string | undefined {
+  // Match the family+version pair the upstream writes, e.g. `fable-5-1`,
+  // `sonnet-4-6`, `opus-5-5`. The trailing boundary must not be a digit, so
+  // `opus-5` does not also match inside `opus-5-5`.
+  const match = /\b(?:opus|sonnet|haiku|fable)-(\d+(?:-\d+)*)(?![\d-])/i.exec(modelValue);
+  return match?.[1];
+}
+
+/**
  * Split Router messages into a system prompt plus the ordered conversation.
  * System-role content maps to the SDK's dedicated systemPrompt option;
  * every non-system message (user, assistant history, tool results as text)
@@ -311,6 +336,11 @@ export class ClaudeAdapter implements ProviderAdapter {
         // Namespace as claude/<model-value>
         const namespacedId = `claude/${modelValue}`;
 
+        // The upstream's own display name wins, so the selector can say which
+        // variant it is offering. The version is carried only when the upstream
+        // names one; a rolling alias declares none and is left unversioned.
+        const declaredVersion = claudeDeclaredVersion(modelValue);
+
         discoveredModels.push({
           id: namespacedId,
           provider: "claude",
@@ -320,6 +350,7 @@ export class ClaudeAdapter implements ProviderAdapter {
           // the split HTTP interaction; the Router never executes the tool and
           // Claude's native shell/file/edit tools stay disabled.
           capability: "CHAT_AND_TOOLS",
+          ...(declaredVersion !== undefined ? { version: declaredVersion } : {}),
         });
       }
 

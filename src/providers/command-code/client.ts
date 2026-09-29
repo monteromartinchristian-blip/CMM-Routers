@@ -301,12 +301,64 @@ const ENTITLEMENT_FIELDS = [
 ] as const;
 
 /**
+ * Fields whose value is a *closed allowlist of plans this model is served on*.
+ *
+ * For these, an array that names other plans but not GOAT is an authoritative
+ * statement of exclusion: the payload is telling us the model is served on Pro
+ * and not on GOAT. That is a real fact and the model must not be offered as
+ * GOAT-routable.
+ */
+const ENTITLEMENT_ALLOWLIST_FIELDS: ReadonlySet<string> = new Set([
+  "included_plans",
+  "includedPlans",
+  "in_goat_plan",
+  "inGoatPlan",
+  "included_in_goat",
+  "includedInGoat",
+]);
+
+/**
+ * Fields that merely *describe* the model's plan or availability without
+ * enumerating what the plan includes.
+ *
+ * For these, absence of "goat" proves nothing — a value such as `available`,
+ * `default` or `tier-2` is not a statement that GOAT is excluded — so the
+ * result must be unknown rather than an exclusion. Reading a descriptive field
+ * as an allowlist is what silently empties an entitled catalog.
+ */
+const ENTITLEMENT_DESCRIPTIVE_FIELDS: ReadonlySet<string> = new Set([
+  "plans",
+  "tiers",
+  "tier",
+  "availability",
+  "plan_access",
+  "planAccess",
+]);
+
+/**
+ * Fields that assert an extra-cost requirement, where `true` is the exclusion.
+ */
+const ENTITLEMENT_EXTRA_COST_FIELDS: ReadonlySet<string> = new Set([
+  "requires_extra_credits",
+  "requiresExtraCredits",
+  "extra_credits_required",
+  "on_demand_only",
+  "onDemandOnly",
+]);
+
+/**
  * Read authoritative GOAT plan-entitlement metadata from a live models-payload
  * entry. Returns true (GOAT-included), false (explicitly excluded), or null
  * when the payload carries no entitlement signal at all.
  *
  * Observed live evidence (2026-09-09): the endpoint returns bare catalog
  * entries with no entitlement fields, so every entry yields null.
+ *
+ * The only value that hides a model is `false`, and `false` is returned only on
+ * an **explicit, authoritative exclusion** — a boolean flag that says so, an
+ * extra-cost requirement that is set, or an allowlist field that enumerates
+ * plans without naming GOAT. A descriptive field that merely fails to mention
+ * GOAT is an unknown, and an unknown never hides a model.
  */
 export function readGoatEntitlement(
   record: Record<string, unknown>,
@@ -314,25 +366,35 @@ export function readGoatEntitlement(
   for (const field of ENTITLEMENT_FIELDS) {
     const value = record[field];
     if (value === undefined || value === null) continue;
-    if (typeof value === "boolean") {
-      if (/requires_extra|on_demand_only|extra_credits/i.test(field)) {
-        return !value;
+
+    if (ENTITLEMENT_EXTRA_COST_FIELDS.has(field)) {
+      if (typeof value === "boolean") return !value;
+      if (typeof value === "string") {
+        const lowered = value.toLowerCase();
+        if (lowered === "true" || lowered === "yes" || lowered === "1") return false;
       }
+      if (Array.isArray(value) && value.length > 0) return false;
+      continue;
+    }
+
+    if (typeof value === "boolean") {
       return value;
     }
+
     if (typeof value === "string") {
       const lowered = value.toLowerCase();
       if (lowered === "goat" || lowered.includes("goat")) return true;
-      if (lowered.includes("pro") && !lowered.includes("goat")) return false;
-      if (lowered.includes("extra") || lowered.includes("on-demand") || lowered.includes("on_demand")) {
-        return false;
-      }
+      // Only an allowlist field turns "some other plan" into an exclusion.
+      if (ENTITLEMENT_ALLOWLIST_FIELDS.has(field)) return false;
       continue;
     }
+
     if (Array.isArray(value)) {
       const lowered = value.map((v) => String(v).toLowerCase());
       if (lowered.some((v) => v === "goat" || v.includes("goat"))) return true;
-      return false;
+      if (ENTITLEMENT_ALLOWLIST_FIELDS.has(field)) return false;
+      // A descriptive list that omits GOAT says nothing about GOAT.
+      continue;
     }
   }
   return null;

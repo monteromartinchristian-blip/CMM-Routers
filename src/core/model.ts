@@ -17,6 +17,32 @@ export interface DiscoveredModel {
   upstreamModel: string;
   displayName: string;
   capability?: ProviderCapability;
+  /**
+   * The concrete version/family the upstream itself declares, when it declares
+   * one.  `undefined` is an honest unknown — never a version inferred from the
+   * id's spelling, because a rolling alias such as `sonnet` has no version to
+   * infer and guessing one would be a fabricated product claim.
+   */
+  version?: string;
+  /**
+   * The serving vendor the upstream declares (an OpenAI-compatible listing's
+   * `owned_by`).  Carried so a client names the real provider instead of
+   * deriving one from the id.
+   */
+  vendor?: string;
+  /**
+   * Where this model's context actually goes.  A lane is a fact about egress,
+   * never about the serving process being on loopback: a loopback proxy that
+   * forwards to a hosted upstream is `remote`.
+   */
+  locality?: "local" | "cloud";
+  /** Effort levels the upstream genuinely accepts, when it declares them. */
+  reasoningEfforts?: readonly string[];
+  /**
+   * How this model was classified for the selector.  `available` is a working
+   * route; `unavailable` is a retained identity that is not currently usable.
+   */
+  availability?: "available" | "unavailable";
 }
 
 /**
