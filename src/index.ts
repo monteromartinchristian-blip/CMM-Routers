@@ -13,6 +13,7 @@ import {
   requireCavotiSpendAcknowledgement,
 } from "./providers/cavoti/spend-guard.js";
 import { DeferredToolBroker } from "./core/deferred-tool-broker.js";
+import { USAGE_READER_TOKEN_ENV } from "./security/usage-reader-policy.js";
 
 export interface ProductionComposition {
   config: RouterConfig;
@@ -199,12 +200,18 @@ export async function createProductionRegistry(
   return { config: resolved, registry, usageStore, registeredProviders, skippedProviders, toolBroker };
 }
 
-export function createProductionServer(composition: ProductionComposition, bearerSecret: string, qoderSecret?: string) {
+export function createProductionServer(
+  composition: ProductionComposition,
+  bearerSecret: string,
+  qoderSecret?: string,
+  usageReaderSecret?: string,
+) {
   return buildServer({
     host: composition.config.host,
     port: composition.config.port,
     bearerSecret,
     ...(qoderSecret !== undefined ? { qoderToken: qoderSecret } : {}),
+    ...(usageReaderSecret !== undefined ? { usageReaderToken: usageReaderSecret } : {}),
     registry: composition.registry,
     usageStore: composition.usageStore,
   });
@@ -233,7 +240,14 @@ async function main() {
   // every authenticated client is CMMChat (permanently CHAT_ONLY).
   const qoderSecret = process.env.CMM_QODER_TOKEN;
 
-  const server = createProductionServer(composition, bearerSecret, qoderSecret);
+  // Optional read-only observability bearer (CMM Usage). When unset or blank
+  // the read-only principal simply cannot authenticate; when configured it is
+  // authorized for the explicit route allowlist in
+  // security/usage-reader-policy.ts and for nothing else. Value comes from the
+  // environment only — never a tracked file, a config field or a CLI argument.
+  const usageReaderSecret = process.env[USAGE_READER_TOKEN_ENV];
+
+  const server = createProductionServer(composition, bearerSecret, qoderSecret, usageReaderSecret);
 
   const shutdown = async () => {
     try {

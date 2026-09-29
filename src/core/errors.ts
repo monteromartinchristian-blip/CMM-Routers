@@ -10,6 +10,7 @@ export type RouterErrorCode =
   | "provider_timeout"
   | "provider_protocol_error"
   | "router_unauthorized"
+  | "router_forbidden"
   | "router_internal_error";
 
 export class RouterError extends Error {

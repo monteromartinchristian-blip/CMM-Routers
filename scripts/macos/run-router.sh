@@ -60,6 +60,8 @@ CAVOTI_SERVICE="${CAVOTI_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 CAVOTI_ACCOUNT="${CAVOTI_KEYCHAIN_ACCOUNT:-cavoti-api-key}"
 QODER_SERVICE="${CMM_QODER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
 QODER_ACCOUNT="${CMM_QODER_KEYCHAIN_ACCOUNT:-qoder-bearer}"
+USAGE_READER_SERVICE="${CMM_USAGE_READER_KEYCHAIN_SERVICE:-cmm-subscription-router}"
+USAGE_READER_ACCOUNT="${CMM_USAGE_READER_KEYCHAIN_ACCOUNT:-usage-reader-bearer}"
 
 # Indirect expansion against the CONFIGURED names (never hard-coded).
 if [ -z "${!BEARER_ENV:-}" ]; then
@@ -126,6 +128,18 @@ if [ -z "${CMM_QODER_TOKEN:-}" ]; then
   QODER_TOKEN="$(security find-generic-password -s "$QODER_SERVICE" -a "$QODER_ACCOUNT" -w 2>/dev/null || true)"
   if [ -n "$QODER_TOKEN" ]; then
     export CMM_QODER_TOKEN="$QODER_TOKEN"
+  fi
+fi
+
+# Optional read-only observability bearer (CMM Usage). When absent there is no
+# read-only principal at all: the Router keeps exactly its previous behavior.
+# When present it authorizes ONLY the explicit GET allowlist in
+# src/security/usage-reader-policy.ts — never an inference, never a mutation,
+# never a prefix match. Never fatal, never logged, never a consumer credential.
+if [ -z "${CMM_USAGE_READER_TOKEN:-}" ]; then
+  USAGE_READER_TOKEN="$(security find-generic-password -s "$USAGE_READER_SERVICE" -a "$USAGE_READER_ACCOUNT" -w 2>/dev/null || true)"
+  if [ -n "$USAGE_READER_TOKEN" ]; then
+    export CMM_USAGE_READER_TOKEN="$USAGE_READER_TOKEN"
   fi
 fi
 

@@ -49,6 +49,30 @@ read without echo and never written to the plist, logs, or the repository.
 `scripts/macos/install-router.sh` reports whether the item already exists and,
 if not, prints the exact provisioning command (idempotent; it never overwrites).
 
+### Read-only observability bearer (optional)
+
+CMM Usage is an observability-only client. It authenticates with its own
+bearer, which is **not** a consumer credential: it can never authorize an
+inference, a mutation, or a credential operation. Provision it per Mac (never
+copied between machines, never committed):
+
+```bash
+security add-generic-password -s cmm-subscription-router -a usage-reader-bearer -w
+```
+
+At startup `scripts/macos/run-router.sh` reads
+`service=cmm-subscription-router account=usage-reader-bearer` from Keychain and
+exports it as `CMM_USAGE_READER_TOKEN`. When absent the read-only principal
+cannot authenticate at all and every route behaves exactly as it did before.
+When present it is authorized for an explicit allowlist of GET routes —
+`/v1/cmm/health` and `/v1/cmm/catalog` — and for nothing else: any other route
+answers `403 router_forbidden`, while a missing or invalid bearer still answers
+`401 router_unauthorized`. The allowlist is a list of exact
+`(method, registered route)` identities, not a `/v1/cmm/*` prefix, so adding a
+route under that namespace grants the read-only principal nothing by itself.
+The value is read without echo and never written to the plist, logs, config, or
+the repository.
+
 ## Reproducing the install on another Mac
 
 From `$HOME/CMM-Routers` on the second machine:

@@ -130,6 +130,15 @@ When the optional Qoder consumer bearer is absent, there is simply no
 `CMM Code Router` consumer: every authenticated client is treated as CMMChat and
 stays permanently `CHAT_ONLY`.
 
+CMM Usage authenticates with its own optional read-only bearer
+(`CMM_USAGE_READER_TOKEN`), which is not a consumer credential. It is authorized
+for an explicit list of exact `GET` routes — currently `/v1/cmm/health` and
+`/v1/cmm/catalog` — and for nothing else; anything outside that list answers
+`403 router_forbidden` while an absent or invalid bearer still answers
+`401 router_unauthorized`. The list is a list, not a `/v1/cmm/*` prefix, so
+registering a new route grants the read-only principal nothing. See
+`src/security/usage-reader-policy.ts`.
+
 ### Qoder
 
 See [docs/qoder-setup.md](docs/qoder-setup.md) for the provider registration and
