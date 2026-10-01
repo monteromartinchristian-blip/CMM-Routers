@@ -129,7 +129,62 @@ export function claudeDeclaredVersion(modelValue: string): string | undefined {
   // `sonnet-4-6`, `opus-5-5`. The trailing boundary must not be a digit, so
   // `opus-5` does not also match inside `opus-5-5`.
   const match = /\b(?:opus|sonnet|haiku|fable)-(\d+(?:-\d+)*)(?![\d-])/i.exec(modelValue);
-  return match?.[1];
+  const raw = match?.[1];
+  if (raw === undefined) return undefined;
+  // A trailing eight-digit group that opens with a century is the snapshot date
+  // the upstream appends to a pinned id (`haiku-4-5-20251001`), not part of the
+  // version. Stripping it is a formatting rule, not a judgement about which
+  // model is current.
+  const groups = raw.split("-").filter((part) => /^\d+$/.test(part));
+  while (groups.length > 1 && /^(19|20)\d{6}$/.test(groups[groups.length - 1]!)) {
+    groups.pop();
+  }
+  return groups.length > 0 ? groups.join(".") : undefined;
+}
+
+/**
+ * Split a resolved Claude model id from its declared context variant.
+ *
+ * `claude-opus-5[1m]` names one concrete model — `claude-opus-5` — that the
+ * upstream serves on a 1,000,000-token window. The window is capability
+ * metadata about that model, never part of its identity, so it is lifted out
+ * here instead of being carried into the model's name.
+ */
+export function readClaudeContextVariant(resolvedModel: string): {
+  baseModel: string;
+  contextWindow?: number;
+} {
+  const match = /^(?<base>[A-Za-z0-9._-]+)\[(?<variant>\d+[mM])\]$/.exec(resolvedModel);
+  const base = match?.groups?.["base"];
+  const variant = match?.groups?.["variant"];
+  if (base === undefined || variant === undefined) return { baseModel: resolvedModel };
+  const millions = Number(variant.replace(/[mM]$/, ""));
+  if (!Number.isFinite(millions) || millions <= 0) return { baseModel: resolvedModel };
+  return { baseModel: base, contextWindow: millions * 1_000_000 };
+}
+
+/**
+ * The family name a concrete Claude model id declares, e.g. `claude-opus-5`
+ * declares `Opus`. Derived from the upstream's own identifier, never from a
+ * table of current models.
+ */
+export function claudeFamilyLabel(baseModel: string): string | undefined {
+  const match = /\b(opus|sonnet|haiku|fable)\b/i.exec(baseModel);
+  if (!match) return undefined;
+  const family = match[1]!.toLowerCase();
+  return family.charAt(0).toUpperCase() + family.slice(1);
+}
+
+/**
+ * The name a concrete Claude model is shown under, e.g. `Opus 5` for
+ * `claude-opus-5[1m]`. Both the family and the version come from the upstream's
+ * own id; a value that declares no version is named by family alone.
+ */
+export function claudeConcreteDisplayName(baseModel: string): string | undefined {
+  const family = claudeFamilyLabel(baseModel);
+  if (family === undefined) return undefined;
+  const version = claudeDeclaredVersion(baseModel);
+  return version === undefined ? family : `${family} ${version}`;
 }
 
 /**
@@ -323,6 +378,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Map SDK ModelInfo to DiscoveredModel with proper namespacing
       const discoveredModels: DiscoveredModel[] = [];
       const seenValues = new Set<string>();
+      const seenConcreteIds = new Set<string>();
 
       for (const modelInfo of modelInfos) {
         const modelValue = modelInfo.value;
@@ -333,24 +389,63 @@ export class ClaudeAdapter implements ProviderAdapter {
         }
         seenValues.add(modelValue);
 
-        // Namespace as claude/<model-value>
-        const namespacedId = `claude/${modelValue}`;
+        // The SDK resolves every quick-select entry to the canonical wire model
+        // it actually serves (`sonnet` -> `claude-sonnet-5`,
+        // `opus[1m]` -> `claude-opus-5[1m]`). That resolution is the upstream's
+        // own statement of the concrete model behind a routing alias, so the
+        // concrete identity is what the catalog carries; the alias row is kept
+        // only as routing metadata and is flagged so a client never offers it
+        // as if it were a model of its own.
+        const resolvedId = modelInfo.resolvedModel ?? modelValue;
+        const { baseModel, contextWindow } = readClaudeContextVariant(resolvedId);
+        const isAlias = resolvedId !== modelValue;
+        const concreteDisplayName = claudeConcreteDisplayName(baseModel);
 
-        // The upstream's own display name wins, so the selector can say which
-        // variant it is offering. The version is carried only when the upstream
-        // names one; a rolling alias declares none and is left unversioned.
-        const declaredVersion = claudeDeclaredVersion(modelValue);
+        // The concrete row always ships: it is the identity a user selects. Two
+        // aliases that resolve to the same model collapse onto that one row.
+        const concreteId = `claude/${baseModel}`;
+        if (!seenConcreteIds.has(concreteId)) {
+          seenConcreteIds.add(concreteId);
+          const concreteVersion = claudeDeclaredVersion(baseModel);
+          discoveredModels.push({
+            id: concreteId,
+            provider: "claude",
+            upstreamModel: baseModel,
+            displayName: concreteDisplayName ?? (modelInfo.displayName || baseModel),
+            // Qoder-owned tools traverse the external MCP bridge held open
+            // across the split HTTP interaction; the Router never executes the
+            // tool and Claude's native shell/file/edit tools stay disabled.
+            capability: "CHAT_AND_TOOLS",
+            ...(concreteVersion !== undefined ? { version: concreteVersion } : {}),
+            ...(contextWindow !== undefined ? { contextWindow } : {}),
+            ...(modelInfo.supportedEffortLevels?.length
+              ? { reasoningEfforts: modelInfo.supportedEffortLevels }
+              : {}),
+            ...(modelInfo.supportsAdaptiveThinking !== undefined
+              ? { adaptiveThinking: modelInfo.supportsAdaptiveThinking }
+              : {}),
+          });
+        }
 
+        if (!isAlias) continue;
+
+        // Alias row: routing metadata only. Kept so an explicit alias request
+        // still resolves, and marked so the client hides it whenever the
+        // concrete model behind it is present.
         discoveredModels.push({
-          id: namespacedId,
+          id: `claude/${modelValue}`,
           provider: "claude",
           upstreamModel: modelValue,
           displayName: modelInfo.displayName || modelValue,
-          // Qoder-owned tools traverse the external MCP bridge held open across
-          // the split HTTP interaction; the Router never executes the tool and
-          // Claude's native shell/file/edit tools stay disabled.
           capability: "CHAT_AND_TOOLS",
-          ...(declaredVersion !== undefined ? { version: declaredVersion } : {}),
+          isAlias: true,
+          ...(contextWindow !== undefined ? { contextWindow } : {}),
+          ...(modelInfo.supportedEffortLevels?.length
+            ? { reasoningEfforts: modelInfo.supportedEffortLevels }
+            : {}),
+          ...(modelInfo.supportsAdaptiveThinking !== undefined
+            ? { adaptiveThinking: modelInfo.supportsAdaptiveThinking }
+            : {}),
         });
       }
 

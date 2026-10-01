@@ -39,6 +39,17 @@ export interface DiscoveredModel {
   /** Effort levels the upstream genuinely accepts, when it declares them. */
   reasoningEfforts?: readonly string[];
   /**
+   * True when this row is a routing alias (`default`, `sonnet`, `opus[1m]`)
+   * rather than a model of its own. Alias rows stay routable so an explicit
+   * alias request still resolves, and a client hides them from model selection
+   * whenever the concrete model behind them is present.
+   */
+  isAlias?: boolean;
+  /** The context window the upstream declares for this model, in tokens. */
+  contextWindow?: number;
+  /** True when the upstream declares adaptive thinking for this model. */
+  adaptiveThinking?: boolean;
+  /**
    * How this model was classified for the selector.  `available` is a working
    * route; `unavailable` is a retained identity that is not currently usable.
    */

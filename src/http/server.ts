@@ -178,6 +178,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         ...(model.locality ? { locality: model.locality } : {}),
         ...(model.availability ? { availability: model.availability } : {}),
         ...(model.reasoningEfforts ? { reasoning_efforts: [...model.reasoningEfforts] } : {}),
+        // Identity and capability descriptors the upstream declared. An alias
+        // row is published as such so a client never offers `sonnet` as if it
+        // were a model; `1M context` travels as capability metadata, never as
+        // part of the model's name.
+        ...(model.isAlias !== undefined ? { is_alias: model.isAlias } : {}),
+        ...(model.contextWindow !== undefined
+          ? { context_window: model.contextWindow }
+          : {}),
+        ...(model.adaptiveThinking !== undefined
+          ? { adaptive_thinking: model.adaptiveThinking }
+          : {}),
       })),
     });
   });
