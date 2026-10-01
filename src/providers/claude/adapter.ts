@@ -226,7 +226,12 @@ export function mergeAccountCatalog(
       }
       // An account restriction is a fact about this account, not about the
       // provider's health, so it applies to a row the runtime also resolved.
-      if (entry.requiresUsageCredits === true) existing.availability = "unavailable";
+      if (entry.requiresUsageCredits === true || entry.unavailableReason !== undefined) {
+        existing.availability = "unavailable";
+      }
+      if (entry.unavailableReason !== undefined) {
+        existing.unavailableReason = entry.unavailableReason;
+      }
       continue;
     }
     const row: DiscoveredModel = {
@@ -244,9 +249,14 @@ export function mergeAccountCatalog(
       ...(entry.adaptiveThinking !== undefined
         ? { adaptiveThinking: entry.adaptiveThinking }
         : {}),
-      // Known to the account, not callable on it: published so the identity is
-      // real, never offered as something the product can run.
-      ...(entry.requiresUsageCredits === true ? { availability: "unavailable" } : {}),
+      // Known but not callable here: published so the identity is real, never
+      // offered as something the product can run.
+      ...(entry.requiresUsageCredits === true || entry.unavailableReason !== undefined
+        ? { availability: "unavailable" as const }
+        : {}),
+      ...(entry.unavailableReason !== undefined
+        ? { unavailableReason: entry.unavailableReason }
+        : {}),
     };
     rows.push(row);
     byUpstream.set(entry.id, row);

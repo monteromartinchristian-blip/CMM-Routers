@@ -23,6 +23,7 @@
  */
 
 import { readdirSync, readFileSync } from "node:fs";
+import { claudeRuntimeVersion } from "./runtime-version.js";
 
 export interface AccountCatalogEntry {
   /** The canonical wire model id, exactly as the account declares it. */
@@ -42,6 +43,17 @@ export interface AccountCatalogEntry {
    * credits. The model is known to the account and is still not callable.
    */
   requiresUsageCredits?: boolean;
+  /**
+   * Why this model is known but not callable here, when the account or the
+   * runtime says so. Published so the catalog can state the reason instead of
+   * offering a row that fails at the first message.
+   */
+  unavailableReason?: string;
+  /**
+   * The lowest Claude Code runtime the account says can serve this model. A
+   * runtime older than this cannot invoke it, however recent the model is.
+   */
+  minRuntimeVersion?: string;
 }
 
 export const ACCOUNT_CATALOG_VERSION = "2026-10-01";
@@ -182,6 +194,7 @@ export function readProfileAccountCatalog(
           .map((option) => option?.id)
           .filter((level): level is string => typeof level === "string");
         const badge = record["badge"] as { message?: string } | undefined;
+        const minRuntime = record["min_claude_code_version"];
         entries.push({
           id,
           family,
@@ -193,6 +206,7 @@ export function readProfileAccountCatalog(
           ...(typeof badge?.message === "string" && /credit/i.test(badge.message)
             ? { requiresUsageCredits: true }
             : {}),
+          ...(typeof minRuntime === "string" ? { minRuntimeVersion: minRuntime } : {}),
         });
       }
       if (entries.length > 0) return withKnownContextWindows(entries);
@@ -216,10 +230,42 @@ function withKnownContextWindows(
   entries: readonly AccountCatalogEntry[],
 ): readonly AccountCatalogEntry[] {
   const observed = new Map(ACCOUNT_CATALOG.map((entry) => [entry.id, entry.contextWindow]));
+  const runtime = claudeRuntimeVersion();
   return entries.map((entry) => {
     const known = observed.get(entry.id);
-    return entry.contextWindow === undefined && known !== undefined
-      ? { ...entry, contextWindow: known }
-      : entry;
+    const withWindow =
+      entry.contextWindow === undefined && known !== undefined
+        ? { ...entry, contextWindow: known }
+        : entry;
+    // The account states the oldest runtime that can serve a model. This
+    // Router runs one bundled runtime, so a model that needs a newer one is
+    // published as unavailable with that reason instead of failing at the
+    // first message -- and becomes available again by itself once the runtime
+    // is upgraded and the catalog is refreshed.
+    if (
+      withWindow.minRuntimeVersion !== undefined &&
+      compareVersions(runtime, withWindow.minRuntimeVersion) < 0
+    ) {
+      return {
+        ...withWindow,
+        unavailableReason: `Requires Claude Code ${withWindow.minRuntimeVersion} or newer; this runtime is ${runtime}`,
+      };
+    }
+    return withWindow;
   });
+}
+
+/** Compare two dotted version strings; an unparsable side sorts as lower. */
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string): number[] =>
+    value.split(".").map((part) => Number.parseInt(part, 10));
+  const a = parse(left);
+  const b = parse(right);
+  if (a.length === 0 || a.some((part) => Number.isNaN(part))) return -1;
+  if (b.length === 0 || b.some((part) => Number.isNaN(part))) return -1;
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }

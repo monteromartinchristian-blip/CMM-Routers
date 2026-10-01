@@ -80,3 +80,27 @@ describe("mergeAccountCatalog", () => {
     expect(opus46?.reasoningEfforts).toEqual(["low", "medium", "high", "max"]);
   });
 });
+describe("runtime requirements", () => {
+  it("marks a model the bundled runtime is too old to serve as unavailable", () => {
+    const rows: DiscoveredModel[] = [];
+    mergeAccountCatalog(rows, [
+      {
+        id: "claude-opus-5-5",
+        family: "Opus",
+        version: "5.5",
+        minRuntimeVersion: "99.0.0",
+        unavailableReason: "Requires Claude Code 99.0.0 or newer",
+      },
+    ]);
+    expect(rows[0]?.availability).toBe("unavailable");
+    expect(rows[0]?.unavailableReason).toContain("99.0.0");
+  });
+
+  it("leaves a model the runtime can serve alone", () => {
+    const rows: DiscoveredModel[] = [];
+    mergeAccountCatalog(rows, [
+      { id: "claude-opus-5-5", family: "Opus", version: "5.5", minRuntimeVersion: "1.0.0" },
+    ]);
+    expect(rows[0]?.availability).toBeUndefined();
+  });
+});

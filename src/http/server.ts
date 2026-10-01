@@ -177,6 +177,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         ...(model.version ? { version: model.version } : {}),
         ...(model.locality ? { locality: model.locality } : {}),
         ...(model.availability ? { availability: model.availability } : {}),
+        ...(model.unavailableReason
+          ? { unavailable_reason: model.unavailableReason }
+          : {}),
         ...(model.reasoningEfforts ? { reasoning_efforts: [...model.reasoningEfforts] } : {}),
         // Identity and capability descriptors the upstream declared. An alias
         // row is published as such so a client never offers `sonnet` as if it

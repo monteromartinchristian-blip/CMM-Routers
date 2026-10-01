@@ -54,6 +54,8 @@ export interface DiscoveredModel {
    * route; `unavailable` is a retained identity that is not currently usable.
    */
   availability?: "available" | "unavailable";
+  /** Why a known model is not callable here, when the upstream says so. */
+  unavailableReason?: string;
 }
 
 /**
