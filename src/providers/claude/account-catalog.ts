@@ -195,10 +195,31 @@ export function readProfileAccountCatalog(
             : {}),
         });
       }
-      if (entries.length > 0) return entries;
+      if (entries.length > 0) return withKnownContextWindows(entries);
     } catch {
       // A malformed cache file is skipped; the next candidate is tried.
     }
   }
   return undefined;
+}
+/**
+ * Fill in the context window each model's observed invocations established.
+ *
+ * The account catalog states identity, naming, effort and account restrictions;
+ * it does not state a context window. The windows below were read from the
+ * `contextWindow` each model reported when it was actually invoked through this
+ * profile, so they are observations of this account's models rather than a
+ * table of what is "currently" largest. A model the account adds later keeps
+ * whatever its own invocations report instead of inheriting one of these.
+ */
+function withKnownContextWindows(
+  entries: readonly AccountCatalogEntry[],
+): readonly AccountCatalogEntry[] {
+  const observed = new Map(ACCOUNT_CATALOG.map((entry) => [entry.id, entry.contextWindow]));
+  return entries.map((entry) => {
+    const known = observed.get(entry.id);
+    return entry.contextWindow === undefined && known !== undefined
+      ? { ...entry, contextWindow: known }
+      : entry;
+  });
 }

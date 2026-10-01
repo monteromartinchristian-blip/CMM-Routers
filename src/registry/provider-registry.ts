@@ -213,7 +213,10 @@ export class ProviderRegistry {
     const healthy = this.statusOf(id, cached) === "available";
     return cached.models.map((model) => ({
       ...model,
-      availability: healthy ? "available" : "unavailable",
+      // A provider's health says whether its source is reachable; it cannot
+      // turn a model the account itself restricts (usage credits, say) back
+      // into something the catalog offers, so a model-level verdict wins.
+      availability: model.availability ?? (healthy ? "available" : "unavailable"),
     }));
   }
 

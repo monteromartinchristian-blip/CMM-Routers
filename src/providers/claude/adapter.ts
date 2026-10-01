@@ -224,6 +224,9 @@ export function mergeAccountCatalog(
       if (existing.adaptiveThinking === undefined && entry.adaptiveThinking !== undefined) {
         existing.adaptiveThinking = entry.adaptiveThinking;
       }
+      // An account restriction is a fact about this account, not about the
+      // provider's health, so it applies to a row the runtime also resolved.
+      if (entry.requiresUsageCredits === true) existing.availability = "unavailable";
       continue;
     }
     const row: DiscoveredModel = {
