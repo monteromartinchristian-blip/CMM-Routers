@@ -4,6 +4,11 @@ import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
+import {
+  ACCOUNT_CATALOG,
+  readProfileAccountCatalog,
+  type AccountCatalogEntry,
+} from "./account-catalog.js";
 import { query, startup, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { BridgeControlServer, type BridgeToolRequest } from "../../bridge/control-ipc.js";
 import { DeferredToolBroker, createPublicToolCallId } from "../../core/deferred-tool-broker.js";
@@ -185,6 +190,64 @@ export function claudeConcreteDisplayName(baseModel: string): string | undefined
   if (family === undefined) return undefined;
   const version = claudeDeclaredVersion(baseModel);
   return version === undefined ? family : `${family} ${version}`;
+}
+
+/**
+ * Fold the account's concrete catalog into the discovered rows.
+ *
+ * A row the runtime already resolved keeps its identity and gains only the
+ * metadata the runtime did not declare; a row the runtime did not resolve is
+ * added as its own concrete model, marked unavailable when the account gates
+ * it behind usage credits. Routing aliases are never touched: they stay
+ * routable rows, and the client hides them now that concrete identities exist.
+ */
+export function mergeAccountCatalog(
+  rows: DiscoveredModel[],
+  catalog: readonly AccountCatalogEntry[],
+): void {
+  const byUpstream = new Map<string, DiscoveredModel>();
+  for (const row of rows) {
+    if (row.isAlias !== true) byUpstream.set(row.upstreamModel, row);
+  }
+  for (const entry of catalog) {
+    const existing = byUpstream.get(entry.id);
+    if (existing !== undefined) {
+      if (existing.contextWindow === undefined && entry.contextWindow !== undefined) {
+        existing.contextWindow = entry.contextWindow;
+      }
+      if (
+        (existing.reasoningEfforts === undefined || existing.reasoningEfforts.length === 0) &&
+        entry.reasoningEfforts !== undefined
+      ) {
+        existing.reasoningEfforts = entry.reasoningEfforts;
+      }
+      if (existing.adaptiveThinking === undefined && entry.adaptiveThinking !== undefined) {
+        existing.adaptiveThinking = entry.adaptiveThinking;
+      }
+      continue;
+    }
+    const row: DiscoveredModel = {
+      id: `claude/${entry.id}`,
+      provider: "claude",
+      upstreamModel: entry.id,
+      displayName:
+        entry.version === undefined ? entry.family : `${entry.family} ${entry.version}`,
+      capability: "CHAT_AND_TOOLS",
+      ...(entry.version !== undefined ? { version: entry.version } : {}),
+      ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+      ...(entry.reasoningEfforts !== undefined
+        ? { reasoningEfforts: entry.reasoningEfforts }
+        : {}),
+      ...(entry.adaptiveThinking !== undefined
+        ? { adaptiveThinking: entry.adaptiveThinking }
+        : {}),
+      // Known to the account, not callable on it: published so the identity is
+      // real, never offered as something the product can run.
+      ...(entry.requiresUsageCredits === true ? { availability: "unavailable" } : {}),
+    };
+    rows.push(row);
+    byUpstream.set(entry.id, row);
+  }
 }
 
 /**
@@ -447,6 +510,19 @@ export class ClaudeAdapter implements ProviderAdapter {
             ? { adaptiveThinking: modelInfo.supportsAdaptiveThinking }
             : {}),
         });
+      }
+
+      // The quick-select list names the models a session offers by default; the
+      // account catalog is larger, and a subscriber can select several
+      // generations of the same family. Supplement with the account catalog so
+      // no generation is collapsed away -- but only once this profile is
+      // authenticated, because a model this account cannot invoke must never be
+      // published as callable. The account's own cached catalog replaces the
+      // versioned table whenever the profile has one.
+      if ((await this.health()).status === "ready") {
+        const accountCatalog =
+          readProfileAccountCatalog(this.effectiveProfileDir()) ?? ACCOUNT_CATALOG;
+        mergeAccountCatalog(discoveredModels, accountCatalog);
       }
 
       return discoveredModels;
