@@ -181,6 +181,11 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           ? { unavailable_reason: model.unavailableReason }
           : {}),
         ...(model.reasoningEfforts ? { reasoning_efforts: [...model.reasoningEfforts] } : {}),
+        // Tool capability the provider adapter declared for this model.
+        // CHAT_AND_TOOLS names a proven upstream tool round-trip; anything
+        // else stays absent (honest unknown), never false-by-invention, so a
+        // downstream capability plane can gate on real per-model truth.
+        ...(model.capability === "CHAT_AND_TOOLS" ? { tool_calling: true } : {}),
         // Identity and capability descriptors the upstream declared. An alias
         // row is published as such so a client never offers `sonnet` as if it
         // were a model; `1M context` travels as capability metadata, never as
