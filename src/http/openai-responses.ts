@@ -4,7 +4,7 @@ import type { DiscoveredModel, RouterMessage, RouterTool } from "../core/model.j
 import type { RouterEvent } from "../core/events.js";
 import { redactObject } from "../security/secret-redaction.js";
 import { RouterError } from "../core/errors.js";
-import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort } from "./openai-chat.js";
+import { mapRouterErrorToHttp, rejectChatOnlyTools, codexUnsupportedToolPolicy, parseReasoningEffort, validateEffortForModel } from "./openai-chat.js";
 import { parseResponsesToolChoice } from "../core/tool-policy.js";
 import { effectiveToolCapability } from "../core/consumer-capability.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
@@ -227,6 +227,15 @@ export function registerResponsesApi(
       model = await registry.resolve(body.model);
     } catch (error) {
       const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    // Concrete-model authority, applied now that the model is known. Same rule
+    // as the chat surface: a correctly-spelled level the selected model does
+    // not support is a caller error, never a provider fault.
+    const effortError = validateEffortForModel(reasoningEffort, model);
+    if (effortError) {
+      const mapped = mapRouterErrorToHttp(effortError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
     const adapter = registry.getAdapter(model.provider);
