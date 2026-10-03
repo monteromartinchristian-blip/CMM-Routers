@@ -45,6 +45,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  * Parse the [OI]-compatible `reasoning_effort` field. An unknown level is a
  * caller error and must fail with 400 rather than being silently coerced to a
  * different level the caller never asked for.
+ *
+ * THIS IS A SYNTAX GATE ONLY. Being a member of {@link REASONING_EFFORTS}
+ * says the value is spelled correctly; it says nothing about whether the
+ * selected model accepts it. Concrete-model authority is
+ * {@link validateEffortForModel}, which runs after the model is resolved.
  */
 export function parseReasoningEffort(value: unknown): ReasoningEffort | RouterError | undefined {
   if (value === undefined || value === null) return undefined;
@@ -54,6 +59,40 @@ export function parseReasoningEffort(value: unknown): ReasoningEffort | RouterEr
   return new RouterError(
     "invalid_request",
     `reasoning_effort must be one of: ${REASONING_EFFORTS.join(", ")}`,
+  );
+}
+
+/**
+ * Reject an effort level the SELECTED MODEL does not support.
+ *
+ * WHY THIS EXISTS. The Router publishes a per-model ladder, and then accepted
+ * any globally-valid level for any model. Asking for `max` on a model that
+ * publishes `low, medium, high` was forwarded to the provider, which failed it
+ * as a protocol error: HTTP 500 for something the Router already knew was
+ * wrong. Three surfaces then disagreed — the catalog said one thing, the
+ * request said another, and the provider reported a server fault.
+ *
+ * WHY THE MODEL IS THE AUTHORITY. A ladder is a claim about one concrete
+ * model. A model that declares NO ladder has expressed no opinion at all, so
+ * this must not start refusing levels for it: inventing a constraint the
+ * catalog never published would be the Router contradicting itself, and it
+ * would break every model whose ladder is still undeclared (the ChatGPT lane
+ * publishes none today). The global syntax gate still applies to those.
+ */
+export function validateEffortForModel(
+  effort: ReasoningEffort | undefined,
+  model: Pick<DiscoveredModel, "id" | "reasoningEfforts">,
+): RouterError | undefined {
+  // No explicit preference: the model's own default (if any) governs.
+  if (effort === undefined) return undefined;
+  // The model declared no ladder, so it constrains nothing.
+  const ladder = model.reasoningEfforts;
+  if (!ladder || ladder.length === 0) return undefined;
+  if (ladder.includes(effort)) return undefined;
+  return new RouterError(
+    "invalid_request",
+    `reasoning_effort '${effort}' is not supported by model ${model.id}; supported levels: ${ladder.join(", ")}`,
+    { model: model.id, requested: effort, supported: [...ladder] },
   );
 }
 
@@ -426,6 +465,15 @@ export function registerChatCompletions(
       model = await registry.resolve(body.model);
     } catch (error) {
       const mapped = mapRouterErrorToHttp(error);
+      return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
+    }
+
+    // Concrete-model authority, applied now that the model is known. A
+    // correctly-spelled level the selected model does not support is a caller
+    // error (400), not something to forward and let the provider fault on.
+    const effortError = validateEffortForModel(reasoningEffort, model);
+    if (effortError) {
+      const mapped = mapRouterErrorToHttp(effortError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
