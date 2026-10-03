@@ -39,6 +39,16 @@ export interface DiscoveredModel {
   /** Effort levels the upstream genuinely accepts, when it declares them. */
   reasoningEfforts?: readonly string[];
   /**
+   * The effort level this concrete model defaults to when a client expresses no
+   * preference. CMM catalog metadata, NOT a provider-reported effective value:
+   * nothing here is evidence of what a runtime actually applied.
+   *
+   * Always one of this model's own {@link reasoningEfforts}. A model that
+   * declares no ladder has no default, because there is nothing to default to.
+   * Absent means "this model published no default", never a silent fallback.
+   */
+  defaultReasoningEffort?: string;
+  /**
    * True when this row is a routing alias (`default`, `sonnet`, `opus[1m]`)
    * rather than a model of its own. Alias rows stay routable so an explicit
    * alias request still resolves, and a client hides them from model selection
