@@ -151,8 +151,10 @@ async function withServer(
 }
 
 function contentOf(json: Record<string, unknown>): string {
-  const choices = json.choices as Array<{ message: { content: string } }>;
-  return choices[0].message.content;
+  const choices = json.choices as Array<{ message: { content: string } }> | undefined;
+  const first = choices?.[0];
+  if (first === undefined) throw new Error("response carried no choices");
+  return first.message.content;
 }
 
 describe("a provider error delivered as assistant text", () => {
