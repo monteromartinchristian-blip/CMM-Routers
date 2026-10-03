@@ -4,6 +4,7 @@ import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } 
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { CodexAppServerClient } from "./app-server-client.js";
+import { codexEffortDeclaration } from "./effort-catalog.js";
 import {
   buildThreadStartParams,
   buildTurnInterruptParams,
@@ -243,18 +244,29 @@ export class CodexAdapter implements ProviderAdapter {
 
     try {
       const response = await this.client.listModels();
-      return response.data.map((model) => ({
-        id: `chatgpt/${model.model || model.id}`,
-        provider: "chatgpt",
-        upstreamModel: model.model || model.id,
-        displayName: model.displayName || model.id,
-        // CHAT_AND_TOOLS: the dynamic external tool round-trip (item/tool/call
-        // server request → tool call surfaced to Qoder → tool result on the
-        // follow-up turn) is implemented and proven deterministically against a
-        // scripted app-server. The Router NEVER executes the tool; Qoder owns
-        // execution. Live re-proof is deferred to the post-audit live gate.
-        capability: "CHAT_AND_TOOLS" as const,
-      }));
+      return response.data.map((model) => {
+        const id = `chatgpt/${model.model || model.id}`;
+        // Per-model effort truth, published by the Router from its own catalog.
+        // A model absent from that catalog publishes NO ladder and NO default,
+        // rather than inheriting a neighbour's.
+        const effort = codexEffortDeclaration(id);
+        return {
+          id,
+          provider: "chatgpt",
+          upstreamModel: model.model || model.id,
+          displayName: model.displayName || model.id,
+          // CHAT_AND_TOOLS: the dynamic external tool round-trip (item/tool/call
+          // server request → tool call surfaced to Qoder → tool result on the
+          // follow-up turn) is implemented and proven deterministically against a
+          // scripted app-server. The Router NEVER executes the tool; Qoder owns
+          // execution. Live re-proof is deferred to the post-audit live gate.
+          capability: "CHAT_AND_TOOLS" as const,
+          ...(effort ? { reasoningEfforts: effort.reasoningEfforts } : {}),
+          ...(effort?.defaultReasoningEffort
+            ? { defaultReasoningEffort: effort.defaultReasoningEffort }
+            : {}),
+        };
+      });
     } catch (error) {
       if (error instanceof RouterError) {
         throw error;

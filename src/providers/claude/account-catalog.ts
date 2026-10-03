@@ -36,6 +36,17 @@ export interface AccountCatalogEntry {
   contextWindow?: number;
   /** Effort levels the account declares for this model. */
   reasoningEfforts?: readonly string[];
+  /**
+   * The level this concrete model defaults to when a client expresses no
+   * preference. CMM catalog metadata, never a provider-reported effective
+   * value. Always one of this entry's own `reasoningEfforts`.
+   *
+   * NOTE: this value is only published once the adapter that copies an entry
+   * into a catalog row carries it across. That plumbing is deferred while an
+   * unrelated branch has the adapter modified, so declaring a default here is
+   * honest bookkeeping that does not yet reach `/v1/models`.
+   */
+  defaultReasoningEffort?: string;
   /** Whether the account declares adaptive thinking for this model. */
   adaptiveThinking?: boolean;
   /**
@@ -65,6 +76,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "5.5",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -73,6 +85,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "5",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -81,6 +94,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.8",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -89,6 +103,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.7",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -97,6 +112,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.6",
     contextWindow: 200_000,
     reasoningEfforts: ["low", "medium", "high", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -105,6 +121,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "5.5",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -113,6 +130,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "5",
     contextWindow: 1_000_000,
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -121,6 +139,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.6",
     contextWindow: 200_000,
     reasoningEfforts: ["low", "medium", "high", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
   },
   {
@@ -128,6 +147,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     family: "Fable",
     version: "5.1",
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
     requiresUsageCredits: true,
   },
@@ -136,6 +156,7 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     family: "Fable",
     version: "5",
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "medium",
     adaptiveThinking: true,
     requiresUsageCredits: true,
   },

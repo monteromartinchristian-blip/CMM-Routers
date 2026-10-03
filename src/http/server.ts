@@ -181,6 +181,17 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           ? { unavailable_reason: model.unavailableReason }
           : {}),
         ...(model.reasoningEfforts ? { reasoning_efforts: [...model.reasoningEfforts] } : {}),
+        // The level this model defaults to when a client expresses no
+        // preference. CMM catalog metadata. It is deliberately NOT named
+        // `effective`: nothing here reports what a runtime actually applied,
+        // and publishing it under that name would let a client present a
+        // catalog default as a provider-confirmed fact. Published only when
+        // the model also declares it as one of its own levels, so a default
+        // can never name a level this model does not offer.
+        ...(model.defaultReasoningEffort &&
+        model.reasoningEfforts?.includes(model.defaultReasoningEffort)
+          ? { reasoning_effort_default: model.defaultReasoningEffort }
+          : {}),
         // Tool capability the provider adapter declared for this model.
         // CHAT_AND_TOOLS names a proven upstream tool round-trip; anything
         // else stays absent (honest unknown), never false-by-invention, so a
