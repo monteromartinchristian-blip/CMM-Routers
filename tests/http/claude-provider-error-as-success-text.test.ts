@@ -41,11 +41,24 @@ import type { RouterEvent } from "../../src/core/events.js";
  * `subtype: "success"`. The Router has an error path, it is just not on the
  * route this failure takes.
  *
- * The intended contract -- NOT implemented here, deliberately, because
- * normalising provider error text is a separate piece of work tracked as
- * CLAUDE_PROVIDER_ERROR_NORMALIZATION = OPEN -- is a non-2xx response. When
- * that lands, the first test below fails on purpose and is rewritten the same
- * way the inbound-effort pin was.
+ * UPDATE. The live shape of this failure has since been read directly off the
+ * runtime, and it is better than assumed: the envelope that closes the failed
+ * turn carries `is_error: true` and `api_error_status: 400`, which is the
+ * field the SDK itself keys off. `processSdkMessage()` now detects the failure
+ * from those two fields and holds the assistant text back until the envelope
+ * proves the turn succeeded, so the real refusal now answers with an error
+ * (see tests/providers/claude-error-envelope-normalization.test.ts).
+ *
+ * What is left, and is what these tests still pin, is the case with NO
+ * structured signal at all: text that looks like a refusal arriving with
+ * nothing in the envelope to say so. That cannot be detected without reading
+ * the wording, which would make any real answer starting with the same words
+ * an error. It stays a 200 deliberately, and these tests exist so that the
+ * remaining gap is a known, measured one rather than a forgotten one.
+ *
+ * CLAUDE_PROVIDER_ERROR_NORMALIZATION is therefore narrowed, not closed:
+ * structured envelopes are handled; unstructured prose still is not, and must
+ * not be.
  */
 
 const BEARER = "claude-provider-error-test-secret";

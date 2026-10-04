@@ -653,7 +653,16 @@ export class ClaudeAdapter implements ProviderAdapter {
    */
   private *processSdkMessage(
     message: unknown,
-    state: { sawPartialDelta: boolean; usageYielded: boolean },
+    state: {
+      sawPartialDelta: boolean;
+      usageYielded: boolean;
+      /**
+       * Text from an assistant turn that has not been emitted yet. It is held
+       * until the result envelope proves the turn succeeded, because the same
+       * text carries a refusal when the turn failed.
+       */
+      pendingAssistantText: string | null;
+    },
   ): Generator<RouterEvent, boolean, void> {
     const typed = message as {
       type?: string;
@@ -663,6 +672,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       errors?: string[];
       usage?: unknown;
       stop_reason?: string;
+      /**
+       * The result envelope's own verdict. This is the field the SDK itself
+       * keys off when it decides a turn failed, and it is the only reliable
+       * failure signal: `subtype` reads "success" for a turn the runtime
+       * refused, so subtype alone cannot see a refusal at all.
+       */
+      is_error?: boolean;
+      /** The upstream HTTP status behind a failed turn, when the runtime has one. */
+      api_error_status?: number;
+      /** Where a failed turn states its reason when `subtype` is "success". */
+      result?: string;
     };
     if (typed.type === "stream_event") {
       const text = extractStreamEventText(typed.event);
@@ -676,7 +696,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       const contentBlocks = typed.message?.content ?? [];
       for (const block of contentBlocks) {
         if (block.type === "text" && !state.sawPartialDelta && block.text) {
-          yield { type: "text_delta", text: block.text };
+          // Held rather than emitted. An assistant turn is also how this
+          // runtime reports a refusal it swallowed: the prose of a failed turn
+          // arrives here first, and the envelope that calls it a failure
+          // arrives afterwards. Emitting now would answer a refusal with HTTP
+          // 200 and the provider's error text as the body. This is flushed only
+          // once the result proves the turn succeeded, so the ordinary
+          // streaming path (which arrives as stream_event and never sets
+          // sawPartialDelta) is unaffected.
+          state.pendingAssistantText = (state.pendingAssistantText ?? "") + block.text;
         }
       }
       const usage = typed.message?.usage as
@@ -696,7 +724,31 @@ export class ClaudeAdapter implements ProviderAdapter {
       return false;
     }
     if (typed.type === "result") {
+      // WHY THE ENVELOPE DECIDES AND NOT THE WORDING. This runtime reports a
+      // refused model as subtype "success" with is_error true, so a
+      // subtype-only check reports the refusal as a normal completion and the
+      // caller gets HTTP 200 carrying the provider's error text. `is_error` is
+      // the field the SDK itself keys off, and `api_error_status` is the
+      // upstream status, so the failure is detected from structure and
+      // classified from the status. Nothing here inspects what the text says.
+      if (typed.is_error === true || typed.subtype?.startsWith("error") === true) {
+        const errorMessage =
+          (typed.errors ?? []).join("; ") ||
+          (typeof typed.result === "string" ? typed.result : "") ||
+          "Unknown SDK error";
+        yield {
+          type: "error",
+          error: this.mapSdkErrorMessage(errorMessage, typed.api_error_status),
+        };
+        return true;
+      }
       if (typed.subtype === "success") {
+        // The turn succeeded, so the text held back from the assistant turn is
+        // a real answer and belongs in the stream.
+        if (state.pendingAssistantText !== null) {
+          yield { type: "text_delta", text: state.pendingAssistantText };
+          state.pendingAssistantText = null;
+        }
         let finishReason: "stop" | "tool_calls" | "length" = "stop";
         if (typed.stop_reason === "max_tokens") finishReason = "length";
         else if (typed.stop_reason === "tool_use") finishReason = "tool_calls";
@@ -717,11 +769,6 @@ export class ClaudeAdapter implements ProviderAdapter {
         yield { type: "completed", finishReason };
         return true;
       }
-      if (typed.subtype?.startsWith("error")) {
-        const errorMessage = (typed.errors ?? []).join("; ") || "Unknown SDK error";
-        yield { type: "error", error: this.mapSdkErrorMessage(errorMessage) };
-        return true;
-      }
     }
     return false;
   }
@@ -732,7 +779,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     signal: AbortSignal,
     abortController: AbortController,
   ): AsyncIterable<RouterEvent> {
-    const state = { sawPartialDelta: false, usageYielded: false };
+    const state = { sawPartialDelta: false, usageYielded: false, pendingAssistantText: null };
     const iterable: AsyncIterable<unknown> = { [Symbol.asyncIterator]: () => iterator };
     for await (const message of iterable) {
       if (signal.aborted || abortController.signal.aborted) return;
@@ -882,7 +929,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     session: LiveClaudeSession,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
-    const state = { sawPartialDelta: session.sawPartialDelta, usageYielded: session.usageYielded };
+    const state = {
+      sawPartialDelta: session.sawPartialDelta,
+      usageYielded: session.usageYielded,
+      pendingAssistantText: null,
+    };
     // A session that parked a call must survive this drain (the continuation
     // arrives on a later request); every other exit terminates the provider run.
     let parkedHere = false;
@@ -1241,7 +1292,38 @@ export class ClaudeAdapter implements ProviderAdapter {
   /**
    * Map SDK error messages to router error codes.
    */
-  private mapSdkErrorMessage(errorText: string): RouterError {
+  private mapSdkErrorMessage(
+    errorText: string,
+    apiErrorStatus?: number | undefined,
+  ): RouterError {
+    // The upstream status is the provider's own structured statement of what
+    // went wrong, so it decides the class before any reading of the wording.
+    // The text is consulted only for a status the provider did not supply.
+    switch (apiErrorStatus) {
+      case 400:
+        return new RouterError(
+          "invalid_request",
+          `Claude rejected the request: ${errorText.substring(0, 200)}`,
+        );
+      case 401:
+      case 403:
+        return new RouterError(
+          "provider_auth_required",
+          `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
+        );
+      case 429:
+        return new RouterError(
+          "provider_quota_exhausted",
+          `Claude refused the request: ${errorText.substring(0, 200)}`,
+        );
+      case 503:
+        return new RouterError(
+          "provider_unavailable",
+          "Claude service unavailable",
+        );
+      default:
+        break;
+    }
     if (errorText.includes("auth") || errorText.includes("login")) {
       return new RouterError(
         "provider_auth_required",
