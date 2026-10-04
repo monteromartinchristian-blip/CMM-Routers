@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+const { queryMock, startupMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  startupMock: vi.fn(),
+}));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: queryMock,
-  startup: vi.fn(),
+  startup: startupMock,
   resolveSettings: vi.fn(),
 }));
 
@@ -33,6 +36,13 @@ describe("Claude Model Discovery", () => {
 
   beforeEach(() => {
     adapter = new ClaudeAdapter();
+    // These tests are about what discovery reads out of supportedModels(), so
+    // the profile must not also report itself authenticated. A bare vi.fn()
+    // startup resolves to undefined, which health() reads as "ready", and
+    // discoverModels() then folds the eleven-row account catalog into the
+    // result -- so the assertions below were measuring the catalog, not
+    // discovery. An unauthenticated profile is stated explicitly here.
+    startupMock.mockRejectedValue(new Error("no subscription in this test profile"));
   });
 
   it("proves no static Claude catalog exists in adapter", () => {
