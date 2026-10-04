@@ -85,14 +85,26 @@ describe("concrete-model effort validation (F2)", () => {
     expect(validateEffortForModel(undefined, model())).toBeUndefined();
   });
 
-  it("leaves a model that declares no ladder unconstrained", () => {
+  it("leaves a model that declared nothing unconstrained", () => {
     // This is the property that keeps the fix from being wrong in the other
     // direction. The ChatGPT lane publishes no ladder at all today, and
     // `claude/*` rows before B3 publish none either. Refusing levels for a
     // model that expressed no opinion would invent a constraint the catalog
     // never published, and would break every such model outright.
     expect(validateEffortForModel("max", undeclaredModel())).toBeUndefined();
-    expect(validateEffortForModel("max", model({ reasoningEfforts: [] }))).toBeUndefined();
+  });
+
+  it("refuses a level for a model known to expose no effort control", () => {
+    // The companion case, and the reason the two are separated. An empty
+    // ladder is not "no opinion": it is the catalog stating that this model
+    // has no effort control. Forwarding a level to such a model meant the
+    // provider either ignored it or silently downgraded it.
+    for (const effort of ["low", "max"] as const) {
+      const error = validateEffortForModel(effort, model({ reasoningEfforts: [] }));
+      expect(error?.code).toBe("invalid_request");
+    }
+    // A request that expresses no preference is still fine.
+    expect(validateEffortForModel(undefined, model({ reasoningEfforts: [] }))).toBeUndefined();
   });
 
   it("does not conflate max with the rung above high", () => {

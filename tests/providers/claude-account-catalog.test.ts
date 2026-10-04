@@ -70,11 +70,14 @@ describe("mergeAccountCatalog", () => {
     expect(aliases.map((row) => row.id)).toEqual(["claude/opus"]);
   });
 
-  it("carries each model's own effort ladder, and none for a model without one", () => {
+  it("carries each model's own effort ladder, and an empty one where declared", () => {
     const rows = runtimeRows();
     mergeAccountCatalog(rows, ACCOUNT_CATALOG);
     const haiku = rows.find((row) => row.upstreamModel === "claude-haiku-4-5-20251001");
-    expect(haiku?.reasoningEfforts).toBeUndefined();
+    // An EMPTY ladder, not an absent one: the account positively states this
+    // model exposes no effort control, which is a different claim from nobody
+    // having said anything.
+    expect(haiku?.reasoningEfforts).toEqual([]);
     expect(haiku?.adaptiveThinking).toBe(false);
     const opus46 = rows.find((row) => row.upstreamModel === "claude-opus-4-6");
     expect(opus46?.reasoningEfforts).toEqual(["low", "medium", "high", "max"]);
