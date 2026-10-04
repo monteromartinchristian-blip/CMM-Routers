@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import {
   ACCOUNT_CATALOG,
-  readProfileAccountCatalog,
+  readAccountCatalogForRuntime,
   type AccountCatalogEntry,
 } from "./account-catalog.js";
 import { query, startup, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -533,8 +533,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       // published as callable. The account's own cached catalog replaces the
       // versioned table whenever the profile has one.
       if ((await this.health()).status === "ready") {
-        const accountCatalog =
-          readProfileAccountCatalog(this.effectiveProfileDir()) ?? ACCOUNT_CATALOG;
+        const accountCatalog = readAccountCatalogForRuntime(
+          this.effectiveProfileDir(),
+        );
         mergeAccountCatalog(discoveredModels, accountCatalog);
       }
 
