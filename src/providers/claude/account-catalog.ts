@@ -67,7 +67,7 @@ export interface AccountCatalogEntry {
   minRuntimeVersion?: string;
 }
 
-export const ACCOUNT_CATALOG_VERSION = "2026-10-01";
+export const ACCOUNT_CATALOG_VERSION = "2026-10-04";
 
 export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
   {
@@ -78,6 +78,15 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     defaultReasoningEffort: "medium",
     adaptiveThinking: true,
+    // The account's own catalog states this floor, and four independent
+    // readings agree: it states `min_claude_code_version: 2.1.280`; the 2.1.266
+    // runtime refuses the model with "does not support this model; version
+    // 2.1.280 or newer is required"; 2.1.266's quick-select does not resolve
+    // `opus` to this model at all (it resolves to claude-opus-5); and 2.1.288
+    // serves it. This is a runtime compatibility condition, not a model that
+    // does not exist -- the row stays, and it becomes available again by
+    // itself once the bundled runtime is new enough.
+    minRuntimeVersion: "2.1.280",
   },
   {
     id: "claude-opus-5",
@@ -150,6 +159,20 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     defaultReasoningEffort: "medium",
     adaptiveThinking: true,
     requiresUsageCredits: true,
+    // The account's own catalog also states `min_claude_code_version:
+    // 2.1.251` for this model. It is deliberately NOT encoded here. Unlike
+    // Opus 5.5's floor, that number has never been A/B'd or seen on the wire,
+    // because this account cannot invoke Fable at all -- the credit
+    // restriction means there is no observation that could confirm or refute
+    // it. A minimum-runtime field is a compatibility contract, and asserting a
+    // floor nobody has tested would make an unverified claim load-bearing. It
+    // stays recorded in the evidence doc until an account with credits can
+    // test it.
+    //
+    // `requiresUsageCredits` is the whole of what is known to be true about why
+    // this row is not callable, and it is account state: the same model serves
+    // an account that has credits, and this account may acquire them without
+    // any model or runtime changing.
   },
   {
     id: "claude-fable-5",
@@ -166,8 +189,34 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.5",
     contextWindow: 200_000,
     adaptiveThinking: false,
+    // No `reasoningEfforts` and no `defaultReasoningEffort`, and that absence
+    // is a finding rather than an omission: this account's own catalog declares
+    // `thinking.type: "none"` with no effort options for this model, and both
+    // the 2.1.266 and the 2.1.288 runtimes list it with `supportsEffort` and
+    // `supportedEffortLevels` absent. A ladder here would be invented
+    // capability, so none is declared.
   },
 ];
+
+/**
+ * The account catalog this Router must actually publish, with the runtime
+ * requirement applied to whichever declaration is in force.
+ *
+ * The profile's own catalog wins when the profile has written one, and
+ * {@link readProfileAccountCatalog} has already applied the runtime gate to it.
+ * The curated {@link ACCOUNT_CATALOG} is the declaration that is in force the
+ * rest of the time -- a headless profile never writes a catalog of its own --
+ * and it is applied here, because a runtime requirement that is only honoured
+ * on one of the two paths is not a requirement at all: a model the bundled
+ * runtime is too old to serve would be published as callable and would fail at
+ * the first message instead of being marked unavailable with a reason.
+ */
+export function readAccountCatalogForRuntime(
+  profileDir: string,
+): readonly AccountCatalogEntry[] {
+  const declared = readProfileAccountCatalog(profileDir);
+  return declared ?? withKnownContextWindows(ACCOUNT_CATALOG);
+}
 
 /**
  * The catalog the account's own CLI cached inside the Router's profile, when
