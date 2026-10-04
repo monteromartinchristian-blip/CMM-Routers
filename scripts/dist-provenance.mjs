@@ -19,6 +19,7 @@
  *
  * Emitted JS is the artifact under test. This never writes to either dist.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -63,19 +64,6 @@ function parseArgs(argv) {
   return { positional, flags };
 }
 
-/** Normalize line endings so a checkout on either platform compares stably. */
-function normalize(text, ignoreComments) {
-  const unified = text.replace(/\r\n/g, "\n");
-  if (!ignoreComments) return unified;
-  // Strip block and line comments. Only for triage: a comment-only delta is still
-  // a real delta in the emitted artifact, so the default comparison keeps them.
-  return unified
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .filter((line) => !/^\s*\/\//.test(line))
-    .join("\n");
-}
-
 function walk(root) {
   const files = [];
   const stack = [root];
@@ -111,28 +99,32 @@ function fingerprint(dir, flags) {
   };
 }
 
-/** Unified-ish line delta. Enough to read; not a full patch. */
-function lineDelta(a, b, maxLines) {
-  const left = a.split("\n");
-  const right = b.split("\n");
-  const out = [];
-  // Anchored walk: emit removed/added runs where the two texts stop agreeing.
-  let i = 0;
-  let j = 0;
-  while ((i < left.length || j < right.length) && out.length < maxLines) {
-    if (left[i] === right[j]) {
-      i += 1;
-      j += 1;
-      continue;
+/**
+ * Real unified diff, via diff(1). The previous hand-rolled renderer walked two
+ * texts looking for re-anchoring points and, on a structural change, reported
+ * whole regions as removed when the true delta was a handful of lines. Output
+ * that contradicts the hash verdict is worse than no output, so this defers to
+ * the system tool.
+ */
+function unifiedDiff(baselinePath, candidatePath, maxLines) {
+  let out;
+  try {
+    out = execFileSync("diff", ["-u", baselinePath, candidatePath], {
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    // diff exits 1 when files differ, which is the normal case here.
+    if (typeof error.stdout !== "string") {
+      return ["  diff unavailable: " + error.message];
     }
-    let k = 0;
-    while (i + k < left.length && j + k < right.length && left[i + k] === right[j + k]) k += 1;
-    for (let n = 0; n < k && out.length < maxLines; n += 1) out.push(`  ~ ${left[i + n]}`);
-    while (i < left.length && left[i] !== right[j] && out.length < maxLines) out.push(`  - ${left[i++]}`);
-    while (j < right.length && right[j] !== left[i] && out.length < maxLines) out.push(`  + ${right[j++]}`);
+    out = error.stdout;
   }
-  if (out.length >= maxLines) out.push("  ... (truncated)");
-  return out;
+  const lines = out.split("\n");
+  if (lines.length <= maxLines) return lines;
+  return lines
+    .slice(0, maxLines)
+    .concat(["  ... (truncated, " + (lines.length - maxLines) + " more lines)"]);
 }
 
 function diff(baselineDir, candidateDir, flags) {
@@ -168,13 +160,10 @@ function diff(baselineDir, candidateDir, flags) {
       candidateSha: c.sha256,
       markersGained: gained,
       markersLost: lost,
-      delta: flags.ignoreComments
+      // SUPPORTING EVIDENCE ONLY. The verdict is the sha256 above.
+      diff: flags.ignoreComments
         ? []
-        : lineDelta(
-            normalize(readFileSync(join(baselineDir, rel), "utf8"), false),
-            normalize(readFileSync(join(candidateDir, rel), "utf8"), false),
-            flags.maxDiffLines,
-          ),
+        : unifiedDiff(join(baselineDir, rel), join(candidateDir, rel), flags.maxDiffLines),
     });
   }
 
@@ -183,6 +172,13 @@ function diff(baselineDir, candidateDir, flags) {
     baseline: baselineDir,
     candidate: candidateDir,
     ignoreComments: flags.ignoreComments,
+    // Provenance verdicts come from content hashes and counts. Marker presence
+    // and rendered diffs are triage aids: a marker can be vacuous (unmatchable
+    // text, e.g. a phrase spanning a line break) and a diff can be truncated.
+    trust: {
+      primary: ["sha256", "identical", "changedFiles", "addedFiles", "removedFiles"],
+      supportingOnly: ["markersPresent", "markerMoves", "diff"],
+    },
     identical,
     summary: {
       filesCompared: names.length,
