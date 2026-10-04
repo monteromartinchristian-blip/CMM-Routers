@@ -189,12 +189,19 @@ export const ACCOUNT_CATALOG: readonly AccountCatalogEntry[] = [
     version: "4.5",
     contextWindow: 200_000,
     adaptiveThinking: false,
-    // No `reasoningEfforts` and no `defaultReasoningEffort`, and that absence
-    // is a finding rather than an omission: this account's own catalog declares
-    // `thinking.type: "none"` with no effort options for this model, and both
-    // the 2.1.266 and the 2.1.288 runtimes list it with `supportsEffort` and
-    // `supportedEffortLevels` absent. A ladder here would be invented
-    // capability, so none is declared.
+    // An EMPTY ladder, not an absent one, and the difference is the whole
+    // point. This account's own catalog declares `thinking.type: "none"` with
+    // no effort options for this model, and both the 2.1.266 and the 2.1.288
+    // runtimes list it with `supportsEffort` and `supportedEffortLevels`
+    // absent. That is positive knowledge that this model exposes no effort
+    // control -- it is not merely that nobody said.
+    //
+    // An absent ladder means "this source expressed no opinion" and leaves the
+    // model unconstrained. Publishing `[]` says "known, and there are none",
+    // which is what lets the HTTP edge refuse an explicit effort before it is
+    // dispatched. A five-rung ladder here would be invented capability, and no
+    // default is declared because a model with no levels cannot have one.
+    reasoningEfforts: [],
   },
 ];
 

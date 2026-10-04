@@ -128,6 +128,41 @@ class UndeclaredProvider implements ProviderAdapter {
   async cancel(): Promise<void> {}
 }
 
+/**
+ * Publishes an EMPTY ladder, the state that says "this model is known to expose
+ * no effort control" rather than "nobody said".
+ */
+class KnownNoneProvider implements ProviderAdapter {
+  readonly id = "claude" as const;
+  invocations = 0;
+
+  async discoverModels(): Promise<DiscoveredModel[]> {
+    return [
+      {
+        id: "claude/known-none",
+        provider: "claude",
+        upstreamModel: "known-none",
+        displayName: "Known None",
+        capability: "CHAT_AND_TOOLS",
+        reasoningEfforts: [],
+      },
+    ];
+  }
+
+  async health(): Promise<ProviderHealth> {
+    return { status: "ready" };
+  }
+
+  async *run(request: RouterRequest, _signal: AbortSignal): AsyncIterable<RouterEvent> {
+    this.invocations += 1;
+    void request;
+    yield { type: "text_delta", text: "ok" };
+    yield { type: "completed", finishReason: "stop" };
+  }
+
+  async cancel(): Promise<void> {}
+}
+
 async function withServer(
   adapters: ProviderAdapter[],
   exercise: (
@@ -251,6 +286,78 @@ describe("unsupported effort is refused before provider dispatch", () => {
       expect(status).toBe(400);
       expect(json).toMatchObject({ error: { type: "invalid_request" } });
       expect(provider.invocations).toBe(0);
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // KNOWN_NONE: an empty ladder is a statement, not an absence of one.
+  // ---------------------------------------------------------------------------
+
+  describe("a model that declares an empty ladder", () => {
+    for (const effort of ["low", "high", "xhigh", "max"] as const) {
+      it(`refuses '${effort}' with 400 and never invokes the provider`, async () => {
+        const provider = new KnownNoneProvider();
+        await withServer([provider], async (post) => {
+          const { status, json } = await post("/v1/chat/completions", {
+            model: "claude/known-none",
+            messages: [{ role: "user", content: "hi" }],
+            reasoning_effort: effort,
+          });
+          expect(status).toBe(400);
+          expect(json).toMatchObject({ error: { type: "invalid_request" } });
+          // The whole point: the Router already knew, so nothing was dispatched.
+          expect(provider.invocations).toBe(0);
+        });
+      });
+    }
+
+    it("still accepts a request that expresses no preference", async () => {
+      const provider = new KnownNoneProvider();
+      await withServer([provider], async (post) => {
+        const { status } = await post("/v1/chat/completions", {
+          model: "claude/known-none",
+          messages: [{ role: "user", content: "hi" }],
+        });
+        expect(status).toBe(200);
+        expect(provider.invocations).toBe(1);
+      });
+    });
+
+    it("applies the same rule on the responses surface", async () => {
+      const provider = new KnownNoneProvider();
+      await withServer([provider], async (post) => {
+        const { status, json } = await post("/v1/responses", {
+          model: "claude/known-none",
+          input: "hi",
+          reasoning: { effort: "max" },
+        });
+        expect(status).toBe(400);
+        expect(json).toMatchObject({ error: { type: "invalid_request" } });
+        expect(provider.invocations).toBe(0);
+      });
+    });
+
+    it("is distinct from a model that declared nothing", async () => {
+      // Same effort, same syntax: refused for a model known to have none,
+      // forwarded for a model nobody has said anything about. Conflating them
+      // is what made an unknown ladder look like a permission slip.
+      const knownNone = new KnownNoneProvider();
+      const undeclared = new UndeclaredProvider();
+      await withServer([knownNone, undeclared], async (post) => {
+        const refused = await post("/v1/chat/completions", {
+          model: "claude/known-none",
+          messages: [{ role: "user", content: "hi" }],
+          reasoning_effort: "max",
+        });
+        const forwarded = await post("/v1/chat/completions", {
+          model: "command-code/undeclared",
+          messages: [{ role: "user", content: "hi" }],
+          reasoning_effort: "max",
+        });
+        expect(refused.status).toBe(400);
+        expect(forwarded.status).toBe(200);
+        expect(knownNone.invocations).toBe(0);
+        expect(undeclared.invocations).toBe(1);
+      });
     });
   });
 });

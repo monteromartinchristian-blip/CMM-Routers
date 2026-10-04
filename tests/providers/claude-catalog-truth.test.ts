@@ -39,7 +39,7 @@ const ACCOUNT_DECLARATION: Record<string, readonly string[] | undefined> = {
   "claude-sonnet-4-6": ["low", "medium", "high", "max"],
   "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
   "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
-  [HAIKU]: undefined,
+  [HAIKU]: [],
 };
 
 function entry(id: string) {
@@ -58,9 +58,13 @@ function published(id: string): DiscoveredModel {
 }
 
 describe("a model the account declares without effort", () => {
-  it("exposes no ladder, on both the declaration and the published row", () => {
-    expect(entry(HAIKU).reasoningEfforts).toBeUndefined();
-    expect(published(HAIKU).reasoningEfforts).toBeUndefined();
+  it("declares an EMPTY ladder, which is not the same as declaring none", () => {
+    // The account positively states this model has no effort control, so the
+    // catalog says so with `[]`. An absent ladder would mean "nobody said",
+    // which is a different and weaker claim.
+    expect(entry(HAIKU).reasoningEfforts).toEqual([]);
+    expect(published(HAIKU).reasoningEfforts).toEqual([]);
+    expect(entry(HAIKU).reasoningEfforts).not.toBeUndefined();
   });
 
   it("exposes no default", () => {
@@ -69,7 +73,7 @@ describe("a model the account declares without effort", () => {
   });
 
   it("matches the account, which declares thinking.type 'none' for it", () => {
-    expect(ACCOUNT_DECLARATION[HAIKU]).toBeUndefined();
+    expect(ACCOUNT_DECLARATION[HAIKU]).toEqual([]);
     expect(entry(HAIKU).reasoningEfforts).toEqual(ACCOUNT_DECLARATION[HAIKU]);
   });
 });

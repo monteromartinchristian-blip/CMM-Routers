@@ -72,12 +72,20 @@ export function parseReasoningEffort(value: unknown): ReasoningEffort | RouterEr
  * wrong. Three surfaces then disagreed — the catalog said one thing, the
  * request said another, and the provider reported a server fault.
  *
- * WHY THE MODEL IS THE AUTHORITY. A ladder is a claim about one concrete
- * model. A model that declares NO ladder has expressed no opinion at all, so
- * this must not start refusing levels for it: inventing a constraint the
- * catalog never published would be the Router contradicting itself, and it
- * would break every model whose ladder is still undeclared (the ChatGPT lane
- * publishes none today). The global syntax gate still applies to those.
+ * WHY THE MODEL IS THE AUTHORITY, AND WHY IT HAS THREE ANSWERS. A ladder is a
+ * claim about one concrete model, and the catalog now distinguishes three
+ * states rather than two:
+ *
+ *   - `undefined` -- this source declared nothing. That is an honest unknown,
+ *     and inventing a constraint the catalog never published would be the
+ *     Router contradicting itself. Such a model is unconstrained and the
+ *     global syntax gate is the only thing that applies.
+ *   - `[]` -- the catalog positively declares that this model exposes no
+ *     effort control. Any explicit level is refused here, before dispatch,
+ *     because the Router already knows it cannot be honoured. Treating this as
+ *     "no opinion" is how a model known to have no effort control ended up
+ *     accepting arbitrary levels.
+ *   - a non-empty ladder -- the exact levels this model offers.
  */
 export function validateEffortForModel(
   effort: ReasoningEffort | undefined,
@@ -85,9 +93,19 @@ export function validateEffortForModel(
 ): RouterError | undefined {
   // No explicit preference: the model's own default (if any) governs.
   if (effort === undefined) return undefined;
-  // The model declared no ladder, so it constrains nothing.
   const ladder = model.reasoningEfforts;
-  if (!ladder || ladder.length === 0) return undefined;
+  // Undeclared. This source expressed no opinion, so nothing is invented here.
+  if (ladder === undefined) return undefined;
+  // Declared, and declared empty: this model is known to expose no effort
+  // control, so every explicit level is refused rather than forwarded to be
+  // ignored or silently downgraded by the provider.
+  if (ladder.length === 0) {
+    return new RouterError(
+      "invalid_request",
+      `reasoning_effort '${effort}' is not supported by model ${model.id}; the model declares no reasoning-effort levels`,
+      { model: model.id, requested: effort, supported: [] },
+    );
+  }
   if (ladder.includes(effort)) return undefined;
   return new RouterError(
     "invalid_request",
