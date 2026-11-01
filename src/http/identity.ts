@@ -1,6 +1,6 @@
 import { verifyBearer, tokensEqual } from "../security/bearer-auth.js";
 import { RouterError } from "../core/errors.js";
-import { PROFILE_CMMCHAT, PROFILE_CODE, type RouterProfile } from "../core/router-profile.js";
+import { PROFILE_CHAT, PROFILE_AGENT, type RouterProfile } from "../core/router-profile.js";
 import { CLIENT_LABEL_HEADER, normalizeClientLabel } from "../core/client-identity.js";
 import {
   CMMCHAT_CLIENT_LABEL,
@@ -120,16 +120,16 @@ export function resolveRequestIdentity(
   }
 
   if (kind === "cmmchat") {
-    return { profile: PROFILE_CMMCHAT, clientLabel: CMMCHAT_CLIENT_LABEL };
+    return { profile: PROFILE_CHAT, clientLabel: CMMCHAT_CLIENT_LABEL };
   }
 
   // Absence is valid. The legacy compatibility credential records its historical
   // observation; the canonical credential records nothing.
   return kind === "legacy-qoder"
-    ? { profile: PROFILE_CODE, clientLabel: LEGACY_CODE_ROUTER_CLIENT_LABEL }
-    : { profile: PROFILE_CODE };
+    ? { profile: PROFILE_AGENT, clientLabel: LEGACY_CODE_ROUTER_CLIENT_LABEL }
+    : { profile: PROFILE_AGENT };
 }
 
 function profileFor(kind: CredentialKind): RouterProfile {
-  return kind === "cmmchat" ? PROFILE_CMMCHAT : PROFILE_CODE;
+  return kind === "cmmchat" ? PROFILE_CHAT : PROFILE_AGENT;
 }

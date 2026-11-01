@@ -654,7 +654,7 @@ describe("Antigravity adapter", () => {
     it("launches tool-capable runs under the CMM-owned MCP-only custom agent", async () => {
       const launches: LaunchSnapshot[] = [];
       const adapterWithRunner = adapterCapturing(launches, { mcpRegistrar: () => undefined });
-      const request: RouterRequest = { ...makeRequest(), tools: [CMM_ECHO_TOOL] };
+      const request: RouterRequest = { ...makeRequest(), profile: "AGENT", tools: [CMM_ECHO_TOOL] };
 
       for await (const _ of adapterWithRunner.run(request, new AbortController().signal)) {
         // consume: the launch snapshot captured at spawn time is the assertion
@@ -680,7 +680,7 @@ describe("Antigravity adapter", () => {
     it("removes the run cwd, and with it the CMM agent, when the provider run never starts", async () => {
       const launches: LaunchSnapshot[] = [];
       const adapterWithRunner = adapterCapturing(launches, { mcpRegistrar: () => undefined });
-      const request: RouterRequest = { ...makeRequest(), tools: [CMM_ECHO_TOOL] };
+      const request: RouterRequest = { ...makeRequest(), profile: "AGENT", tools: [CMM_ECHO_TOOL] };
 
       for await (const _ of adapterWithRunner.run(request, new AbortController().signal)) {
         // consume

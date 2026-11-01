@@ -25,6 +25,7 @@ const REPO = join(import.meta.dirname, "../..");
 
 function neutralKey(overrides: Partial<BrokerKey> = {}): BrokerKey {
   return {
+    profile: "AGENT",
     provider: "claude",
     sessionId: "session-1",
     toolCallId: "public-1",
@@ -33,14 +34,15 @@ function neutralKey(overrides: Partial<BrokerKey> = {}): BrokerKey {
   } as BrokerKey;
 }
 
-/** A key built the way a pre-neutralization caller did, for compatibility checks. */
-function legacyShapedKey(): BrokerKey {
+/** A key carrying an arbitrary client-shaped field, for neutrality checks. */
+function keyWithClientField(): BrokerKey {
   return {
+    profile: "AGENT",
     provider: "claude",
     sessionId: "session-legacy",
     toolCallId: "public-legacy",
     publicToolCallId: "public-legacy",
-    consumer: "qoder",
+    client: "some-harness",
   } as unknown as BrokerKey;
 }
 
@@ -59,9 +61,9 @@ describe("deferred tool broker is client-neutral", () => {
     console.log("BROKER_CLIENT_NEUTRAL=PASS");
   });
 
-  it("a legacy-shaped key with a client field still works (ignored, not required)", () => {
+  it("an arbitrary client field is ignored, never required", () => {
     const broker = new DeferredToolBroker();
-    broker.createPendingCall(legacyShapedKey(), 5_000);
+    broker.createPendingCall(keyWithClientField(), 5_000);
     expect(broker.claimByPublicToolCallId("public-legacy").outcome).toBe("resolved");
   });
 

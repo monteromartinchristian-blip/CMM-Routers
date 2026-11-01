@@ -121,30 +121,30 @@ else
   echo "PROVIDER_NATIVE_REPO_MUTATION=NONE"
 fi
 
-echo "== profile capability policy present (client-agnostic) =="
+echo "== shared tool-access policy present on every surface =="
 # Authorization operates on the authenticated PROFILE. The capability decision
 # must be driven by request identity and must never consult an application
 # identifier.
-if ! grep -q "effectiveProfileToolCapability" src/http/openai-chat.ts \
-  || ! grep -q "effectiveProfileToolCapability" src/http/openai-responses.ts; then
-  echo "FAIL: profile capability gate missing from an HTTP surface"
+surfaces_ok=1
+for surface in src/http/openai-chat.ts src/http/openai-responses.ts src/http/anthropic-messages.ts; do
+  grep -q "resolveToolAccess" "$surface" || surfaces_ok=0
+  grep -q "identity.profile" "$surface" || surfaces_ok=0
+done
+if [ "$surfaces_ok" != "1" ]; then
+  echo "FAIL: shared tool-access decision missing from an HTTP surface"
   fail=1
-elif ! grep -q "identity.profile" src/http/openai-chat.ts \
-  || ! grep -q "identity.profile" src/http/openai-responses.ts; then
-  echo "FAIL: capability gate input is not the authenticated request profile"
-  fail=1
-elif grep -rn "effectiveProfileToolCapability(" src/http/openai-chat.ts src/http/openai-responses.ts \
+elif grep -rn "resolveToolAccess(" src/http/openai-chat.ts src/http/openai-responses.ts src/http/anthropic-messages.ts \
   | grep -q "clientId"; then
   echo "FAIL: application identifier reaches the capability decision"
   fail=1
 else
   echo "PROFILE_CAPABILITY_POLICY=PASS"
   echo "CONSUMER_CAPABILITY_POLICY=PASS"
-  echo "CMMCHAT_TOOL_ESCALATION=NONE"
+  echo "CHAT_TOOL_ESCALATION=NONE"
   echo "UNAUTHENTICATED_TOOL_ESCALATION=NONE"
-  echo "CMMCHAT_CHAT_ONLY=PASS"
-  echo "CMM_CODE_ROUTER_PROFILE=CHAT_AND_TOOLS"
-  echo "CMM_CODE_ROUTER_CLIENT_AGNOSTIC=YES"
+  echo "CHAT_DEFAULT_TOOL_ACCESS=NONE"
+  echo "AGENT_PROFILE=CHAT_AND_TOOLS"
+  echo "AGENT_CLIENT_AGNOSTIC=YES"
   echo "CLIENT_IDENTITY_NOT_AUTHORIZATION=PASS"
 fi
 
@@ -163,6 +163,74 @@ if grep -q "assertDistinctServerTokens" src/http/server.ts \
   echo "AMBIGUOUS_AUTH_FAILS_CLOSED=PASS"
 else
   echo "FAIL: startup ambiguity guard missing"
+  fail=1
+fi
+
+echo "== PROFILE_AUTHORIZATION_NOT_CLIENT_IDENTITY =="
+# A profile is selected by a server-side bearer only. No request header, body
+# field, model name or tool name may select or elevate it.
+if grep -rn "x-router-profile\|x-client-profile\|x-consumer" src/ --include="*.ts" | grep -q .; then
+  echo "FAIL: client-supplied profile/consumer header consulted in production"
+  fail=1
+elif ! grep -q "resolveRequestIdentity" src/http/identity.ts \
+  || ! grep -q "resolveRequestIdentity" src/http/server.ts; then
+  echo "FAIL: profile authentication boundary missing"
+  fail=1
+else
+  chat_line="$(grep -n "tokens.cmmchatToken" src/http/identity.ts | head -n 1 | cut -d: -f1)"
+  agent_line="$(grep -n "tokens.codeRouterToken" src/http/identity.ts | head -n 1 | cut -d: -f1)"
+  if [ -n "$chat_line" ] && [ -n "$agent_line" ] && [ "$chat_line" -lt "$agent_line" ]; then
+    echo "PROFILE_AUTHORIZATION_NOT_CLIENT_IDENTITY=YES"
+    echo "CHAT_TO_AGENT_IMPLICIT_ESCALATION=NONE"
+    echo "CHAT_TOKEN_AGENT_FALLBACK=none-startup-rejects-ambiguity"
+  else
+    echo "FAIL: CHAT bearer must be resolved before any AGENT credential"
+    fail=1
+  fi
+fi
+
+echo "== one router, one tool engine, two capability policies =="
+profile_ok=1
+grep -q 'export type RouterProfile = typeof PROFILE_CHAT | typeof PROFILE_AGENT' src/core/router-profile.ts || profile_ok=0
+grep -q "resolveToolAccess" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "resolveToolAccess" src/http/openai-chat.ts || profile_ok=0
+grep -q "resolveToolAccess" src/http/openai-responses.ts || profile_ok=0
+grep -q "resolveToolAccess" src/http/anthropic-messages.ts || profile_ok=0
+grep -q "ScopedActionRegistry" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "grantedActions" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "no scoped actions granted" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "not registered by the Router" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "not granted to this CHAT session" src/core/tool-access-policy.ts || profile_ok=0
+grep -q "requires a Router profile" src/core/deferred-tool-broker.ts || profile_ok=0
+grep -q "request.profile" src/providers/claude/adapter.ts || profile_ok=0
+grep -q "request.profile" src/providers/codex/adapter.ts || profile_ok=0
+grep -q "request.profile" src/providers/antigravity/adapter.ts || profile_ok=0
+if [ "$profile_ok" = "1" ]; then
+  echo "ROUTER_ARCHITECTURE=UNIFIED"
+  echo "ROUTER_PROFILES=CHAT,AGENT"
+  echo "CHAT_PROFILE=PASS"
+  echo "CHAT_DEFAULT_TOOL_ACCESS=NONE"
+  echo "CHAT_SCOPED_ACTIONS=SUPPORTED"
+  echo "CHAT_UNSCOPED_ACTION=REJECTED"
+  echo "CHAT_ARBITRARY_TOOL_ACCESS=NONE"
+  echo "AGENT_PROFILE=PASS"
+  echo "ONE_SHARED_TOOL_ENGINE=YES"
+else
+  echo "FAIL: unified profile/tool policy wiring missing"
+  fail=1
+fi
+
+echo "== legacy AGENT aliases (no migration required) =="
+if grep -q "CMM_CODE_ROUTER_TOKEN" src/index.ts \
+  && grep -q 'LEGACY_CODE_ROUTER_BEARER_ENV = "CMM_QODER_TOKEN"' src/compat/legacy-identifiers.ts \
+  && grep -q "codeRouterToken" src/http/server.ts \
+  && grep -q "qoderToken" src/http/server.ts \
+  && grep -q "code-router-bearer" scripts/macos/run-router.sh \
+  && grep -q "qoder-bearer" scripts/macos/run-router.sh; then
+  echo "LEGACY_CODE_COMPATIBILITY=PASS"
+  echo "LEGACY_QODER_COMPATIBILITY=PASS"
+else
+  echo "FAIL: legacy AGENT token aliases missing"
   fail=1
 fi
 
@@ -600,8 +668,9 @@ fi
 
 echo "== shared provider tool policy (no silent drop) =="
 if grep -q "enforceProviderToolPolicy" src/core/tool-policy.ts \
-  && grep -q "enforceProviderToolPolicy" src/http/openai-chat.ts \
-  && grep -q "enforceSelectedProviderToolPolicy" src/http/openai-responses.ts \
+  && grep -q "enforceProviderToolPolicy" src/core/tool-access-policy.ts \
+  && grep -q "resolveToolAccess" src/http/openai-chat.ts \
+  && grep -q "resolveToolAccess" src/http/openai-responses.ts \
   && grep -q "toAnthropicToolChoice" src/providers/command-code/client.ts; then
   echo "SILENT_TOOL_CHOICE_DROP=NONE"
   echo "SILENT_PARALLEL_TOOL_POLICY_DROP=NONE"

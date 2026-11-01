@@ -47,7 +47,9 @@ describe("CMM Routers current identity", () => {
     expect(readme).toContain(
       "Use the AI subscriptions you already pay for, from the tools you actually want to use.",
     );
-    expect(readme).toContain("CMMChat Router");
+    expect(readme).toContain("## Profiles");
+    expect(readme).toContain("`CHAT`");
+    expect(readme).toContain("`AGENT`");
     expect(readme).toContain("CHAT_ONLY");
     expect(readme).toContain("CMM Code Router");
     expect(readme).toContain("CHAT_AND_TOOLS");

@@ -20,6 +20,8 @@ import type {
 } from "../../core/provider.js";
 import type { DiscoveredModel, RouterFunctionTool } from "../../core/model.js";
 import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
+import type { RouterProfile } from "../../core/router-profile.js";
+import { assertProfileForToolSemantics } from "../../core/tool-access-policy.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { assertNoPaygFallback } from "../../security/payg-guard.js";
@@ -809,6 +811,13 @@ type AsyncQueue<T> = BoundedQueue<T>;
  */
 interface AgyToolSession {
   requestId: string;
+  /**
+   * Authenticated owner profile; broker correlation is profile-bound.
+   * Undefined is possible only for a tool-free direct call: parking never
+   * happens without tool semantics, which the run() guard requires to carry a
+   * profile.
+   */
+  profile: RouterProfile | undefined;
   sessionId: string;
   cwd: string;
   queue: StreamEventQueue;
@@ -1197,6 +1206,10 @@ export class AntigravityAdapter implements ProviderAdapter {
     try {
       this.broker.createPendingCall<AgyToolSession>(
         {
+          // A profile is present whenever a run can park (run-guard); the
+          // omit keeps the broker key honest if a future path bypasses it,
+          // in which case the broker itself refuses profileless entries.
+          ...(session.profile !== undefined ? { profile: session.profile } : {}),
           provider: "google",
           sessionId: session.sessionId,
           toolCallId: publicId,
@@ -1427,6 +1440,8 @@ export class AntigravityAdapter implements ProviderAdapter {
 
     const session: AgyToolSession = {
       requestId: request.requestId,
+      // Defined by the run() guard whenever this session can park a call.
+      profile: request.profile,
       sessionId,
       cwd,
       queue,
@@ -1476,6 +1491,10 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   async *run(request: RouterRequest, signal: AbortSignal): AsyncIterable<RouterEvent> {
+    // Fail closed before any provider spawn or tool-result correlation: tool
+    // semantics without an authenticated, propagated profile are never parked
+    // under an assumed AGENT identity. Tool-free direct calls stay compatible.
+    assertProfileForToolSemantics(request.profile, request);
     // No temp dir exists yet: every early return below happens BEFORE any
     // filesystem allocation, so nothing can leak on validation paths.
     try {
@@ -1515,7 +1534,10 @@ export class AntigravityAdapter implements ProviderAdapter {
     if (toolResults.length > 0) {
       for (const result of toolResults) {
         const publicId = result.toolCallId as string;
-        const claim = this.broker.claimByPublicToolCallId<AgyToolSession>(publicId);
+        const claim = this.broker.claimByPublicToolCallId<AgyToolSession>(
+          publicId,
+          request.profile,
+        );
         if (claim.outcome !== "resolved" || !claim.context) continue;
         const session = claim.context;
         this.toolSessions.delete(publicId);

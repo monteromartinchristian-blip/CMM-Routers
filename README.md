@@ -13,31 +13,55 @@ repository.
 
 ## Profiles
 
-CMM Routers exposes two product profiles. The profile is decided by the consumer
-that connects, not by which provider is selected.
+One Router, one tool engine, two capability policies. A profile is an
+authorization identity resolved from a server-side bearer before any request
+field is read. It is never selected or changed by a header, body field, model
+name, tool name, client name or claimed capability.
 
-### CMMChat Router — `CHAT_ONLY`
+| Profile | Authenticated by | Intended consumer |
+|---|---|---|
+| `CHAT` | `CMM_ROUTER_TOKEN` | CMMChat and equivalent conversational clients |
+| `AGENT` | `CMM_CODE_ROUTER_TOKEN` (canonical) or `CMM_QODER_TOKEN` (legacy Qoder alias) | Qoder, Hermes, Codex CLI, generic OpenAI-compatible agents, future CMM Cowork |
 
-The conversational profile.
+Both profiles share the same `ProviderRegistry`, HTTP/API surfaces, model
+discovery, streaming, session handling, tool transport, tool correlation,
+observability, security boundary and provider adapters. The difference is
+exclusively the capability policy applied before a tool enters that pipeline.
 
-- Never gains tools, shell access, filesystem access, or repository mutation.
-- Stays `CHAT_ONLY` even when the selected provider and model are technically
-  capable of tool calling.
-- Intended for CMMChat and equivalent chat-only consumers.
+### CHAT
 
-### CMM Code Router — `CHAT_AND_TOOLS`
+The normal CMMChat profile: conversation, streaming, multimodal input where the
+provider supports it, and reasoning.
 
-The coding/agent profile.
+- **No default tool access.** Sending a `tools` array does not grant anything.
+- **Scoped actions only.** CHAT may use only actions that are both registered by
+  the Router and explicitly granted by server-side policy. A registered action
+  that was not granted is rejected; an invented tool is rejected; a mixed
+  allowed + forbidden set is rejected as a whole. Nothing is silently stripped.
+- The client executes an authorized action. The Router only transports the call
+  and correlates the result with the same provider run.
 
-- The **client or harness owns tool execution**.
-- The **provider owns reasoning only**.
-- Tool calls are surfaced back to the client/harness, and tool results return to
-  the same logical provider run where the provider supports it.
-- Providers never mutate a repository directly.
+Model suggestions such as "should I update this in Notion?" are ordinary text.
+The Router intervenes only when an actual tool invocation exists; confirmation
+UI and UX belong to CMMChat.
 
-`CMM Code Router` is advertised only where the selected provider and model
-truthfully support the externally-owned tool round-trip. Where a route does not
-support it, the router says so rather than faking capability.
+### AGENT
+
+The harness/agent profile, and the generalization of the historical
+`CMM Code Router`.
+
+- The **client or harness owns tool execution**; the **provider owns reasoning
+  only**.
+- Tool calls are surfaced to the client and results return to the same logical
+  provider run where the provider supports it.
+- The harness-supplied tool set is transported subject to provider/model
+  structured-tool capability, protocol representability and the existing
+  security invariants. AGENT still never executes a tool in the Router.
+- Client identity grants nothing: a Qoder, Hermes or Codex request is AGENT
+  because of the bearer it presents, not because of its name.
+
+`CMM Code Router` is retained as the historical/compatibility identity of the
+AGENT profile. It is not a third profile and not a security primitive.
 
 ## Architecture
 
@@ -46,9 +70,11 @@ client / harness
       │  OpenAI-compatible HTTP, loopback only
       ▼
 CMM Routers  ──►  ProviderRegistry  ──►  provider adapter
-                                            │
-                                            ▼
-                                  subscription-backed provider
+      │                                      │
+      │  profile → effective tool policy     ▼
+      │                              subscription-backed provider
+      ▼
+shared tool transport / correlation engine
 ```
 
 Two responsibilities are kept strictly apart:
@@ -62,7 +88,7 @@ tool call outward and accepts the result back, but it never runs the tool itself
 
 ## Supported providers
 
-| Provider | Models | Authentication | CMM Code Router tool channel |
+| Provider | Models | Authentication | Tool channel (AGENT / granted CHAT) |
 |---|---|---|---|
 | ChatGPT / Codex | `chatgpt/*` | `codex login` (ChatGPT subscription) | Supported and live-verified |
 | Claude | `claude/*` | Isolated profile via `CLAUDE_CONFIG_DIR` | Supported and live-verified |
@@ -89,6 +115,12 @@ These are enforced, not aspirational:
   never in Git, logs, fixtures, or synced config.
 - **No tracked secrets.**
 - **No provider-native repository mutation.** Providers reason; they do not edit.
+- **Profile comes from authentication, not identity.** A header, model name,
+  client name, tool name or body claim can never select `AGENT` or widen a grant.
+- **CHAT fails closed.** No default tools; registered + granted scoped actions
+  only; any out-of-scope tool rejects the request instead of being stripped.
+- **One shared tool engine.** CHAT scoped actions and AGENT tool loops use the
+  same transport/correlation path; the difference is the policy applied first.
 - **Logging hygiene.** Prompts, completions, tool arguments, and tool results are
   never logged in normal runtime.
 
@@ -97,33 +129,38 @@ These are enforced, not aspirational:
 Any client that can speak to an OpenAI-compatible HTTP endpoint can consume
 CMM Routers.
 
-- **CMMChat** — the `CHAT_ONLY` consumer.
-- **Qoder** — the first documented `CMM Code Router` consumer. Qoder is a
-  supported client of the project, not the identity of the project or of the
-  profile; Qoder owns and executes the tools it is given.
-- **Hermes** and the **Codex CLI** — additional compatibility targets of the same
-  `CMM Code Router` profile. Both are configured as ordinary OpenAI-compatible
-  clients; neither is an authorization role.
+- **CMMChat** — authenticates as `CHAT` with `CMM_ROUTER_TOKEN`. Conversation,
+  streaming, multimodal input and reasoning, plus only explicitly granted
+  scoped actions.
+- **Qoder** — an `AGENT` consumer, authenticated with its legacy
+  `CMM_QODER_TOKEN`. Qoder is a supported client of the project, not the identity
+  of the project or of the profile; it owns and executes the tools it is given.
+- **Hermes**, the **Codex CLI** and generic OpenAI-compatible agents — further
+  `AGENT` consumers authenticated with `CMM_CODE_ROUTER_TOKEN` (or the legacy
+  Qoder alias where already installed). Each is configured as an ordinary
+  OpenAI-compatible client; none is an authorization role.
 
-The architecture is open to additional compatible clients and harnesses.
-Real-client verification status per client is stated in
+The architecture is open to additional compatible clients and harnesses. A client
+NAME never creates a new capability: the bearer decides the profile. Real-client
+verification status per client is stated in
 [capability and real-client status](docs/code-router-capability-status.md).
 
 See [CMM Code Router — generic client setup](docs/code-router-setup.md) for the
-client-agnostic protocol: authentication, model capability discovery, the tool
-round-trip contract, streaming and cancellation.
+client-agnostic protocol, and [Router profiles](docs/router-profiles.md) for the
+CHAT/AGENT model.
 
 ## Credentials
 
-Authenticate with the canonical Code Router bearer for tool-owning clients:
+Authenticate tool-owning clients with the canonical `AGENT` bearer:
 
 ```text
 CMM_CODE_ROUTER_TOKEN
 ```
 
-`CMM_QODER_TOKEN` remains a legacy compatibility alias for the SAME Code Router
-profile. The CMMChat bearer (`CMM_ROUTER_TOKEN`) is separate and permanently
-`CHAT_ONLY`. See [migration](docs/code-router-migration.md).
+`CMM_QODER_TOKEN` remains a legacy compatibility alias for the SAME `AGENT`
+profile. The CMMChat bearer (`CMM_ROUTER_TOKEN`) authenticates the separate
+`CHAT` profile, which carries no caller-supplied tools. See
+[migration](docs/code-router-migration.md).
 
 ## Setup
 
@@ -147,9 +184,14 @@ Provide the router bearer through the environment or the macOS Keychain. See
 [docs/macos-install.md](docs/macos-install.md) for the LaunchAgent installation,
 the Keychain commands, and the per-machine reproducibility notes.
 
-When the optional Qoder consumer bearer is absent, there is simply no
-`CMM Code Router` consumer: every authenticated client is treated as CMMChat and
-stays permanently `CHAT_ONLY`.
+When no AGENT bearer is configured, there is no AGENT consumer: every
+authenticated inference client is `CHAT`. `CMM_QODER_TOKEN` continues to work
+for installed Qoder setups; `CMM_CODE_ROUTER_TOKEN` is the canonical AGENT
+alias. Both resolve to the same AGENT profile. A CHAT token is never accepted as
+a fallback for AGENT, and no token is copied, generated or migrated.
+
+See [docs/router-profiles.md](docs/router-profiles.md) for the policy contract,
+the scoped-action model and the legacy mapping.
 
 ### Qoder
 
@@ -181,9 +223,13 @@ on purpose so existing installations keep working without migration.
 | `com.cmm.subscription-router` | LaunchAgent label |
 | `launchd/com.cmm.subscription-router.plist.template` | plist template filename |
 | `cmm-subscription-router` | macOS Keychain service |
-| `router-bearer`, `qoder-bearer`, `command-code-secret` | Keychain account names |
+| `router-bearer`, `qoder-bearer`, `code-router-bearer`, `command-code-secret` | Keychain account names (`code-router-bearer` is optional; nothing creates it automatically) |
 | `qoder-custom-cmm-router` | Qoder provider ID |
-| `CMM_ROUTER_TOKEN`, `CMM_QODER_TOKEN` | Environment variable names (CMMChat; legacy Code Router alias) |
+| `CMM_ROUTER_TOKEN` | CHAT profile bearer |
+| `CMM_CODE_ROUTER_TOKEN` | canonical AGENT profile bearer |
+| `CMM_QODER_TOKEN` | legacy Qoder alias for the AGENT profile |
+| `CHAT_ONLY`, `CHAT_AND_TOOLS` | provider/model capability representation (not profile names) |
+| `CMM Code Router` | historical/compatibility name of the AGENT profile |
 | `cmm-qoder-tools`, `mcp__cmm_qoder__`, `cmm_qoder` | MCP bridge / registration names |
 | `~/Library/Logs/CMM-Subscription-Router/` | Local log directory |
 

@@ -7,6 +7,8 @@ import type { DiscoveredModel, RouterFunctionTool } from "../../core/model.js";
 import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
+import type { RouterProfile } from "../../core/router-profile.js";
+import { assertProfileForToolSemantics } from "../../core/tool-access-policy.js";
 import { fileURLToPath } from "node:url";
 import { NEUTRAL_CWD, buildIsolatedEnvironment, defaultClaudeConfigDir } from "./sdk-client.js";
 import { query, startup, resolveSettings, type Query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -40,6 +42,13 @@ const MAX_PENDING_TOOL_CALLS_PER_MCP_SESSION = 1;
  */
 interface LiveClaudeSession {
   sessionKey: string;
+  /**
+   * Authenticated owner profile; broker correlation is profile-bound.
+   * Undefined is possible only for a tool-free direct call: parking never
+   * happens without tool semantics, which the run() guard requires to carry a
+   * profile.
+   */
+  profile: RouterProfile | undefined;
   /** Router request that currently drives this SDK query (for cancellation). */
   requestId: string;
   iterator: AsyncIterator<unknown>;
@@ -619,6 +628,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       this.broker.createPendingCall<LiveClaudeSession>(
         {
+          // A profile is present whenever a run can park (run-guard); the
+          // omit keeps the broker key honest if a future path bypasses it,
+          // in which case the broker itself refuses profileless entries.
+          ...(session.profile !== undefined ? { profile: session.profile } : {}),
           provider: "claude",
           sessionId: session.sessionKey,
           toolCallId: publicId,
@@ -723,6 +736,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     request: RouterRequest,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
+    // Fail closed before any SDK process or tool-result correlation: tool
+    // semantics without an authenticated, propagated profile are never parked
+    // under an assumed AGENT identity. Tool-free direct calls stay compatible.
+    assertProfileForToolSemantics(request.profile, request);
     // Follow-up carrying the client's executed tool result: release the parked
     // external MCP handler and keep draining the SAME SDK query. This is the
     // cross-request continuation; no new session is opened.
@@ -732,7 +749,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (toolResults.length > 0) {
       for (const result of toolResults) {
         const publicId = result.toolCallId as string;
-        const claim = this.broker.claimByPublicToolCallId<LiveClaudeSession>(publicId);
+        const claim = this.broker.claimByPublicToolCallId<LiveClaudeSession>(
+          publicId,
+          request.profile,
+        );
         if (claim.outcome !== "resolved" || !claim.context) continue;
         const session = claim.context;
         this.sessions.delete(publicId);
@@ -937,6 +957,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (control !== undefined && toolCalls !== undefined) {
         const session: LiveClaudeSession = {
           sessionKey: request.requestId,
+          // Defined by the run() guard: this session exists only when tool
+          // semantics are present, which require an authenticated profile.
+          profile: request.profile,
           requestId: request.requestId,
           iterator,
           inflight: undefined,

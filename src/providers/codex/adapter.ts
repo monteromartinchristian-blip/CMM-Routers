@@ -4,6 +4,8 @@ import type { ProviderAdapter, DiscoveredModel, ProviderHealth, RouterRequest } 
 import type { RouterEvent } from "../../core/events.js";
 import { RouterError } from "../../core/errors.js";
 import { toolResultStatusSuffix } from "../../core/tool-result-status.js";
+import type { RouterProfile } from "../../core/router-profile.js";
+import { assertProfileForToolSemantics } from "../../core/tool-access-policy.js";
 import { CodexAppServerClient } from "./app-server-client.js";
 import {
   buildThreadStartParams,
@@ -333,6 +335,10 @@ export class CodexAdapter implements ProviderAdapter {
     request: RouterRequest,
     signal: AbortSignal,
   ): AsyncIterable<RouterEvent> {
+    // Fail closed before any provider transport start: tool semantics without
+    // an authenticated, propagated profile are never parked under an assumed
+    // AGENT identity. Tool-free direct calls stay compatible (no broker use).
+    assertProfileForToolSemantics(request.profile, request);
     await this.ensureStarted();
 
     if (!this.client) {
@@ -351,6 +357,7 @@ export class CodexAdapter implements ProviderAdapter {
         for (const result of toolResults) {
           const claim = this.broker.claimByPublicToolCallId<PendingToolContext>(
             result.toolCallId as string,
+            request.profile,
           );
           if (claim.outcome !== "resolved" || !claim.context) continue;
           const ctx = claim.context;
@@ -374,6 +381,7 @@ export class CodexAdapter implements ProviderAdapter {
               ctx.providerTurn,
               threadAcl,
               signal,
+              request.profile,
             );
           }
           return;
@@ -465,7 +473,14 @@ export class CodexAdapter implements ProviderAdapter {
         // wire request. The SAME thread/turn then keeps draining, so a SECOND
         // (and further) sequential tool request inside the same logical Codex
         // run is handled identically — never a new thread, never a new turn.
-        yield* this.pumpTurn(request.requestId, threadId, turnId, declaredToolNames, signal);
+        yield* this.pumpTurn(
+          request.requestId,
+          threadId,
+          turnId,
+          declaredToolNames,
+          signal,
+          request.profile,
+        );
       } finally {
         // Clean up active turn tracking and release this run's buffered
         // notification state so no content survives into later requests.
@@ -504,6 +519,7 @@ export class CodexAdapter implements ProviderAdapter {
     turnId: string,
     declaredToolNames: Set<string>,
     signal: AbortSignal,
+    profile: RouterProfile | undefined,
   ): AsyncIterable<RouterEvent> {
     if (!this.client) {
       throw new RouterError("provider_unavailable", "Codex client not available");
@@ -511,7 +527,7 @@ export class CodexAdapter implements ProviderAdapter {
     const client = this.client;
     this.activeTurns.set(requestId, { threadId, turnId });
     try {
-      yield* this.pumpTurn(requestId, threadId, turnId, declaredToolNames, signal);
+      yield* this.pumpTurn(requestId, threadId, turnId, declaredToolNames, signal, profile);
     } finally {
       this.activeTurns.delete(requestId);
       client.discardScope({ threadId, turnId });
@@ -536,6 +552,7 @@ export class CodexAdapter implements ProviderAdapter {
     turnId: string,
     declaredToolNames: Set<string>,
     signal: AbortSignal,
+    profile: RouterProfile | undefined,
   ): AsyncGenerator<RouterEvent, void> {
     const client = this.client;
     if (!client) {
@@ -602,6 +619,7 @@ export class CodexAdapter implements ProviderAdapter {
           turnId,
           declaredToolNames,
           signal,
+          profile,
         });
         return;
       }
@@ -679,6 +697,7 @@ export class CodexAdapter implements ProviderAdapter {
       turnId: string;
       declaredToolNames: Set<string>;
       signal: AbortSignal;
+      profile: RouterProfile | undefined;
     },
   ): AsyncGenerator<RouterEvent, "parked" | "fatal"> {
     const client = this.client;
@@ -745,9 +764,25 @@ export class CodexAdapter implements ProviderAdapter {
     // consumer-visible id is a Router-generated globally unique PUBLIC id; the
     // provider's own callId stays internal. A follow-up request carrying the
     // public id resolves THIS request with success:true.
+    // Fail closed before parking: a dynamic tool call may only correlate under
+    // an authenticated profile. A run that somehow reached the tool path
+    // without one (direct invocation bypassing run()'s guard) is answered
+    // failure on the provider wire and never parked under an assumed AGENT.
+    if (ctx.profile === undefined) {
+      client.respondToServerRequest(wireRequestId, { success: false, contentItems: [] });
+      yield {
+        type: "error",
+        error: new RouterError(
+          "invalid_request",
+          "Dynamic tool call requires an authenticated router profile; refusing to assume AGENT",
+        ),
+      };
+      return "fatal";
+    }
     const publicToolCallId = createPublicToolCallId("chatgpt");
     this.broker.createPendingCall<PendingToolContext>(
       {
+        profile: ctx.profile,
         provider: "chatgpt",
         sessionId: ctx.threadId,
         turnId: ctx.turnId,

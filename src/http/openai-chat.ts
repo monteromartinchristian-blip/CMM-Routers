@@ -21,7 +21,7 @@ import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { UsageStore } from "../observability/usage-store.js";
 import { trackProviderStream } from "./usage-tracking.js";
-import { effectiveProfileToolCapability } from "../core/router-profile.js";
+import { resolveToolAccess, type ToolAccessConfig } from "../core/tool-access-policy.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { validateToolArguments } from "../core/tool-arguments.js";
 import {
@@ -237,12 +237,16 @@ export function rawBodyHasAssistantToolHistory(body: Record<string, unknown>): b
 }
 
 /**
- * Fail closed when the EFFECTIVE capability (consumer policy AND model
- * capability) is CHAT_ONLY and the request carries tool semantics. Runs
- * BEFORE provider resolution execution: tool definitions, tool_choice /
- * parallel_tool_calls provider equivalents, tool-role continuation messages,
- * or assistant tool-call history are all rejected deterministically with
- * unsupported_capability. Never strips, never forwards, never falls back.
+ * @deprecated Legacy capability-only guard. The HTTP handlers now call
+ * `resolveToolAccess`, which applies the authenticated profile plus the
+ * scoped-action grant and provider capability in one decision. This function
+ * is retained only for compatibility with existing imports/tests; it is not
+ * on the request path and cannot grant tools.
+ *
+ * Fail closed when the capability is CHAT_ONLY and the request carries tool
+ * semantics: tool definitions, tool_choice / parallel_tool_calls provider
+ * equivalents, tool-role continuation messages, or assistant tool-call history
+ * are all rejected deterministically with unsupported_capability.
  */
 export function rejectChatOnlyTools(
   capability: string | undefined,
@@ -280,13 +284,10 @@ export function rejectChatOnlyTools(
 }
 
 /**
- * One shared provider tool policy for both HTTP surfaces. Each provider either
- * maps the caller's constraint exactly or rejects it explicitly; a constraint
- * is never accepted and then silently dropped.
- *
- * The policy argument is the API-independent normalized form: each surface
- * parses its OWN wire shape first, so this function never sees a raw public
- * tool_choice object.
+ * @deprecated Compatibility alias. `resolveToolAccess` calls
+ * `enforceProviderToolPolicy` in `src/core/tool-access-policy.ts` for both
+ * surfaces, so protocol representability is part of the effective decision.
+ * Retained for existing imports; not on the request path.
  */
 export function enforceSelectedProviderToolPolicy(
   provider: string,
@@ -389,6 +390,7 @@ export function registerChatCompletions(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  toolAccessConfig: ToolAccessConfig = {},
 ): void {
   fastify.post("/v1/chat/completions", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -483,32 +485,56 @@ export function registerChatCompletions(
     // Authorization subject is the authenticated PROFILE, never the client
     // application identifier.
     const identity = (request as ConsumerRequest).identity;
-    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
-    const capabilityError = rejectChatOnlyTools(effective, body, messages);
+
+    // Raw-wire guard for shapes that parsing may discard. It only runs when the
+    // request cannot legitimately transport tools: CHAT without a scoped grant,
+    // or a model without a proven structured tool round-trip.
+    const carriesScopedGrant =
+      identity.profile === "AGENT" || (toolAccessConfig.grantedActions?.length ?? 0) > 0;
+    const transportCapability =
+      model.capability === "CHAT_AND_TOOLS" && carriesScopedGrant
+        ? "CHAT_AND_TOOLS"
+        : "CHAT_ONLY";
+    const capabilityError = rejectChatOnlyTools(transportCapability, body, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    // Codex 0.153.4 CAN declare client tools (experimental dynamicTools), but it
-    // still cannot represent a caller tool-selection or parallel-execution
-    // constraint. Reject those instead of silently dropping them.
-    const codexPolicyError = enforceSelectedProviderToolPolicy(
-      model.provider,
-      toolChoice,
-      parallelToolCalls,
-    );
-    if (codexPolicyError) {
-      const mapped = mapRouterErrorToHttp(codexPolicyError);
+    // One shared authorization decision for both profiles. The authenticated
+    // profile, never a body/header/model claim, selects the policy; a client
+    // tool list is never a grant. Rejection happens before provider invocation
+    // and never strips a tool.
+    const decision = resolveToolAccess({
+      profile: identity.profile,
+      provider: model.provider,
+      providerCapability: model.capability,
+      tools,
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+      messages,
+      ...(toolAccessConfig.scopedActions !== undefined
+        ? { scopedActions: toolAccessConfig.scopedActions }
+        : {}),
+      ...(toolAccessConfig.grantedActions !== undefined
+        ? { grantedActions: toolAccessConfig.grantedActions }
+        : {}),
+    });
+    if (!decision.allowed) {
+      const mapped = mapRouterErrorToHttp(decision.error);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
+    const effectiveTools = decision.access.tools;
 
     const requestId = newRequestId();
     const routerRequest = {
       requestId,
+      // Authenticated authorization subject, propagated so broker correlation
+      // and adapter-side tool semantics can never be inferred from a body field.
+      profile: identity.profile,
       model,
       messages,
-      tools,
+      tools: [...effectiveTools],
       stream: body.stream === true,
       ...(typeof body.max_tokens === "number" ? { maxOutputTokens: body.max_tokens } : {}),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),

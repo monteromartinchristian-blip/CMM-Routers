@@ -218,6 +218,7 @@ function makeAdapter(server: MultiStepCodexServer): {
 function request(requestId: string, messages: RouterMessage[]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "chatgpt/gpt-5",
       provider: "chatgpt",

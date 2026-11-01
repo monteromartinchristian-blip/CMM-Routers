@@ -315,8 +315,9 @@ function readBearer(deps: CanaryDeps): { token: string; source: string } | { blo
   if (typeof fromKeychain === "string" && fromKeychain.length > 0) {
     return { token: fromKeychain, source: "keychain" };
   }
-  // Never fall back to the CMMChat bearer: tool acceptance MUST authenticate as
-  // Qoder, and CMMChat is permanently CHAT_ONLY.
+  // Never fall back to the CHAT bearer: tool acceptance MUST authenticate as
+  // AGENT (Qoder's legacy bearer). CHAT has no default tool access and no
+  // scoped grant is configured for this canary.
   return { blocked: "missing-qoder-bearer" };
 }
 
@@ -434,7 +435,8 @@ export async function runCanary(deps: CanaryDeps): Promise<CanaryOutcome> {
   if (first.status === 429) return block("quota-or-rate-limited");
   if (first.status === 400 && errorTypeOf(first.json) === "unsupported_capability") {
     // Tool semantics are rejected pre-inference: either the consumer is not
-    // Qoder (CMMChat is CHAT_ONLY) or the provider policy is not representable.
+    // AGENT (CHAT has no scoped grant here) or the provider policy is not
+    // representable.
     // Either way nothing was spent.
     return block(`capability-or-policy-rejected:${errorMessageOf(first.json)}`);
   }

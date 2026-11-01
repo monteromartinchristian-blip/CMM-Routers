@@ -31,11 +31,12 @@ security add-generic-password -s cmm-subscription-router -a router-bearer -w
 security add-generic-password -s cmm-subscription-router -a command-code-secret -w
 ```
 
-### Code Router bearer (canonical)
+### AGENT profile bearer (canonical)
 
-The Code Router profile (`CHAT_AND_TOOLS`) is what serves tool-owning clients —
-Qoder, Hermes, Codex and any generic OpenAI-compatible harness. It is
-client-agnostic: the bearer authenticates the **profile**, not an application.
+The `AGENT` profile generalizes the historical `CMM Code Router`: a harness or
+agent owns tool execution and the Router only transports the round-trip. It is
+client-agnostic — the bearer authenticates the **profile**, not an application —
+and serves Qoder, Hermes, Codex and any generic OpenAI-compatible harness.
 Provision the canonical item per Mac (never copied between machines, never
 committed):
 
@@ -52,19 +53,23 @@ command (idempotent; it never overwrites and never prints a value).
 ### Legacy Qoder bearer (compatibility alias)
 
 The Qoder bearer is retained as an explicit **compatibility alias** for the same
-Code Router profile, so existing installations keep working without migration.
-It is no longer a distinct role and it never authenticates CMMChat. Provision it
-per Mac if it is not already present:
+`AGENT` profile, so existing installations keep working without migration. It is
+not a distinct role and it never authenticates `CHAT`. Provision it per Mac if
+it is not already present:
 
 ```bash
 security add-generic-password -s cmm-subscription-router -a qoder-bearer -w
 ```
 
-At startup the wrapper exports it as `CMM_QODER_TOKEN`. Either Code Router
-credential — canonical or legacy — authenticates the Code Router profile; when
-neither is present there is simply no Code Router profile and every
-authenticated client is CMMChat, which is permanently CHAT_ONLY. Values are read
-without echo and never written to the plist, logs, or the repository.
+At startup `scripts/macos/run-router.sh` reads both optional accounts and exports
+them as `CMM_QODER_TOKEN` (legacy alias) and `CMM_CODE_ROUTER_TOKEN` (canonical
+alias). Both resolve to the same `AGENT` profile. Nothing is copied, generated or
+migrated: when neither item exists there is simply no `AGENT` consumer and every
+authenticated inference client is `CHAT`. Values are read without echo and never
+written to the plist, logs, config or repository.
+`scripts/macos/install-router.sh` reports whether the Qoder item already exists
+and, if not, prints the exact provisioning command (idempotent; it never
+overwrites). It does not create `code-router-bearer`.
 
 Configuration collisions fail closed: if the CMMChat bearer equals either Code
 Router bearer the Router refuses to start rather than resolving an ambiguous
@@ -77,8 +82,9 @@ From `$HOME/CMM-Routers` on the second machine:
 1. Clone/pull the same Git revision.
 2. Run `bash scripts/preflight.sh` and `npm run build`.
 3. Store that Mac's own secrets in its Keychain (same commands as above),
-   including `code-router-bearer` for the Code Router profile and, while the
-   compatibility window is open, `qoder-bearer` for the legacy alias.
+   including `code-router-bearer` (canonical AGENT) and, while the compatibility
+   window is open, `qoder-bearer` (legacy alias) if that Mac should serve an
+   AGENT consumer.
 4. Run `bash scripts/macos/install-router.sh`.
 5. Re-authenticate each provider locally on that Mac.
 

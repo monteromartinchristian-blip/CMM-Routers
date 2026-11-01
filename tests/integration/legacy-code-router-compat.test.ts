@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { buildServer, resolveConsumerId } from "../../src/http/server.js";
 import { ProviderRegistry } from "../../src/registry/provider-registry.js";
-import { PROFILE_CODE } from "../../src/core/router-profile.js";
+import { PROFILE_AGENT } from "../../src/core/router-profile.js";
 import type {
   ProviderAdapter,
   DiscoveredModel,
@@ -75,7 +75,7 @@ describe("Phase 1 legacy compatibility lock", () => {
     const request = {
       headers: { authorization: `Bearer ${LEGACY}` },
     } as unknown as FastifyRequest;
-    expect(resolveConsumerId(request, { bearerSecret: CMMCHAT, qoderToken: LEGACY })).toBe(PROFILE_CODE);
+    expect(resolveConsumerId(request, { bearerSecret: CMMCHAT, qoderToken: LEGACY })).toBe(PROFILE_AGENT);
     const unknown = {
       headers: { authorization: "Bearer nope" },
     } as unknown as FastifyRequest;

@@ -8,6 +8,8 @@ import type { UsageStore } from "../observability/usage-store.js";
 import { redactObject } from "../security/secret-redaction.js";
 import type { RouterProfile } from "../core/router-profile.js";
 import { protocolCapabilitiesFor } from "../core/protocol-capabilities.js";
+import type { ScopedActionRegistry } from "../core/scoped-actions.js";
+import type { ToolAccessConfig } from "../core/tool-access-policy.js";
 import {
   CLIENT_LABEL_HEADER,
   assertDistinctServerTokens,
@@ -19,22 +21,34 @@ import {
 export interface ServerOptions {
   host: string;
   port: number;
-  /** Bearer for the CMMChat profile (permanently CHAT_ONLY). */
+  /** Bearer for the CHAT profile. CHAT is chat-only unless scoped actions are granted. */
   bearerSecret: string;
   registry: ProviderRegistry;
   usageStore?: UsageStore;
   /**
-   * Canonical Code Router bearer. Requests presenting it authenticate the Code
-   * Router profile, whose effective capability is the intersection of the
-   * profile and the resolved provider/model capability.
+   * Canonical AGENT bearer (`CMM_CODE_ROUTER_TOKEN`). Requests presenting it
+   * authenticate the AGENT profile, whose effective capability is the
+   * intersection of the profile and the resolved provider/model capability.
    */
   codeRouterToken?: string;
   /**
-   * @deprecated Legacy Code Router bearer. It authenticates the SAME Code
-   * Router profile and is retained so existing installations keep working
+   * @deprecated Legacy AGENT bearer (`CMM_QODER_TOKEN`). It authenticates the
+   * SAME AGENT profile and is retained so existing installations keep working
    * during the compatibility window. No client identity grants capability.
    */
   qoderToken?: string;
+  /**
+   * Registry of actions CHAT is allowed to see. Empty by default: no scoped
+   * connector is registered in production until one is deliberately added.
+   * Registration alone grants nothing.
+   */
+  scopedActions?: ScopedActionRegistry;
+  /**
+   * Server/session-side CHAT grants. This is the ONLY source of CHAT tool
+   * authorization; a request body's `tools` array is never a grant. A tool not
+   * in this set is rejected, never silently stripped.
+   */
+  chatScopedActions?: readonly string[];
 }
 
 export type ConsumerRequest = FastifyRequest & {
@@ -203,15 +217,39 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // Diagnostic endpoints
   registerDiagnostics(fastify, options.registry, options.usageStore);
 
-  // OpenAI-compatible chat completions. Tool semantics are gated on the
-  // authenticated profile via effectiveProfileToolCapability.
-  registerChatCompletions(fastify, options.registry, options.usageStore);
+  // One shared tool-access decision for both profiles and every surface.
+  // `chatScopedActions` is server-side authorization; request bodies never
+  // contribute to it.
+  const toolAccessConfig: ToolAccessConfig = {
+    ...(options.scopedActions !== undefined ? { scopedActions: options.scopedActions } : {}),
+    ...(options.chatScopedActions !== undefined
+      ? { grantedActions: options.chatScopedActions }
+      : {}),
+  };
+
+  // OpenAI-compatible chat completions.
+  registerChatCompletions(
+    fastify,
+    options.registry,
+    options.usageStore,
+    toolAccessConfig,
+  );
 
   // OpenAI-compatible responses API
-  registerResponsesApi(fastify, options.registry, options.usageStore);
+  registerResponsesApi(
+    fastify,
+    options.registry,
+    options.usageStore,
+    toolAccessConfig,
+  );
 
   // Anthropic Messages-compatible downstream protocol adapter
-  registerAnthropicMessages(fastify, options.registry, options.usageStore);
+  registerAnthropicMessages(
+    fastify,
+    options.registry,
+    options.usageStore,
+    toolAccessConfig,
+  );
 
   return fastify;
 }

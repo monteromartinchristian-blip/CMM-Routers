@@ -19,6 +19,7 @@ function makeCodexRequest(
 ): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "chatgpt/gpt-5",
       provider: "chatgpt",

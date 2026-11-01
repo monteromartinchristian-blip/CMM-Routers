@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Qoder smoke test against the local CMM Routers.
-# Usage: CMM_ROUTER_TOKEN=<token> bash scripts/qoder-smoke.sh [base-url]
+# Usage: CMM_QODER_TOKEN=<token> bash scripts/qoder-smoke.sh [base-url]
+#        (CMM_CODE_ROUTER_TOKEN is the canonical AGENT alias; CMM_ROUTER_TOKEN
+#         remains accepted for a chat-only smoke run)
 #
 # Coverage: health, models, non-streaming chat, streaming chat SSE,
 # Responses API, and REAL cancellation. Every inference step requires the
@@ -14,14 +16,20 @@
 set -u
 
 BASE="${1:-http://127.0.0.1:8790}"
-TOKEN="${CMM_ROUTER_TOKEN:-}"
+TOKEN="${CMM_CODE_ROUTER_TOKEN:-${CMM_QODER_TOKEN:-${CMM_ROUTER_TOKEN:-}}}"
+if [ -n "${CMM_CODE_ROUTER_TOKEN:-}${CMM_QODER_TOKEN:-}" ]; then
+  SMOKE_PROFILE=AGENT
+else
+  SMOKE_PROFILE=CHAT
+fi
 
 if [ -z "$TOKEN" ]; then
   echo "QODER_SMOKE=BLOCKED reason=missing-token"
-  echo "REQUIRED_ENV=CMM_ROUTER_TOKEN"
-  echo "HINT=export CMM_ROUTER_TOKEN='<router-bearer>' (value never printed)"
+  echo "REQUIRED_ENV=CMM_QODER_TOKEN (legacy) or CMM_CODE_ROUTER_TOKEN (canonical AGENT)"
+  echo "HINT=export CMM_QODER_TOKEN='<agent-bearer>' (value never printed)"
   exit 0
 fi
+echo "QODER_SMOKE_PROFILE=$SMOKE_PROFILE"
 
 auth=(-H "Authorization: Bearer $TOKEN")
 MARKER="QODER_SMOKE_OK"

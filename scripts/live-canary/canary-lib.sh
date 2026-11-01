@@ -8,7 +8,8 @@
 # policy, the two-request canary_echo round-trip and the exit codes) lives in
 # canary-driver.ts, where it is covered by deterministic fake-Router tests. This
 # launcher only locates the driver and executes it under Node; it never prints a
-# secret and never reads CMM_ROUTER_TOKEN (that bearer is CMMChat/CHAT_ONLY).
+# secret and never reads CMM_ROUTER_TOKEN (that bearer is CHAT, which has no
+# default tool access or scoped grant in this canary).
 set -u
 
 canary_run() {

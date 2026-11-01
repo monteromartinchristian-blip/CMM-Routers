@@ -3,6 +3,7 @@ import { DeferredToolBroker, type BrokerKey } from "../../src/core/deferred-tool
 
 function key(over: Partial<BrokerKey> = {}): BrokerKey {
   return {
+    profile: "AGENT",
     provider: "chatgpt",
     sessionId: "thread-1",
     turnId: "turn-1",

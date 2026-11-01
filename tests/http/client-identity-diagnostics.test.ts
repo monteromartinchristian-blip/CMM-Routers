@@ -72,14 +72,14 @@ describe("application label in usage diagnostics", () => {
 
   it("records the authenticated profile and any arbitrary label", async () => {
     const record = await recentRecord(h.server, CODE_TOKEN, "deepseek-harness");
-    expect(record.profile).toBe("code");
+    expect(record.profile).toBe("AGENT");
     expect(record.clientLabel).toBe("deepseek-harness");
     console.log("ARBITRARY_CLIENT_LABEL_RECORDED=PASS");
   });
 
   it("an unidentified Code Router client simply has no label", async () => {
     const record = await recentRecord(h.server, CODE_TOKEN);
-    expect(record.profile).toBe("code");
+    expect(record.profile).toBe("AGENT");
     expect(record.clientLabel).toBeUndefined();
     console.log("ABSENT_CLIENT_LABEL_RECORDED=PASS");
   });
@@ -149,17 +149,17 @@ describe("usage store label fields are optional and additive", () => {
 
   it("records identity when supplied", () => {
     const store = new UsageStore();
-    store.beginRequest("req-id", "chatgpt", "chatgpt/m", { profile: "code", clientLabel: "cline" });
+    store.beginRequest("req-id", "chatgpt", "chatgpt/m", { profile: "AGENT", clientLabel: "cline" });
     const record = store.endRequest("req-id", { status: "success" });
-    expect(record.profile).toBe("code");
+    expect(record.profile).toBe("AGENT");
     expect(record.clientLabel).toBe("cline");
   });
 
   it("records a profile with no label", () => {
     const store = new UsageStore();
-    store.beginRequest("req-nolabel", "chatgpt", "chatgpt/m", { profile: "code" });
+    store.beginRequest("req-nolabel", "chatgpt", "chatgpt/m", { profile: "AGENT" });
     const record = store.endRequest("req-nolabel", { status: "success" });
-    expect(record.profile).toBe("code");
+    expect(record.profile).toBe("AGENT");
     expect(record.clientLabel).toBeUndefined();
   });
 });

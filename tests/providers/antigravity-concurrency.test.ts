@@ -22,6 +22,7 @@ const ARG_B = "ARG-B-9924";
 function request(requestId: string, messages: RouterRequest["messages"]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "google/test-model",
       provider: "google",

@@ -21,6 +21,7 @@ function request(
 ): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "claude/test-model",
       provider: "claude",

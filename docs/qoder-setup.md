@@ -1,12 +1,13 @@
 # Qoder Setup — CMM Routers
 
-Qoder is the first documented consumer of the **CMM Code Router** profile: it
-connects to the router as a single OpenAI-compatible provider, and Qoder itself
-owns and executes any tool the provider requests. The provider reasons; Qoder
-acts.
+Qoder is the first documented consumer of the **AGENT** profile (the historical
+`CMM Code Router`): it connects to the router as a single OpenAI-compatible
+provider, and Qoder itself owns and executes any tool the provider requests. The
+provider reasons; Qoder acts.
 
 Qoder is a supported client of CMM Routers — it is not the identity of the
-project or of the profile.
+project or of the profile, and its name grants no capability. The bearer token
+selects AGENT.
 
 ## Router endpoint
 
@@ -14,7 +15,7 @@ project or of the profile.
 Provider: CMM Routers
 Type: OpenAI Compatible
 Base URL: http://127.0.0.1:8790/v1
-API key: local router bearer token (CMM_ROUTER_TOKEN)
+API key: AGENT bearer — CMM_QODER_TOKEN (legacy Qoder item) or CMM_CODE_ROUTER_TOKEN (canonical alias)
 ```
 
 The Qoder provider ID registered locally is `qoder-custom-cmm-router`. That is a
@@ -45,7 +46,7 @@ Never `0.0.0.0`.
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $CMM_ROUTER_TOKEN" \
+  -H "Authorization: Bearer $CMM_QODER_TOKEN" \
   http://127.0.0.1:8790/v1/models | python3 -m json.tool
 ```
 
@@ -56,7 +57,7 @@ advertised capability.
 ## Smoke test
 
 ```bash
-CMM_ROUTER_TOKEN=<token> bash scripts/qoder-smoke.sh
+CMM_QODER_TOKEN=<token> bash scripts/qoder-smoke.sh
 ```
 
 ## Qoder validation order

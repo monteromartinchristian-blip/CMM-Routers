@@ -5,7 +5,7 @@ import { isFunctionTool } from "../core/model.js";
 import type { RouterEvent } from "../core/events.js";
 import type { NormalizedToolChoice } from "../core/tool-policy.js";
 import { RouterError } from "../core/errors.js";
-import { effectiveProfileToolCapability } from "../core/router-profile.js";
+import { resolveToolAccess, type ToolAccessConfig } from "../core/tool-access-policy.js";
 import {
   classifyToolDeclarationType,
   representToolDeclaration,
@@ -432,6 +432,7 @@ export function registerAnthropicMessages(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  toolAccessConfig: ToolAccessConfig = {},
 ): void {
   fastify.post("/v1/messages", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -477,31 +478,57 @@ export function registerAnthropicMessages(
     }
 
     const identity = (request as ConsumerRequest).identity;
-    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
-    const capabilityError = rejectChatOnlyTools(effective, body, parsed.messages);
+
+    // Raw-wire guard: it only runs when the request cannot legitimately carry
+    // tools (CHAT without a scoped grant, or a model without a proven
+    // structured tool round-trip).
+    const carriesScopedGrant =
+      identity.profile === "AGENT" || (toolAccessConfig.grantedActions?.length ?? 0) > 0;
+    const transportCapability =
+      model.capability === "CHAT_AND_TOOLS" && carriesScopedGrant
+        ? "CHAT_AND_TOOLS"
+        : "CHAT_ONLY";
+    const capabilityError = rejectChatOnlyTools(transportCapability, body, parsed.messages);
     if (capabilityError) {
       const mapped = anthropicErrorFor(capabilityError);
       return reply.code(mapped.status).send(mapped.body);
     }
 
-    // The tool-declaration ACL below is the only place a provider-facing payload
-    // is derived, and it is the same shared policy the OpenAI surfaces use.
-    const providerPolicyError = enforceSelectedProviderToolPolicy(
-      model.provider,
-      parsed.toolChoice,
-      parsed.parallelToolCalls,
-    );
-    if (providerPolicyError) {
-      const mapped = anthropicErrorFor(providerPolicyError);
+    // One shared authorization decision for both profiles and every surface.
+    // An unrepresentable constraint fails identically here and on the OpenAI
+    // wires.
+    const decision = resolveToolAccess({
+      profile: identity.profile,
+      provider: model.provider,
+      providerCapability: model.capability,
+      tools: parsed.tools,
+      ...(parsed.toolChoice !== undefined ? { toolChoice: parsed.toolChoice } : {}),
+      ...(parsed.parallelToolCalls !== undefined
+        ? { parallelToolCalls: parsed.parallelToolCalls }
+        : {}),
+      messages: parsed.messages,
+      ...(toolAccessConfig.scopedActions !== undefined
+        ? { scopedActions: toolAccessConfig.scopedActions }
+        : {}),
+      ...(toolAccessConfig.grantedActions !== undefined
+        ? { grantedActions: toolAccessConfig.grantedActions }
+        : {}),
+    });
+    if (!decision.allowed) {
+      const mapped = anthropicErrorFor(decision.error);
       return reply.code(mapped.status).send(mapped.body);
     }
+    const effectiveTools = decision.access.tools;
 
     const requestId = newMessageId();
     const routerRequest = {
       requestId,
+      // Authenticated authorization subject, propagated so broker correlation
+      // and adapter-side tool semantics can never be inferred from a body field.
+      profile: identity.profile,
       model,
       messages: parsed.messages,
-      tools: parsed.tools,
+      tools: [...effectiveTools],
       stream: body.stream === true,
       ...(typeof body.max_tokens === "number" ? { maxOutputTokens: body.max_tokens } : {}),
       ...(parsed.toolChoice !== undefined ? { toolChoice: parsed.toolChoice } : {}),

@@ -157,10 +157,11 @@ PYACK
   fi
 fi
 
-# Optional Code Router profile credentials. The canonical bearer is the
-# preferred path; the legacy Qoder bearer below remains a compatibility alias for
-# the SAME profile. Either resolving is non-fatal: without one there is simply no
-# Code Router profile (every authenticated request is CMMChat, CHAT_ONLY).
+# Optional AGENT profile credentials. `CMM_CODE_ROUTER_TOKEN` is canonical and
+# the legacy Qoder bearer below is a compatibility alias for the SAME profile.
+# Each alias is loaded independently; neither can reach CHAT. Resolving is
+# non-fatal: without either there is simply no AGENT consumer (every
+# authenticated inference request is CHAT).
 if [ -z "${CMM_CODE_ROUTER_TOKEN:-}" ]; then
   CODE_TOKEN="$(security find-generic-password -s "$CODE_SERVICE" -a "$CODE_ACCOUNT" -w 2>/dev/null || true)"
   if [ -n "$CODE_TOKEN" ]; then
@@ -168,8 +169,9 @@ if [ -z "${CMM_CODE_ROUTER_TOKEN:-}" ]; then
   fi
 fi
 
-# Optional Qoder consumer token: when absent there is simply no Qoder
-# consumer (every client is CMMChat, CHAT_ONLY). Never fatal, never logged.
+# Optional legacy Qoder alias: loaded independently of the canonical AGENT
+# bearer. When absent the legacy alias simply does not exist. Never fatal,
+# never logged, never written to disk.
 if [ -z "${CMM_QODER_TOKEN:-}" ]; then
   QODER_TOKEN="$(security find-generic-password -s "$QODER_SERVICE" -a "$QODER_ACCOUNT" -w 2>/dev/null || true)"
   if [ -n "$QODER_TOKEN" ]; then

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RouterError } from "../../src/core/errors.js";
-import { PROFILE_CMMCHAT, PROFILE_CODE } from "../../src/core/router-profile.js";
+import { PROFILE_CHAT, PROFILE_AGENT } from "../../src/core/router-profile.js";
 import {
   assertDistinctServerTokens,
   resolveRequestIdentity,
@@ -26,31 +26,31 @@ function tokens(overrides: Partial<ServerTokens> = {}): ServerTokens {
 describe("code router identity resolution", () => {
   it("the canonical Code Router bearer authenticates the CODE profile with no label", () => {
     const identity = resolveRequestIdentity(bearer(CODE), tokens({ codeRouterToken: CODE }), undefined);
-    expect(identity).toEqual({ profile: PROFILE_CODE });
+    expect(identity).toEqual({ profile: PROFILE_AGENT });
   });
 
   it("LEGACY_QODER_BEARER_STILL_AUTHENTICATES_CODE: the legacy bearer authenticates CODE", () => {
     const identity = resolveRequestIdentity(bearer(LEGACY), tokens({ legacyQoderToken: LEGACY }), undefined);
-    expect(identity).toEqual({ profile: PROFILE_CODE, clientLabel: "qoder" });
+    expect(identity).toEqual({ profile: PROFILE_AGENT, clientLabel: "qoder" });
     console.log("LEGACY_QODER_BEARER_STILL_AUTHENTICATES_CODE=PASS");
   });
 
   it("only the legacy bearer configured still yields a working CODE profile", () => {
     const only = tokens({ legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(LEGACY), only, undefined)?.profile).toBe(PROFILE_CODE);
+    expect(resolveRequestIdentity(bearer(LEGACY), only, undefined)?.profile).toBe(PROFILE_AGENT);
     expect(resolveRequestIdentity(bearer(CODE), only, undefined)).toBeNull();
   });
 
   it("only the canonical bearer configured still yields a working CODE profile", () => {
     const only = tokens({ codeRouterToken: CODE });
-    expect(resolveRequestIdentity(bearer(CODE), only, undefined)?.profile).toBe(PROFILE_CODE);
+    expect(resolveRequestIdentity(bearer(CODE), only, undefined)?.profile).toBe(PROFILE_AGENT);
     expect(resolveRequestIdentity(bearer(LEGACY), only, undefined)).toBeNull();
   });
 
   it("both bearers configured and distinct: either authenticates CODE", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
-    expect(resolveRequestIdentity(bearer(CODE), both, undefined)?.profile).toBe(PROFILE_CODE);
-    expect(resolveRequestIdentity(bearer(LEGACY), both, undefined)?.profile).toBe(PROFILE_CODE);
+    expect(resolveRequestIdentity(bearer(CODE), both, undefined)?.profile).toBe(PROFILE_AGENT);
+    expect(resolveRequestIdentity(bearer(LEGACY), both, undefined)?.profile).toBe(PROFILE_AGENT);
   });
 
   it("neither Code bearer configured: no CODE authentication is available", () => {
@@ -58,7 +58,7 @@ describe("code router identity resolution", () => {
     expect(resolveRequestIdentity(bearer(CODE), only, undefined)).toBeNull();
     expect(resolveRequestIdentity(bearer(LEGACY), only, undefined)).toBeNull();
     expect(resolveRequestIdentity(bearer(CMMCHAT), only, undefined)).toEqual({
-      profile: PROFILE_CMMCHAT,
+      profile: PROFILE_CHAT,
       clientLabel: "cmmchat",
     });
   });
@@ -66,7 +66,7 @@ describe("code router identity resolution", () => {
   it("CMMCHAT_BEARER_CANNOT_ELEVATE: no label can change the CMMChat profile", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
     for (const header of ["qoder", "hermes", "codex-client", "anything", "deepseek-harness"]) {
-      expect(resolveRequestIdentity(bearer(CMMCHAT), both, header)?.profile).toBe(PROFILE_CMMCHAT);
+      expect(resolveRequestIdentity(bearer(CMMCHAT), both, header)?.profile).toBe(PROFILE_CHAT);
     }
     console.log("CMMCHAT_BEARER_CANNOT_ELEVATE=PASS");
   });
@@ -75,7 +75,7 @@ describe("code router identity resolution", () => {
     const both = tokens({ codeRouterToken: CODE, legacyQoderToken: LEGACY });
     for (const header of ["hermes", "deepseek-harness", "claude-code", "cline", "roo"]) {
       const identity = resolveRequestIdentity(bearer(CODE), both, header);
-      expect(identity?.profile).toBe(PROFILE_CODE);
+      expect(identity?.profile).toBe(PROFILE_AGENT);
       expect(identity?.clientLabel).toBe(header);
     }
     console.log("ARBITRARY_LABEL_DOES_NOT_CHANGE_PROFILE=PASS");

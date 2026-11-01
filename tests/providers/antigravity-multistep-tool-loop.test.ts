@@ -45,6 +45,7 @@ function req(
 ): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "google/test-model",
       provider: "google",

@@ -1,8 +1,10 @@
 # Qoder Router Acceptance — CMM Routers
 
 This is the **current** acceptance record for Qoder against CMM Routers. Qoder
-is the first documented consumer of the `CMM Code Router` profile, in which the
-provider reasons and Qoder owns tool execution.
+is the first documented consumer of the **AGENT** profile (historical name:
+`CMM Code Router`), in which the provider reasons and Qoder owns tool execution.
+Qoder authenticates with the legacy `CMM_QODER_TOKEN`; its client name is not an
+authorization primitive.
 
 Earlier acceptance snapshots dated 2026-09-09 described a pre-promotion state in
 which every route was `CHAT_ONLY`. That history is preserved in the audit
@@ -47,7 +49,7 @@ Run the deterministic acceptance suite:
 bash scripts/preflight.sh
 npm test -- tests/http/openai-chat.test.ts tests/http/openai-responses.test.ts
 npm test -- tests/integration/tool-roundtrip.integration.test.ts
-CMM_ROUTER_TOKEN=<token> bash scripts/qoder-smoke.sh
+CMM_QODER_TOKEN=<token> bash scripts/qoder-smoke.sh
 ```
 
 The live provider tool-boundary canaries consume subscription quota, so they are

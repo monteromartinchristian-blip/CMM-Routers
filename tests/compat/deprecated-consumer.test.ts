@@ -8,14 +8,14 @@ import {
   QODER_TOKEN_ENV,
   effectiveToolCapability,
 } from "../../src/compat/deprecated-consumer.js";
-import { PROFILE_CMMCHAT, PROFILE_CODE } from "../../src/core/router-profile.js";
+import { PROFILE_CHAT, PROFILE_AGENT } from "../../src/core/router-profile.js";
 
 const REPO = join(import.meta.dirname, "../..");
 
 describe("legacy consumer-capability compatibility shim", () => {
   it("keeps the legacy consumer constants but re-points them at profiles", () => {
-    expect(CONSUMER_CMMCHAT).toBe(PROFILE_CMMCHAT);
-    expect(CONSUMER_QODER).toBe(PROFILE_CODE);
+    expect(CONSUMER_CMMCHAT).toBe(PROFILE_CHAT);
+    expect(CONSUMER_QODER).toBe(PROFILE_AGENT);
     console.log("LEGACY_CONSUMER_CONSTANTS_PRESERVED=PASS");
   });
 

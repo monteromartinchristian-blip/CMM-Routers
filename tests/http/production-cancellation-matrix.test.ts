@@ -404,6 +404,7 @@ function matrixRequest(
 ): Parameters<ClaudeAdapter["run"]>[0] {
   return {
     requestId,
+    profile: "AGENT",
     model,
     messages,
     tools: [CMM_ECHO_TOOL],

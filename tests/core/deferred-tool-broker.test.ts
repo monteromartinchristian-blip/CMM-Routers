@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DeferredToolBroker } from "../../src/core/deferred-tool-broker.js";
 
 const KEY = {
+  profile: "AGENT" as const,
   provider: "chatgpt" as const,
   sessionId: "thread-1",
   turnId: "turn-1",

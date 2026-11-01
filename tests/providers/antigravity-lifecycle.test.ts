@@ -19,6 +19,7 @@ const FAKE_AGY = join(import.meta.dirname, "../helpers/fake-agy.js");
 function request(requestId: string, messages: RouterRequest["messages"]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "google/test-model",
       provider: "google",

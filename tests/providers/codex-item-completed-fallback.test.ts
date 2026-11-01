@@ -20,6 +20,7 @@ function request(
 ): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "chatgpt/test-model",
       provider: "chatgpt",

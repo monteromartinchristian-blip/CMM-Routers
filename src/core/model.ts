@@ -1,4 +1,5 @@
 import type { NormalizedToolChoice } from "./tool-policy.js";
+import type { RouterProfile } from "./router-profile.js";
 
 export type ProviderId =
   | "chatgpt"
@@ -150,6 +151,17 @@ export interface RouterMessage {
 
 export interface RouterRequest {
   requestId: string;
+  /**
+   * Authenticated profile that produced this request. Set by both HTTP
+   * surfaces; it is authorization context for broker correlation, never a
+   * client-supplied field.
+   *
+   * Omission is tolerated ONLY for a direct adapter invocation without tool
+   * semantics: `assertProfileForToolSemantics` (core/tool-access-policy.ts)
+   * rejects any run that declares tools or carries a tool-result continuation
+   * without a profile, so tool-capable execution can never assume AGENT.
+   */
+  profile?: RouterProfile;
   model: DiscoveredModel;
   messages: RouterMessage[];
   tools: RouterFunctionTool[];

@@ -12,7 +12,7 @@ import {
   representToolDeclaration,
   unsupportedToolKindError,
 } from "../core/tool-kind.js";
-import { effectiveProfileToolCapability } from "../core/router-profile.js";
+import { resolveToolAccess, type ToolAccessConfig } from "../core/tool-access-policy.js";
 import { assertToolResultsWithinBound } from "../core/tool-result-bound.js";
 import { validateToolArguments } from "../core/tool-arguments.js";
 import {
@@ -255,6 +255,7 @@ export function registerResponsesApi(
   fastify: FastifyInstance,
   registry: ProviderRegistry,
   usageStore?: UsageStore,
+  toolAccessConfig: ToolAccessConfig = {},
 ): void {
   fastify.post("/v1/responses", async (request: FastifyRequest, reply: FastifyReply) => {
     const body = asRecord(request.body);
@@ -391,11 +392,20 @@ export function registerResponsesApi(
     // Authorization subject is the authenticated PROFILE, never the client
     // application identifier.
     const identity = (request as ConsumerRequest).identity;
-    const effective = effectiveProfileToolCapability(identity.profile, model.capability);
+
+    // Raw-wire guard: it only runs when the request cannot legitimately carry
+    // tools (CHAT without a scoped grant, or a model without a proven
+    // structured tool round-trip).
+    const carriesScopedGrant =
+      identity.profile === "AGENT" || (toolAccessConfig.grantedActions?.length ?? 0) > 0;
+    const transportCapability =
+      model.capability === "CHAT_AND_TOOLS" && carriesScopedGrant
+        ? "CHAT_AND_TOOLS"
+        : "CHAT_ONLY";
 
     // Capability guard runs on the RAW body: assistant function_call history
     // is rejected before inputToMessages would discard its shape.
-    const earlyCapabilityError = rejectChatOnlyTools(effective, capabilityBody, []);
+    const earlyCapabilityError = rejectChatOnlyTools(transportCapability, capabilityBody, []);
     if (earlyCapabilityError) {
       const mapped = mapRouterErrorToHttp(earlyCapabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
@@ -421,31 +431,46 @@ export function registerResponsesApi(
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    const capabilityError = rejectChatOnlyTools(effective, capabilityBody, messages);
+    const capabilityError = rejectChatOnlyTools(transportCapability, capabilityBody, messages);
     if (capabilityError) {
       const mapped = mapRouterErrorToHttp(capabilityError);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
 
-    // Same Codex tool-policy rejection as /v1/chat/completions: an
-    // unrepresentable constraint must fail identically on both surfaces.
-    const codexPolicyError = enforceSelectedProviderToolPolicy(
-      model.provider,
-      toolChoice,
-      parallelToolCalls,
-    );
-    if (codexPolicyError) {
-      const mapped = mapRouterErrorToHttp(codexPolicyError);
+    // One shared authorization decision for both profiles and both surfaces.
+    // An unrepresentable constraint must fail identically here and on
+    // /v1/chat/completions.
+    const decision = resolveToolAccess({
+      profile: identity.profile,
+      provider: model.provider,
+      providerCapability: model.capability,
+      tools,
+      ...(toolChoice !== undefined ? { toolChoice } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+      messages,
+      ...(toolAccessConfig.scopedActions !== undefined
+        ? { scopedActions: toolAccessConfig.scopedActions }
+        : {}),
+      ...(toolAccessConfig.grantedActions !== undefined
+        ? { grantedActions: toolAccessConfig.grantedActions }
+        : {}),
+    });
+    if (!decision.allowed) {
+      const mapped = mapRouterErrorToHttp(decision.error);
       return reply.code(mapped.status).send({ error: { type: mapped.type, message: mapped.message } });
     }
+    const effectiveTools = decision.access.tools;
 
     const requestId = newId("req");
     const responseId = newId("resp");
     const routerRequest = {
       requestId,
+      // Authenticated authorization subject, propagated so broker correlation
+      // and adapter-side tool semantics can never be inferred from a body field.
+      profile: identity.profile,
       model,
       messages,
-      tools,
+      tools: [...effectiveTools],
       stream: body.stream === true,
       ...(typeof body.max_output_tokens === "number"
         ? { maxOutputTokens: body.max_output_tokens }

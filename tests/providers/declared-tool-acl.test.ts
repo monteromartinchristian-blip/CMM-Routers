@@ -164,6 +164,7 @@ describe("declared-tool ACL: Codex dynamic tools", () => {
     const { adapter, toolResponses } = scriptedCodex("run_command");
     const request: RouterRequest = {
       requestId: "codex-adv",
+      profile: "AGENT",
       model: {
         id: "chatgpt/gpt-5",
         provider: "chatgpt",

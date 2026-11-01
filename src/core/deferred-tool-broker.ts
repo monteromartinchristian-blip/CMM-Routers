@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { RouterError } from "./errors.js";
 import type { ProviderId } from "./model.js";
+import { isRouterProfile, type RouterProfile } from "./router-profile.js";
 
 /**
  * Client-neutral tool-call correlation identity.
@@ -12,12 +13,17 @@ import type { ProviderId } from "./model.js";
  * field. Provider-internal identity is carried separately in the entry context
  * (see PendingToolContext).
  *
- * The broker deliberately carries NO client identity. Authorization happens at
- * the HTTP boundary on the authenticated profile, and the execution owner is
- * the client/harness. Naming that client here would add coupling without
- * adding a control.
+ * Correlation is bound to the authenticated PROFILE, so a CHAT continuation can
+ * never claim an AGENT entry. The broker still carries no CLIENT identity:
+ * profile is an authorization subject, not an application label.
  */
 export interface BrokerKey {
+  /**
+   * Canonical owner profile. Correlation between profiles is forbidden: a CHAT
+   * continuation can never claim an AGENT entry. Omitted only by a path that
+   * bypasses the run guard; the broker refuses such a key at runtime.
+   */
+  profile?: RouterProfile;
   provider: ProviderId;
   sessionId: string;
   turnId?: string;
@@ -52,6 +58,7 @@ export interface ClaimResult<TContext = unknown> {
 
 interface Entry {
   id: string;
+  profile: RouterProfile;
   provider: ProviderId;
   sessionId: string;
   context?: unknown;
@@ -64,18 +71,26 @@ export function createPublicToolCallId(provider: ProviderId): string {
   return `cmm_${provider.replace(/-/g, "_")}_${randomUUID()}`;
 }
 
+function requireProfile(profile: RouterProfile | undefined): RouterProfile {
+  if (!isRouterProfile(profile)) {
+    throw new RouterError("provider_protocol_error", "Broker key requires a Router profile");
+  }
+  return profile;
+}
+
 function keyOf(key: BrokerKey): string {
+  const profile = requireProfile(key.profile);
   if (!key.sessionId || !key.toolCallId) {
     throw new RouterError(
       "provider_protocol_error",
       "Broker key requires sessionId and toolCallId",
     );
   }
-  return `${key.provider}|${key.sessionId}|${key.turnId ?? ""}|${key.toolCallId}`;
+  return `${profile}|${key.provider}|${key.sessionId}|${key.turnId ?? ""}|${key.toolCallId}`;
 }
 
 function splitScope(id: string): { provider: string; sessionId: string } {
-  const [provider = "", sessionId = ""] = id.split("|");
+  const [, provider = "", sessionId = ""] = id.split("|");
   return { provider, sessionId };
 }
 
@@ -105,6 +120,7 @@ export class DeferredToolBroker {
     signal?: AbortSignal,
     context?: TContext,
   ): void {
+    const profile = requireProfile(key.profile);
     const id = keyOf(key);
     if (this.entries.has(id)) {
       throw new RouterError("provider_protocol_error", "Duplicate pending tool call");
@@ -128,6 +144,7 @@ export class DeferredToolBroker {
     if (typeof timer.unref === "function") timer.unref();
     this.entries.set(id, {
       id,
+      profile,
       provider: key.provider,
       sessionId: key.sessionId,
       ...(context !== undefined ? { context } : {}),
@@ -159,9 +176,17 @@ export class DeferredToolBroker {
     });
   }
 
-  /** Resolve by public id only. Safe because public ids are globally unique. */
+  /**
+   * Resolve by public id only. Safe because public ids are globally unique.
+   *
+   * When `expectedProfile` is supplied, the entry's owner profile must match;
+   * a mismatched claim is answered `unknown` and the entry stays parked for its
+   * rightful owner. This closes cross-profile correlation without changing the
+   * public-id contract.
+   */
   claimByPublicToolCallId<TContext = PendingToolContext>(
     publicToolCallId: string,
+    expectedProfile?: RouterProfile,
   ): ClaimResult<TContext> {
     const id = this.publicIndex.get(publicToolCallId);
     if (id === undefined) {
@@ -169,6 +194,12 @@ export class DeferredToolBroker {
       if (state === "resolved") return { outcome: "duplicate" };
       if (state === "expired" || state === "cancelled") return { outcome: "stale" };
       return { outcome: "unknown" };
+    }
+    if (expectedProfile !== undefined) {
+      const entry = this.entries.get(id);
+      if (entry === undefined || entry.profile !== expectedProfile) {
+        return { outcome: "unknown" };
+      }
     }
     return this.take<TContext>(id) as ClaimResult<TContext>;
   }

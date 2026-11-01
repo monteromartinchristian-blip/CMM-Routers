@@ -31,6 +31,7 @@ type ToolCallDelta = { id: string; name?: string; argumentsDelta?: string };
 function request(requestId: string, messages: RouterRequest["messages"]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "claude/test-model",
       provider: "claude",

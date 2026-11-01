@@ -16,6 +16,7 @@ function fixture(name: string): Record<string, unknown> {
 function makeRequest(requestId: string, tools: RouterRequest["tools"]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "chatgpt/gpt-5",
       provider: "chatgpt",

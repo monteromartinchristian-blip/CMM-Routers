@@ -12,18 +12,18 @@
  */
 
 import {
-  PROFILE_CMMCHAT,
-  PROFILE_CODE,
+  PROFILE_CHAT,
+  PROFILE_AGENT,
   effectiveProfileToolCapability,
   type RouterProfile,
 } from "../core/router-profile.js";
 import { LEGACY_CODE_ROUTER_BEARER_ENV } from "./legacy-identifiers.js";
 
 /** @deprecated Legacy alias for the CMMChat profile. */
-export const CONSUMER_CMMCHAT = PROFILE_CMMCHAT;
+export const CONSUMER_CMMCHAT = PROFILE_CHAT;
 
 /** @deprecated Legacy alias for the Code Router profile. */
-export const CONSUMER_QODER = PROFILE_CODE;
+export const CONSUMER_QODER = PROFILE_AGENT;
 
 /** @deprecated Use `RouterProfile`. */
 export type ConsumerId = RouterProfile;

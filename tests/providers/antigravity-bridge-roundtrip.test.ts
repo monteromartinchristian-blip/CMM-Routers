@@ -27,6 +27,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<voi
 function request(requestId: string, messages: RouterRequest["messages"]): RouterRequest {
   return {
     requestId,
+    profile: "AGENT",
     model: {
       id: "google/test-model",
       provider: "google",
