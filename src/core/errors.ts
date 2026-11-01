@@ -5,6 +5,7 @@ export type RouterErrorCode =
   | "unsupported_capability"
   | "provider_unavailable"
   | "provider_auth_required"
+  | "provider_permission_denied"
   | "provider_quota_exhausted"
   | "provider_rate_limited"
   | "provider_timeout"

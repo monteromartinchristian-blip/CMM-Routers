@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily, validated update of the Router's bundled Claude Code runtime.
+     Replace __REPO__ with the live checkout and __HOME__ with the home folder,
+     then load with: launchctl bootstrap gui/$(id -u) <this plist>
+
+     `--apply` only requests deployment: scripts/macos/update-claude-runtime.sh
+     applies only when config/claude-runtime-update-policy.json opts in with
+     {"mode":"apply", ...}. Without that machine-local policy the nightly job
+     validates and leaves a prepared ref, never touching the running Router.
+     Versions: 0.3.x is the npm Agent SDK, 2.1.x is the bundled Claude Code
+     runtime; both are logged explicitly. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cmm.claude-runtime-update</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/macos/update-claude-runtime.sh</string>
+    <string>--apply</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>40</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/CMM-Subscription-Router/claude-runtime-update.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/CMM-Subscription-Router/claude-runtime-update.log</string>
+</dict>
+</plist>

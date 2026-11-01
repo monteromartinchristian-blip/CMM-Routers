@@ -10,3 +10,4 @@ runtime/
 *.log
 .DS_Store
 .worktrees/
+config/claude-runtime-update-policy.json

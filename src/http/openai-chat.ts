@@ -314,6 +314,8 @@ export function mapRouterErrorToHttp(error: unknown): { status: number; type: st
         return { status: 400, type: error.code, message: error.message };
       case "provider_auth_required":
         return { status: 401, type: error.code, message: "Provider authentication required" };
+      case "provider_permission_denied":
+        return { status: 403, type: error.code, message: error.message };
       case "provider_quota_exhausted":
       case "provider_rate_limited":
         return { status: 429, type: error.code, message: error.message };

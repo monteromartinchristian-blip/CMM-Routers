@@ -428,21 +428,12 @@ export class ClaudeAdapter implements ProviderAdapter {
   private toRouterError(error: unknown): RouterError {
     if (error instanceof RouterError) return error;
     const err = error as Error;
-    let code: "provider_protocol_error" | "provider_auth_required" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_timeout" =
-      "provider_protocol_error";
-    let message = err?.message ?? String(error);
-    if (message.includes("auth") || message.includes("login")) {
-      code = "provider_auth_required";
-      message = `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`;
-    } else if (message.includes("quota") || message.includes("usage limit")) {
-      code = "provider_quota_exhausted";
-    } else if (message.includes("rate limit")) {
-      code = "provider_rate_limited";
-    } else if (err?.name === "AbortError") {
-      code = "provider_timeout";
-      message = "Request timed out or was cancelled";
+    if (err?.name === "AbortError") {
+      return new RouterError("provider_timeout", "Request timed out or was cancelled");
     }
-    return new RouterError(code, message);
+    // One classifier for every provider failure path: thrown errors and
+    // structured SDK results must reach the same HTTP status.
+    return this.mapSdkErrorMessage(err?.message ?? String(error));
   }
 
   /**
@@ -459,6 +450,14 @@ export class ClaudeAdapter implements ProviderAdapter {
       message?: { content?: Array<{ type: string; text?: string }>; usage?: unknown };
       subtype?: string;
       errors?: string[];
+      /**
+       * The SDK marks an API-level failure with `is_error: true`. This can
+       * arrive on a `success` subtype, which is why subtype alone is never a
+       * reliable success signal.
+       */
+      is_error?: boolean;
+      /** Final assistant text, or the error text when `is_error` is true. */
+      result?: unknown;
       usage?: unknown;
       stop_reason?: string;
     };
@@ -494,6 +493,23 @@ export class ClaudeAdapter implements ProviderAdapter {
       return false;
     }
     if (typed.type === "result") {
+      const resultText =
+        typeof typed.result === "string" && typed.result.length > 0
+          ? typed.result
+          : (typed.errors ?? []).join("; ");
+
+      // The SDK contract is explicit: subtype "success" carries the final
+      // assistant text OR, with is_error true, the error text when the turn
+      // ended on an API error. Checking subtype first turned an expired OAuth
+      // session into a successful HTTP 200 with empty content.
+      if (typed.is_error === true) {
+        yield {
+          type: "error",
+          error: this.mapSdkErrorMessage(resultText || "Unknown SDK error"),
+        };
+        return true;
+      }
+
       if (typed.subtype === "success") {
         let finishReason: "stop" | "tool_calls" | "length" = "stop";
         if (typed.stop_reason === "max_tokens") finishReason = "length";
@@ -516,10 +532,21 @@ export class ClaudeAdapter implements ProviderAdapter {
         return true;
       }
       if (typed.subtype?.startsWith("error")) {
-        const errorMessage = (typed.errors ?? []).join("; ") || "Unknown SDK error";
+        const errorMessage = (typed.errors ?? []).join("; ") || resultText || "Unknown SDK error";
         yield { type: "error", error: this.mapSdkErrorMessage(errorMessage) };
         return true;
       }
+
+      // Any other terminal result is not a success. Fail closed instead of
+      // publishing an unrecognised outcome as a completed model response.
+      yield {
+        type: "error",
+        error: new RouterError(
+          "provider_protocol_error",
+          `Unrecognised SDK result subtype: ${typed.subtype ?? "(none)"}`,
+        ),
+      };
+      return true;
     }
     return false;
   }
@@ -992,27 +1019,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (error instanceof RouterError) {
         yield { type: "error", error };
       } else {
-        const err = error as Error;
-        // Map common error patterns
-        let errorCode = "provider_protocol_error";
-        let errorMessage = err.message;
-
-        if (err.message.includes("auth") || err.message.includes("login")) {
-          errorCode = "provider_auth_required";
-          errorMessage = `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`;
-        } else if (err.message.includes("quota") || err.message.includes("usage limit")) {
-          errorCode = "provider_quota_exhausted";
-        } else if (err.message.includes("rate limit")) {
-          errorCode = "provider_rate_limited";
-        } else if (err.name === "AbortError") {
-          errorCode = "provider_timeout";
-          errorMessage = "Request timed out or was cancelled";
-        }
-
-        yield {
-          type: "error",
-          error: new RouterError(errorCode as any, errorMessage),
-        };
+        yield { type: "error", error: this.toRouterError(error) };
       }
     } finally {
       signal.removeEventListener("abort", onAbort);
@@ -1053,36 +1060,62 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
+  /** Remove credential-shaped fragments from provider text before surfacing it. */
+  private redactProviderText(text: string): string {
+    return text
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+      .replace(/\b(authorization|x-api-key|cookie)\s*[:=]\s*\S+/gi, "$1: [redacted]");
+  }
+
   /**
-   * Map SDK error messages to router error codes.
+   * Classify SDK/provider error text into a stable provider code.
+   *
+   * The SDK can report a failure as free text ("API Error: 401 ..."), so the
+   * classifier prefers a structured HTTP status when one is present and then a
+   * narrow keyword set. Auth failures never echo provider text, and every
+   * surfaced message is redacted of credential-shaped fragments.
    */
   private mapSdkErrorMessage(errorText: string): RouterError {
-    if (errorText.includes("auth") || errorText.includes("login")) {
+    const text = typeof errorText === "string" ? errorText : String(errorText);
+    const lower = text.toLowerCase();
+    const statusMatch = /(?:^|[^0-9])([45][0-9]{2})(?:[^0-9]|$)/.exec(text);
+    const status = statusMatch ? Number(statusMatch[1]) : undefined;
+
+    const isAuth =
+      status === 401 ||
+      /\bunauthorized\b|\bauthentication\b|\boauth\b|\blogin\b|\bcredential\b|\binvalid api key\b|\btoken (?:has )?expired\b|\bsession (?:has )?expired\b/.test(
+        lower,
+      );
+    const isPermission =
+      status === 403 || /\bpermission\b|\bforbidden\b|\bnot permitted\b/.test(lower);
+    const isQuota = /\bquota\b|\busage limit\b|\bcredit balance\b|\binsufficient credit\b/.test(lower);
+    const isRateLimit = status === 429 || /\brate limit\b|\btoo many requests\b/.test(lower);
+    const isTimeout = status === 408 || status === 504 || /\btimeout\b|\btimed out\b/.test(lower);
+    const isUnavailable =
+      (status !== undefined && status >= 500) || /\bunavailable\b|\boverloaded\b|\bnot found\b/.test(lower);
+
+    if (isAuth) {
       return new RouterError(
         "provider_auth_required",
         `Authentication required. Run: claude login --config-dir "${this.effectiveProfileDir()}"`,
       );
     }
-
-    if (errorText.includes("quota") || errorText.includes("usage limit")) {
-      return new RouterError("provider_quota_exhausted", "Subscription quota exhausted");
+    if (isPermission) {
+      return new RouterError(
+        "provider_permission_denied",
+        "Claude subscription is not permitted to use this model or scope",
+      );
     }
-
-    if (errorText.includes("rate limit")) {
-      return new RouterError("provider_rate_limited", "Rate limited by Claude");
-    }
-
-    if (errorText.includes("timeout")) {
-      return new RouterError("provider_timeout", "Request timed out");
-    }
-
-    if (errorText.includes("unavailable") || errorText.includes("not found")) {
-      return new RouterError("provider_unavailable", "Claude service unavailable");
-    }
+    if (status === 429) return new RouterError("provider_rate_limited", "Rate limited by Claude");
+    if (isQuota) return new RouterError("provider_quota_exhausted", "Subscription quota exhausted");
+    if (isRateLimit) return new RouterError("provider_rate_limited", "Rate limited by Claude");
+    if (isTimeout) return new RouterError("provider_timeout", "Request timed out");
+    if (isUnavailable) return new RouterError("provider_unavailable", "Claude service unavailable");
 
     return new RouterError(
       "provider_protocol_error",
-      `Unexpected SDK error: ${errorText.substring(0, 200)}`,
+      `Unexpected SDK error: ${this.redactProviderText(text).substring(0, 200)}`,
     );
   }
 }

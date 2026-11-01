@@ -95,6 +95,8 @@ export function anthropicErrorFor(error: unknown): { status: number; body: Anthr
         return { status: 400, body: anthropicError("invalid_request_error", error.message) };
       case "provider_auth_required":
         return { status: 401, body: anthropicError("authentication_error", "Provider authentication required") };
+      case "provider_permission_denied":
+        return { status: 403, body: anthropicError("permission_error", error.message) };
       case "provider_quota_exhausted":
         return { status: 429, body: anthropicError("rate_limit_error", error.message) };
       case "provider_rate_limited":

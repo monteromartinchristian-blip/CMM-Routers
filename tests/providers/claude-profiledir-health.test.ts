@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,21 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 import { ClaudeAdapter } from "../../src/providers/claude/adapter.js";
 
+/**
+ * A temporary Claude profile directory must be torn down without turning a
+ * write that is still landing into a test failure: `rmSync` can observe
+ * ENOTEMPTY while the SDK process it was handed to is still writing. Removal is
+ * therefore bounded-retry, exactly as the operational runtime-update line did
+ * for its own temporary profile (1613a888). No assertion depends on teardown.
+ */
+const TEMP_PROFILES: string[] = [];
+
+function tempProfileDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "cmm-router-profile-"));
+  TEMP_PROFILES.push(dir);
+  return dir;
+}
+
 describe("Claude runtime profileDir and health isolation", () => {
   beforeEach(() => {
     queryMock.mockReset();
@@ -24,10 +39,16 @@ describe("Claude runtime profileDir and health isolation", () => {
     resolveSettingsMock.mockReset();
   });
 
+  afterEach(() => {
+    for (const dir of TEMP_PROFILES.splice(0)) {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
   it("wires a runtime profileDir into the actual SDK invocation env", async () => {
     // Import order matters: modules are already imported above, BEFORE we
     // construct config — proving no import-time capture is in play.
-    const profileDir = mkdtempSync(join(tmpdir(), "cmm-router-profile-"));
+    const profileDir = tempProfileDir();
     queryMock.mockReturnValue({
       supportedModels: vi.fn().mockResolvedValue([{ value: "sonnet", displayName: "Sonnet" }]),
       interrupt: vi.fn().mockResolvedValue(undefined),

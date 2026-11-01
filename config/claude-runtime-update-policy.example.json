@@ -1,0 +1,7 @@
+{
+  "mode": "prepare",
+  "allowedMajorMinor": ["0.3"],
+  "requireProvenance": true,
+  "minimumRuntimeVersion": "2.1.280",
+  "requiredAliases": []
+}
